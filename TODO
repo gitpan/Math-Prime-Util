@@ -1,0 +1,8 @@
+
+- Examine behavior near 32-bit limit on 32-bit machines.
+
+- GMP versions of all routines.
+
+- prime_count and nth_prime with very large inputs.
+
+- factoring (Fermat, Pollard Rho, HOLF, etc.)
