@@ -7,6 +7,7 @@
 
 #include "sieve.h"
 #include "bitarray.h"
+#include "util.h"     /* For freeing the segment cache */
 
 
 static unsigned char* prime_cache_sieve = 0;
@@ -61,6 +62,8 @@ void prime_precalc(UV n)
   }
 
   get_prime_cache(n, 0);   /* Sieve to n */
+
+  /* TODO: should we prealloc the segment here? */
 }
 
 void prime_free(void)
@@ -70,6 +73,8 @@ void prime_free(void)
   prime_cache_sieve = 0;
   prime_cache_size = 0;
 
+  free_prime_segment();
+
   prime_precalc(0);
 }
 
@@ -78,12 +83,12 @@ void prime_free(void)
 UV* sieve_erat(UV end)
 {
   UV* mem;
-  size_t n, s;
-  size_t last = (end+1)/2;
+  UV n, s;
+  UV last = (end+1)/2;
 
   mem = (UV*) calloc( NWORDS(last), sizeof(UV) );
   if (mem == 0) {
-    croak("allocation failure in sieve_erat: could not alloc %lu bits", (unsigned long)last);
+    croak("allocation failure in sieve_erat: could not alloc %"UVuf" bits", last);
     return 0;
   }
 
@@ -105,14 +110,14 @@ UV* sieve_erat(UV end)
 unsigned char* sieve_erat30(UV end)
 {
   unsigned char* mem;
-  size_t max_buf, buffer_words, limit;
+  UV max_buf, buffer_words, limit;
   UV prime;
 
   max_buf = (end/30) + ((end%30) != 0);
   buffer_words = (max_buf + sizeof(UV) - 1) / sizeof(UV);
   mem = (unsigned char*) calloc( buffer_words, sizeof(UV) );
   if (mem == 0) {
-    croak("allocation failure in sieve_erat30: could not alloc %lu bytes", (unsigned long)(buffer_words*sizeof(UV)));
+    croak("allocation failure in sieve_erat30: could not alloc %"UVuf" bytes", (buffer_words*sizeof(UV)));
     return 0;
   }
 
@@ -179,15 +184,16 @@ int sieve_segment(unsigned char* mem, UV startd, UV endd)
   UV limit;
   UV pcsize;
   UV startp = 30*startd;
-  UV endp = 30*endd+29;
+  UV endp = (endd >= (UV_MAX/30))  ?  UV_MAX-2  :  30*endd+29;
   UV ranged = endd - startd + 1;
 
   assert(mem != 0);
   assert(endd >= startd);
+  assert(endp >= startp);
   memset(mem, 0, ranged);
 
   limit = sqrt( (double) endp ) + 1;
-  /* printf("segment sieve from %lu to %lu (aux sieve to %lu)\n", startp, endp, limit); */
+  /* printf("segment sieve from %"UVuf" to %"UVuf" (aux sieve to %"UVuf")\n", startp, endp, limit); */
   pcsize = get_prime_cache(limit, &sieve);
   if (pcsize < limit) {
     croak("Couldn't generate small sieve for segment sieve");
@@ -198,7 +204,7 @@ int sieve_segment(unsigned char* mem, UV startd, UV endd)
   {
     /* p increments from 7 to at least sqrt(endp) */
     UV p2 = p*p;   /* TODO: overflow */
-    if (p2 >= endp)  break;
+    if (p2 > endp)  break;
     /* Find first multiple of p greater than p*p and larger than startp */
     if (p2 < startp) {
       p2 = (startp / p) * p;
@@ -206,14 +212,15 @@ int sieve_segment(unsigned char* mem, UV startd, UV endd)
     }
     /* Bump to next multiple that isn't divisible by 2, 3, or 5 */
     while (masktab30[p2%30] == 0) { p2 += p; }
-    if (p2 < endp)  {
+    /* It is possible we've overflowed p2, so check for that */
+    if ( (p2 <= endp) && (p2 >= startp) ) {
       /* Sieve from startd to endd starting at p2, stepping p */
 #if 0
       /* Basic sieve */
       do {
         mem[(p2 - startp)/30] |= masktab30[p2%30];
         do { p2 += 2*p; } while (masktab30[p2%30] == 0);
-      } while (p2 < endp);
+      } while ( (p2 <= endp) && (p2 >= startp) );
 #else
       UV d = (p2)/30;
       UV m = (p2) - d*30;
@@ -245,6 +252,9 @@ int sieve_segment(unsigned char* mem, UV startd, UV endd)
     }
   }
   END_DO_FOR_EACH_SIEVE_PRIME;
+
+  if (startd == 0)
+    mem[0] |= masktab30[1];  /* 1 is composite */
 
   return 1;
 }

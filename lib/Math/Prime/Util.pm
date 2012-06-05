@@ -5,7 +5,7 @@ use Carp qw/croak confess/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.01';
+  $Math::Prime::Util::VERSION = '0.02';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -20,6 +20,7 @@ our @EXPORT_OK = qw(
                      nth_prime nth_prime_lower nth_prime_upper nth_prime_approx
                      factor
                    );
+our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
 
 BEGIN {
   eval {
@@ -34,6 +35,8 @@ BEGIN {
 }
 
 
+my $_maxparam = (_maxbits == 32) ? 4294967295 : 18446744073709551615;
+
 sub primes {
   my $optref = {};  $optref = shift if ref $_[0] eq 'HASH';
   croak "no parameters to primes" unless scalar @_ > 0;
@@ -44,11 +47,14 @@ sub primes {
 
   # Validate parameters
   if ( (!defined $low) || (!defined $high) ||
-       #($low < 0) || ($high < 0) ||
        ($low =~ tr/0123456789//c) || ($high =~ tr/0123456789//c)
      ) {
-    croak "Parameters must be positive integers";
+    croak "Parameters [ $low $high ] must be positive integers";
   }
+
+  # Verify the parameters are in range.
+  croak "Parameters [ $low $high ] not in range 0-$_maxparam" unless $low <= $_maxparam && $high <= $_maxparam;
+
   return $sref if ($low > $high) || ($high < 2);
 
   my $method = $optref->{'method'};
@@ -126,12 +132,15 @@ Math::Prime::Util - Utilities related to prime numbers, including fast generator
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 
 =head1 SYNOPSIS
 
-  use Math::Prime::Util qw/primes/;
+  # Normally you would just import the functions you are using.
+  # Nothing is exported by default.
+  use Math::Prime::Util ':all';
+
 
   # Get a big array reference of many primes
   my $aref = primes( 100_000_000 );
@@ -139,6 +148,55 @@ Version 0.01
   # All the primes between 5k and 10k inclusive
   my $aref = primes( 5_000, 10_000 );
 
+  # If you want them in an array instead
+  my @primes = @{primes( 500 )};
+
+
+  # is_prime returns 0 for composite, 1 for prime
+  say "$n is prime"  if is_prime($n);
+
+
+  # step to the next prime
+  $n = next_prime($n);
+
+  # step back (returns 0 if given input less than 2)
+  $n = prev_prime($n);
+
+
+  # Return Pi(n) -- the number of primes E<lt>= n.
+  my $number_of_primes = prime_count( 1_000_000 );
+
+  # Quickly return an approximation to Pi(n)
+  my $approx_number_of_primes = prime_count_approx( 10**17 );
+
+  # Lower and upper bounds.  lower <= Pi(n) <= upper for all n
+  die unless prime_count_lower($n) <= prime_count($n);
+  die unless prime_count_upper($n) >= prime_count($n);
+
+
+  # Return p_n, the nth prime
+  say "The ten thousandth prime is ", nth_prime(10_000);
+
+  # Return a quick approximation to the nth prime
+  say "The one trillionth prime is ~ ", nth_prime_approx(10**12);
+
+  # Lower and upper bounds.   lower <= nth_prime(n) <= upper for all n
+  die unless nth_prime_lower($n) <= nth_prime($n);
+  die unless nth_prime_upper($n) >= nth_prime($n);
+
+
+  # Get the prime factors of a number
+  @prime_factors = factor( $n );
+
+
+  # Precalculate a sieve, possibly speeding up later work.
+  prime_precalc( 1_000_000_000 );
+
+  # Free any memory used by the module.
+  prime_free;
+
+  # Alternate way to free.  When this leaves scope, memory is freed.
+  my $mf = Math::Prime::Util::MemFree->new;
 
 
 =head1 DESCRIPTION
@@ -204,10 +262,12 @@ input is C<2> or lower.
 
 Returns the Prime Count function C<Pi(n)>.  The current implementation relies
 on sieving to find the primes within the interval, so will take some time and
-memory.  There are slightly faster ways to handle the sieving (e.g. maintain
-a list of counts from C<2 - j> for various C<j>, then do a segmented sieve
-between C<j> and C<n>), and for very large numbers the methods of Meissel,
-Lehmer, or Lagarias-Miller-Odlyzko-Deleglise-Rivat may be appropriate.
+memory.  It uses a segmented sieve if the primary sieve is not large enough,
+so is very memory efficient.  However, time growth is slightly more than
+linear with C<n>, so it can take a very long time.  A hybrid table approach
+is the usual means taken to speed this up, which a later version may do.  For
+very large inputs the methods of Meissel, Lehmer, or
+Lagarias-Miller-Odlyzko-Deleglise-Rivat may be appropriate.
 
 
 =head2 prime_count_upper
@@ -259,7 +319,10 @@ Returns the prime that lies in index C<n> in the array of prime numbers.  Put
 another way, this returns the smallest C<p> such that C<Pi(p) E<gt>= n>.
 
 This relies on generating primes, so can require a lot of time and space for
-large inputs.
+large inputs.  A segmented sieve is used for large inputs, so it is memory
+efficient.  On my machine it will return the 203,280,221st prime (the largest
+that fits in 32-bits) in 2.5 seconds.  The 10^9th prime takes 15 seconds to
+find, while the 10^10th prime takes nearly four minutes.
 
 
 =head2 nth_prime_upper
@@ -312,7 +375,7 @@ might be a better choice for complicated uses.
 
 =head2 Math::Prime::Util::MemFree->new
 
-  my $mf = Math::Prime::Util::MemFree->new
+  my $mf = Math::Prime::Util::MemFree->new;
   # perform operations.  When $mf goes out of scope, memory will be recovered.
 
 This is a more robust way of making sure any cached memory is freed, as it
@@ -356,9 +419,8 @@ q are the same number of digits), then this will be very fast.
   my @factors = squfof_factor($n);
 
 Produces factors, not necessarily prime, of the positive number input.  It
-is possible the factorization will fail, in which case you will need to use
-another method.  Failure in this case means a single factor is returned that
-is not prime.
+is possible the function will be unable to find a factor, in which case a
+single factor (the input) is returned.
 
 =head2 prho_factor
 
@@ -376,24 +438,22 @@ finding a factor or very large inputs in remarkably short time, similar to
 how Fermat's method works very well for factors near C<sqrt(n)>.  They are
 also amenable to massively parallel searching.
 
-For 64-bit input, these are unlikely to be of too much use.  An optimized
-SQUFOF implementation takes under 20 milliseconds to find a factor for any
-62-bit input on modern desktop computers.  Lightweight quadratic sieves
-are typically much faster for moderate in the 19+ digit range.
+For 64-bit input, these are unlikely to be of much use.  An optimized SQUFOF
+implementation takes under 20 milliseconds to find a factor for any 62-bit
+input on modern desktop computers.  Lightweight quadratic sieves are
+typically much faster for inputs in the 19+ digit range.
 
 
 =head1 LIMITATIONS
 
-The functions C<prime_count> and C<nth_prime> have not yet transitioned to
-using a segmented sieve, so will use too much memory to be practical when
-called with very large numbers (C<10^11> and up).
-
 I have not completed testing all the functions near the word size limit
 (e.g. C<2^32> for 32-bit machines).  Please report any problems you find.
 
-The factoring algorithms are mildly interesting but really limited by not
-being big number aware.  Factoring 64-bit numbers is not much of a challenge
-these days.
+The extra factoring algorithms are mildly interesting but really limited by
+not being big number aware.
+
+Perl versions earlier than 5.8.0 have issues with 64-bit.  The test suite will
+try to determine if your Perl is broken.  This will show up in factoring tests.
 
 
 =head1 PERFORMANCE
@@ -406,6 +466,7 @@ Pi(10^10) = 455,052,511.
        6.6  primegen (optimized Sieve of Atkin)
       11.2  Tomás Oliveira e Silva's segmented sieve v1 (May 2003)
 
+       5.9  My SoE called in segments
       15.6  My Sieve of Eratosthenes using a mod-30 wheel
       17.2  A slightly modified verion of Terje Mathisen's mod-30 sieve
       35.5  Basic Sieve of Eratosthenes on odd numbers
@@ -415,11 +476,22 @@ Pi(10^10) = 455,052,511.
 
 Perl modules, counting the primes to C<800_000_000> (800 million), in seconds:
 
+  Time (s)  Module                      Version
+  --------  --------------------------  ------
+       0.4  Math::Prime::Util           0.02
        0.9  Math::Prime::Util           0.01
        2.9  Math::Prime::FastSieve      0.12
       11.7  Math::Prime::XS             0.29
       15.0  Bit::Vector                 7.2
-   (hours)  Math::Primality             0.04
+   [hours]  Math::Primality             0.04
+
+
+I have not done extensive timing on factoring.  The difference in speed for
+most inputs between Math::Factor::XS and Math::Prime::Util is small.
+M::F::XS is a bit faster than the current implementation for most ranges,
+except for large inputs with large factors, where using SQUFOF is a big
+advantage (e.g. C<204518747 * 16476429743>, which is ~50x faster with this
+module).
 
 
 =head1 AUTHORS
@@ -441,7 +513,7 @@ will.
 
 The SQUFOF implementation being used is my modifications to Ben Buhrow's
 modifications to Bob Silverman's code.  I may experiment with some other
-implementations (Ben Buhrows and Jason Papadopoulos both have published their
+implementations (Ben Buhrows and Jason Papadopoulos both have published
 excellent versions in the public domain).
 
 

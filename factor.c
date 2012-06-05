@@ -9,11 +9,23 @@
 #include "util.h"
 #include "sieve.h"
 
+/*
+ * You need to remember to use UV for unsigned and IV for signed types that
+ * are large enough to hold our data.
+ *   If you use int, that's 32-bit on LP64 and LLP64 machines.  You lose.
+ *   If you use long, that's 32-bit on LLP64 machines.  You lose.
+ *   If you use long long, you may be too large which isn't so bad, but some
+ *                         compilers may not understand the type at all.
+ * perl.h already figured all this out, and provided us with these types which
+ * match the native integer type used inside our Perl, so just use those.
+ */
+
 
 int trial_factor(UV n, UV *factors, UV maxtrial)
 {
-  UV f, d, m;
-  UV limit;
+  static const wheeladvance[30] =
+    {0,6,0,0,0,0,0,4,0,0,0,2,0,4,0,0,0,2,0,4,0,0,0,6,0,0,0,0,0,2};
+  UV f, m, limit;
   int nfactors = 0;
 
   if (maxtrial == 0)  maxtrial = UV_MAX;
@@ -47,7 +59,6 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
 
   /* wheel 30 */
   f = 11;
-  d = 0;
   m = 11;
   while (f <= limit) {
     if ( (n%f) == 0 ) {
@@ -59,8 +70,8 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
       newlimit = sqrt(n);
       if (newlimit < limit)  limit = newlimit;
     }
-    m = nextwheel30[m];  if (m == 1) d++;
-    f = d*30 + m;
+    f += wheeladvance[m];
+    m = nextwheel30[m];
   }
   if (n != 1)
     factors[nfactors++] = n;
@@ -80,15 +91,19 @@ static UV gcd_ui(UV x, UV y) {
 }
 
 /* n^power + a mod m */
+/* This has serious overflow issues, making the programs that use it dubious */
 static UV powmod(UV n, UV power, UV add, UV m) {
   UV t = 1;
+  n = n % m;
+  /* t and n will always be < m from now on */
   while (power) {
     if (power & 1)
-      t = ((t % m) * (n % m)) % m;
-    n = ((n % m) * (n % m)) % m;
+      t = (t * n) % m;
+    n = (n * n) % m;
     power >>= 1;
   }
-  return (t+add) % m;
+  /* (t+a) % m, noting t is always < m */
+  return ( ((m-t) > add) ? (t+add) : (t+add-m) );
 }
 
 /* Knuth volume 2, algorithm C.
@@ -278,9 +293,9 @@ int pminus1_factor(UV n, UV *factors, UV rounds)
 
 /* My modification of Ben Buhrow's modification of Bob Silverman's SQUFOF code.
  * I like Jason P's code a lot -- I should put it in. */
-static long qqueue[100];
-static long qpoint;
-static void enqu(long q, long *iter) {
+static IV qqueue[100];
+static IV qpoint;
+static void enqu(IV q, IV *iter) {
   qqueue[qpoint] = q;
   if (++qpoint >= 100) *iter = -1;
 }
@@ -289,8 +304,8 @@ int squfof_factor(UV n, UV *factors, UV rounds)
 {
   int nfactors = 0;
   UV temp;
-  long iq,ll,l2,p,pnext,q,qlast,r,s,t,i;
-  long jter, iter;
+  IV iq,ll,l2,p,pnext,q,qlast,r,s,t,i;
+  IV jter, iter;
   int reloop;
 
   if ( (n < 2) ) {
@@ -320,7 +335,7 @@ int squfof_factor(UV n, UV *factors, UV rounds)
   }
 
   q = temp;              /* q = excess of n over next smaller square */
-  ll = 1 + 2*(long)sqrt((double)(p+p));
+  ll = 1 + 2*(IV)sqrt((double)(p+p));
   l2 = ll/2;
   qpoint = 0;
 
