@@ -3,6 +3,7 @@
 #include "perl.h"
 #include "XSUB.h"
 /* We're not using anything for which we need ppport.h */
+#include "ptypes.h"
 #include "sieve.h"
 #include "util.h"
 #include "bitarray.h"
@@ -80,7 +81,6 @@ _maxbits()
 SV*
 sieve_primes(IN UV low, IN UV high)
   PREINIT:
-    UV  s;
     const unsigned char* sieve;
     AV* av = newAV();
   CODE:
@@ -226,115 +226,139 @@ erat_simple_primes(IN UV low, IN UV high)
 
 void
 factor(IN UV n)
-  PREINIT:
-    UV const maxtrials = UV_MAX;
-    UV factors[MPU_MAX_FACTORS+1];
-    int nfactors;
-    int i;
   PPCODE:
-#if BITS_PER_WORD == 32
-    nfactors = trial_factor(n, factors, maxtrials);
-    if (nfactors < 1)
-      croak("No factors from trial_factor");
-    for (i = 0; i < nfactors; i++) {
-      XPUSHs(sv_2mortal(newSVuv( factors[i] )));
-    }
-#else
-    /* TODO: worry about squfof overflow */
-    if ( n < UVCONST(0xFFFFFFFF) ) {
-      /* small number */
-      nfactors = trial_factor(n, factors, maxtrials);
+    if (n < 4) {
+      XPUSHs(sv_2mortal(newSVuv( n ))); /* If n is 0-3, we're done. */
     } else {
-      UV sqfactors, f1, f2;
-      /* First factor out small numbers */
-      nfactors = trial_factor(n, factors, 29);
-      /* Use SQUFOF to separate the remainder */
-      n = factors[--nfactors];
-      sqfactors = squfof_factor(n, factors+nfactors, 800000);
-      assert(sqfactors <= 2);
-      if (sqfactors == 1) {
-        n = factors[nfactors];
-        nfactors += trial_factor(n, factors+nfactors, maxtrials);
-      } else {
-        UV n1 = factors[nfactors];
-        n = factors[nfactors+1];
-        nfactors += trial_factor(n1, factors+nfactors, maxtrials);
-        nfactors += trial_factor(n, factors+nfactors, maxtrials);
+      UV factor_stack[MPU_MAX_FACTORS+1];
+      int nstack = 0;
+      /* Quick trial divisions.  We could do tricky gcd magic here. */
+      while ( (n% 2) == 0 ) {  n /=  2;  XPUSHs(sv_2mortal(newSVuv(  2 ))); }
+      while ( (n% 3) == 0 ) {  n /=  3;  XPUSHs(sv_2mortal(newSVuv(  3 ))); }
+      while ( (n% 5) == 0 ) {  n /=  5;  XPUSHs(sv_2mortal(newSVuv(  5 ))); }
+      while ( (n% 7) == 0 ) {  n /=  7;  XPUSHs(sv_2mortal(newSVuv(  7 ))); }
+      while ( (n%11) == 0 ) {  n /= 11;  XPUSHs(sv_2mortal(newSVuv( 11 ))); }
+      while ( (n%13) == 0 ) {  n /= 13;  XPUSHs(sv_2mortal(newSVuv( 13 ))); }
+      while ( (n%17) == 0 ) {  n /= 17;  XPUSHs(sv_2mortal(newSVuv( 17 ))); }
+      do { /* loop over each remaining factor */
+        while ( (n >= (19*19)) && (!is_definitely_prime(n)) ) {
+          int split_success = 0;
+          if (n > UVCONST(60000000) ) {  /* tune this */
+            /* For sufficiently large n, try more complex methods. */
+            /* SQUFOF (succeeds 98-99.9%) */
+            split_success = squfof_factor(n, factor_stack+nstack, 256*1024)-1;
+            assert( (split_success == 0) || (split_success == 1) );
+            /* a few rounds of Pollard rho (succeeds most of the rest) */
+            if (!split_success) {
+              split_success = prho_factor(n, factor_stack+nstack, 400)-1;
+              assert( (split_success == 0) || (split_success == 1) );
+            }
+          }
+          if (split_success) {
+            nstack++;
+            n = factor_stack[nstack];
+          } else {
+            /* trial divisions */
+            UV f = 19;
+            UV m = 19;
+            UV limit = sqrt((double) n);
+            while (f <= limit) {
+              if ( (n%f) == 0 ) {
+                do {
+                  n /= f;  XPUSHs(sv_2mortal(newSVuv( f )));
+                } while ( (n%f) == 0 );
+                limit = sqrt((double) n);
+              }
+              f += wheeladvance30[m];
+              m =  nextwheel30[m];
+            }
+            break;  /* We just factored n via trial division.  Exit loop. */
+          }
+        }
+        if (n != 1)  XPUSHs(sv_2mortal(newSVuv( n )));
+        if (nstack > 0)  n = factor_stack[nstack-1];
+      } while (nstack-- > 0);
+    }
+
+#define SIMPLE_FACTOR(func, n, rounds) \
+    if (n <= 1) { \
+      XPUSHs(sv_2mortal(newSVuv( n ))); \
+    } else { \
+      while ( (n% 2) == 0 ) {  n /=  2;  XPUSHs(sv_2mortal(newSVuv( 2 ))); } \
+      while ( (n% 3) == 0 ) {  n /=  3;  XPUSHs(sv_2mortal(newSVuv( 3 ))); } \
+      while ( (n% 5) == 0 ) {  n /=  5;  XPUSHs(sv_2mortal(newSVuv( 5 ))); } \
+      if (n == 1) {  /* done */ } \
+      else if (is_prime(n)) { XPUSHs(sv_2mortal(newSVuv( n ))); } \
+      else { \
+        UV factors[MPU_MAX_FACTORS+1]; \
+        int i, nfactors; \
+        nfactors = func(n, factors, rounds); \
+        for (i = 0; i < nfactors; i++) { \
+          XPUSHs(sv_2mortal(newSVuv( factors[i] ))); \
+        } \
+      } \
+    }
+
+void
+trial_factor(IN UV n)
+  PPCODE:
+    SIMPLE_FACTOR(trial_factor, n, UV_MAX);
+
+void
+fermat_factor(IN UV n, IN UV maxrounds = 64*1024*1024)
+  PPCODE:
+    SIMPLE_FACTOR(fermat_factor, n, maxrounds);
+
+void
+holf_factor(IN UV n, IN UV maxrounds = 64*1024*1024)
+  PPCODE:
+    SIMPLE_FACTOR(holf_factor, n, maxrounds);
+
+void
+squfof_factor(IN UV n, IN UV maxrounds = 4*1024*1024)
+  PPCODE:
+    SIMPLE_FACTOR(squfof_factor, n, maxrounds);
+
+void
+pbrent_factor(IN UV n, IN UV maxrounds = 4*1024*1024)
+  PPCODE:
+    SIMPLE_FACTOR(pbrent_factor, n, maxrounds);
+
+void
+prho_factor(IN UV n, IN UV maxrounds = 4*1024*1024)
+  PPCODE:
+    SIMPLE_FACTOR(prho_factor, n, maxrounds);
+
+void
+pminus1_factor(IN UV n, IN UV maxrounds = 4*1024*1024)
+  PPCODE:
+    SIMPLE_FACTOR(pminus1_factor, n, maxrounds);
+
+int
+miller_rabin(IN UV n, ...)
+  PREINIT:
+    UV bases[64];
+    int prob_prime = 1;
+    int c = 1;
+  CODE:
+    if (items < 2)
+      croak("No bases given to miller_rabin");
+    if ( (n == 0) || (n == 1) ) XSRETURN(0);   /* 0 and 1 are composite */
+    if ( (n == 2) || (n == 3) ) XSRETURN(2);   /* 2 and 3 are prime */
+    while (c < items) {
+      int b = 0;
+      while (c < items) {
+        bases[b++] = SvUV(ST(c));
+        c++;
+        if (b == 64) break;
       }
+      prob_prime = miller_rabin(n, bases, b);
+      if (prob_prime != 1)
+        break;
     }
-    if (nfactors < 1) croak("No factors");
-    for (i = 0; i < nfactors; i++) {
-      XPUSHs(sv_2mortal(newSVuv( factors[i] )));
-    }
-#endif
+    RETVAL = prob_prime;
+  OUTPUT:
+    RETVAL
 
-void
-fermat_factor(IN UV n)
-  PREINIT:
-    UV factors[MPU_MAX_FACTORS+1];
-    int nfactors;
-    int i;
-  PPCODE:
-    nfactors = fermat_factor(n, factors);
-    if (nfactors < 1)
-      croak("No factors from fermat_factor");
-    for (i = 0; i < nfactors; i++) {
-      XPUSHs(sv_2mortal(newSVuv( factors[i] )));
-    }
-
-void
-squfof_factor(IN UV n)
-  PREINIT:
-    UV factors[MPU_MAX_FACTORS+1];
-    int nfactors;
-    int i;
-  PPCODE:
-    nfactors = squfof_factor(n, factors, 800000);
-    if (nfactors < 1)
-      croak("No factors from squfof_factor");
-    for (i = 0; i < nfactors; i++) {
-      XPUSHs(sv_2mortal(newSVuv( factors[i] )));
-    }
-
-
-void
-pbrent_factor(IN UV n)
-  PREINIT:
-    UV factors[MPU_MAX_FACTORS+1];
-    int nfactors;
-    int i;
-  PPCODE:
-    nfactors = pbrent_factor(n, factors, 50000000);
-    if (nfactors < 1)
-      croak("No factors from pbrent_factor");
-    for (i = 0; i < nfactors; i++) {
-      XPUSHs(sv_2mortal(newSVuv( factors[i] )));
-    }
-
-void
-prho_factor(IN UV n)
-  PREINIT:
-    UV factors[MPU_MAX_FACTORS+1];
-    int nfactors;
-    int i;
-  PPCODE:
-    nfactors = prho_factor(n, factors, 50000000);
-    if (nfactors < 1)
-      croak("No factors from prho_factor");
-    for (i = 0; i < nfactors; i++) {
-      XPUSHs(sv_2mortal(newSVuv( factors[i] )));
-    }
-
-void
-pminus1_factor(IN UV n)
-  PREINIT:
-    UV factors[MPU_MAX_FACTORS+1];
-    int nfactors;
-    int i;
-  PPCODE:
-    nfactors = pminus1_factor(n, factors, 50000000);
-    if (nfactors < 1)
-      croak("No factors from pminus1_factor");
-    for (i = 0; i < nfactors; i++) {
-      XPUSHs(sv_2mortal(newSVuv( factors[i] )));
-    }
+int
+is_prob_prime(IN UV n)

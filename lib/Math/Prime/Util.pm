@@ -5,7 +5,7 @@ use Carp qw/croak confess/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.02';
+  $Math::Prime::Util::VERSION = '0.03';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -13,7 +13,7 @@ BEGIN {
 use base qw( Exporter );
 our @EXPORT_OK = qw(
                      prime_precalc prime_free
-                     is_prime
+                     is_prime is_prob_prime miller_rabin
                      primes
                      next_prime  prev_prime
                      prime_count prime_count_lower prime_count_upper prime_count_approx
@@ -127,12 +127,12 @@ __END__
 
 =head1 NAME
 
-Math::Prime::Util - Utilities related to prime numbers, including fast generators / sievers
+Math::Prime::Util - Utilities related to prime numbers, including fast sieves and factoring
 
 
 =head1 VERSION
 
-Version 0.02
+Version 0.03
 
 
 =head1 SYNOPSIS
@@ -206,8 +206,14 @@ methods, is_prime, prime_count, nth_prime, approximations and bounds for
 the prime_count and nth prime, next_prime and prev_prime, factoring utilities,
 and more.
 
-The default sieving and factoring are intended to be the fastest on CPAN,
-including Math::Prime::XS, Math::Prime::FastSieve, and Math::Factor::XS.
+All routines currently work in native integers (32-bit or 64-bit).  Bignum
+support may be added later.  If you need bignum support for these types of
+functions inside Perl now, I recommend L<Math::Pari>.
+
+The default sieving and factoring are intended to be (and currently are)
+the fastest on CPAN, including L<Math::Prime::XS>, L<Math::Prime::FastSieve>,
+and L<Math::Factor::XS>.  L<Math::Pari> is slower in some things, faster in
+others.
 
 
 
@@ -215,9 +221,10 @@ including Math::Prime::XS, Math::Prime::FastSieve, and Math::Factor::XS.
 
 =head2 is_prime
 
-Returns true if the number is prime, false if not.
-
   print "$n is prime" if is_prime($n);
+
+Returns 2 if the number is prime, 0 if not.  Also note there are
+probabilistic prime testing functions available.
 
 
 =head2 primes
@@ -245,7 +252,9 @@ using wheel factorization, or a segmented sieve.
 
   $n = next_prime($n);
 
-Returns the next prime greater than the input number.
+Returns the next prime greater than the input number.  0 is returned if the
+next prime is larger than a native integer type (the last primes being
+C<4,294,967,291> in 32-bit Perl and C<18,446,744,073,709,551,557> in 64-bit).
 
 
 =head2 prev_prime
@@ -351,6 +360,39 @@ generate any primes.  Uses the Cipolla 1902 approximation with two
 polynomials, plus a correction term for small values to reduce the error.
 
 
+=head2 miller_rabin
+
+  my $maybe_prime = miller_rabin($n, 2);
+  my $probably_prime = miller_rabin($n, 2, 3, 5, 7, 11, 13, 17);
+
+Takes a positive number as input and one or more bases.  The bases must be
+between C<2> and C<n - 2>.  Returns 2 is C<n> is definitely prime, 1 if C<n>
+is probably prime, and 0 if C<n> is definitely composite.  Since this is
+just the Miller-Rabin test, a value of 2 is only returned for inputs of
+2 and 3, which are shortcut.  If 0 is returned, then the number really is a
+composite.  If 1 is returned, there is a good chance the number is prime
+(depending on the input and the bases), but we cannot be sure.
+
+This is usually used in combination with other tests to make either stronger
+tests (e.g. the strong BPSW test) or deterministic results for numbers less
+than some verified limit (such as the C<is_prob_prime> function in this module).
+
+
+=head2 is_prob_prime
+
+  my $prob_prime = is_prob_prime($n);
+  # Returns 0 (composite), 2 (prime), or 1 (probably prime)
+
+Takes a positive number as input and returns back either 0 (composite),
+2 (definitely prime), or 1 (probably prime).
+
+This is done with a tuned set of Miller-Rabin tests such that the result
+will be deterministic for 64-bit input.  Either 2, 3, 4, 5, or 7 Miller-Rabin
+tests are performed (no more than 3 for 32-bit input), and the result will
+then always be 0 (composite) or 2 (prime).  A later implementation may switch
+to a BPSW test, depending on speed.
+
+
 =head1 UTILITY FUNCTIONS
 
 =head2 prime_precalc
@@ -392,17 +434,25 @@ in place because you still have an object.
 
   my @factors = factor(3_369_738_766_071_892_021);
 
-Produces the prime factors of a positive number input.  They will typically
-but necessarily be in numerical order.  The special cases of C<n = 0> and
-C<n = 1> will return C<n>, which guarantees multiplying the factors together
-will always result in the input value, though those are the only cases where
+Produces the prime factors of a positive number input.  They may not be in
+numerical order.  The special cases of C<n = 0> and C<n = 1> will
+return C<n>, which guarantees multiplying the factors together will
+always result in the input value, though those are the only cases where
 the returned factors are not prime.
 
-The current algorithm is to use trial division for 32-bit numbers, while for
-larger numbers a small set of trial divisions is performed, followed by a
-single run of SQUFOF, then trial division of the results.  This results in
-faster factorization of most large numbers.  More sophisticated methods could
-be used.
+The current algorithm is to use trial division for small numbers, while large
+numbers go through a sequence of small trials, SQUFOF, and Pollard's Rho.
+This process is repeated for each non-prime factor.
+
+
+=head2 trial_factor
+
+  my @factors = trial_factor($n);
+
+Produces the prime factors of a positive number input.  The factors will be
+in numerical order.  The special cases of C<n = 0> and C<n = 1> will return
+C<n>, while with all other inputs the factors are guaranteed to be prime.
+For large inputs this will be very slow.
 
 =head2 fermat_factor
 
@@ -411,16 +461,29 @@ be used.
 Produces factors, not necessarily prime, of the positive number input.  The
 particular algorithm is Knuth's algorithm C.  For small inputs this will be
 very fast, but it slows down quite rapidly as the number of digits increases.
-If there is a factor close to the midpoint (e.g. a semiprime p*q where p and
-q are the same number of digits), then this will be very fast.
+It is very fast for inputs with a factor close to the midpoint
+(e.g. a semiprime p*q where p and q are the same number of digits).
+
+=head2 holf_factor
+
+  my @factors = holf_factor($n);
+
+Produces factors, not necessarily prime, of the positive number input.  An
+optional number of rounds can be given as a second parameter.  It is possible
+the function will be unable to find a factor, in which case a single element,
+the input, is returned.  This uses Hart's One Line Factorization with no
+premultiplier.  It is an interesting alternative to Fermat's algorithm,
+and there are some inputs it can rapidly factor.  In the long run it has the
+same advantages and disadvantages as Fermat's method.
 
 =head2 squfof_factor
 
   my @factors = squfof_factor($n);
 
-Produces factors, not necessarily prime, of the positive number input.  It
-is possible the function will be unable to find a factor, in which case a
-single factor (the input) is returned.
+Produces factors, not necessarily prime, of the positive number input.  An
+optional number of rounds can be given as a second parameter.  It is possible
+the function will be unable to find a factor, in which case a single element,
+the input, is returned.  This function typically runs very fast.
 
 =head2 prho_factor
 
@@ -428,20 +491,20 @@ single factor (the input) is returned.
 
 =head2 pminus1_factor
 
-Attempts to find a factor using one of the probabilistic algorigthms of
+  my @factors = prho_factor($n);
+
+  # Use a very small number of rounds
+  my @factors = prho_factor($n, 1000);
+
+Produces factors, not necessarily prime, of the positive number input.  An
+optional number of rounds can be given as a second parameter.  These attempt
+to find a single factor using one of the probabilistic algorigthms of
 Pollard Rho, Brent's modification of Pollard Rho, or Pollard's C<p - 1>.
 These are more specialized algorithms usually used for pre-factoring very
-large inputs, or checking very large inputs for naive mistakes.  If given
-a prime input, or if just unlucky, these will take a long time to return
-back the single input value.  There are cases where these can result in
-finding a factor or very large inputs in remarkably short time, similar to
-how Fermat's method works very well for factors near C<sqrt(n)>.  They are
-also amenable to massively parallel searching.
-
-For 64-bit input, these are unlikely to be of much use.  An optimized SQUFOF
-implementation takes under 20 milliseconds to find a factor for any 62-bit
-input on modern desktop computers.  Lightweight quadratic sieves are
-typically much faster for inputs in the 19+ digit range.
+large inputs, or checking very large inputs for naive mistakes.  If the
+input is prime or they run out of rounds, they will return the single
+input value.  On some inputs they will take a very long time, while on
+others they succeed in a remarkably short time.
 
 
 =head1 LIMITATIONS
@@ -454,6 +517,7 @@ not being big number aware.
 
 Perl versions earlier than 5.8.0 have issues with 64-bit.  The test suite will
 try to determine if your Perl is broken.  This will show up in factoring tests.
+Perl 5.6.2 32-bit works fine, as do later versions with 32-bit and 64-bit.
 
 
 =head1 PERFORMANCE
@@ -465,8 +529,9 @@ Pi(10^10) = 455,052,511.
        5.6  Tomás Oliveira e Silva's segmented sieve v2 (Sep 2010)
        6.6  primegen (optimized Sieve of Atkin)
       11.2  Tomás Oliveira e Silva's segmented sieve v1 (May 2003)
+      17.0  Pari 2.3.5 (primepi)
 
-       5.9  My SoE called in segments
+       5.9  My segmented SoE
       15.6  My Sieve of Eratosthenes using a mod-30 wheel
       17.2  A slightly modified verion of Terje Mathisen's mod-30 sieve
       35.5  Basic Sieve of Eratosthenes on odd numbers
@@ -486,12 +551,33 @@ Perl modules, counting the primes to C<800_000_000> (800 million), in seconds:
    [hours]  Math::Primality             0.04
 
 
-I have not done extensive timing on factoring.  The difference in speed for
-most inputs between Math::Factor::XS and Math::Prime::Util is small.
-M::F::XS is a bit faster than the current implementation for most ranges,
-except for large inputs with large factors, where using SQUFOF is a big
-advantage (e.g. C<204518747 * 16476429743>, which is ~50x faster with this
-module).
+C<is_prime> is slightly faster than M::P::XS for small inputs, but is much
+faster with larger ones  (5x faster for 8-digit, over 50x for 14-digit).
+Math::Pari is relatively slow for small inputs, but becomes faster in the
+13-digit range.
+
+
+Factoring performance depends on the input, and the algorithm choices used
+are still being tuned.  Compared to Math::Factor::XS, it is a tiny bit faster
+for most input under 10M or so, and rapidly gets faster.  For numbers
+larger than 32 bits it's 10-100x faster (depending on the number -- a power
+of two will be identical, while a semiprime with large factors will be on
+the extreme end).  Pari's underlying algorithms and code are very
+sophisticated, and will always be more so than this module, and of course
+supports bignums which is a huge advantage.  Small numbers factor much, much
+faster with Math::Prime::Util.  Pari passes M::P::U in speed somewhere in the
+16 digit range and rapidly increases its lead.
+
+The presentation here:
+ L<http://math.boisestate.edu/~liljanab/BOISECRYPTFall09/Jacobsen.pdf>
+has a lot of data on 64-bit and GMP factoring performance I collected in 2009.
+Assuming you do not know anything about the inputs, trial division and
+optimized Fermat work very well for small numbers (<= 10 digits), while
+native SQUFOF is typically the method of choice for 11-18 digits (I've
+seen claims that a lightweight QS can be faster for 15+ digits).  Some form
+of Quadratic Sieve is usually used for inputs in the 19-100 digit range, and
+beyond that is the Generalized Number Field Sieve.  For serious factoring,
+I recommend looking info C<yafu>, C<msieve>, C<Pari>, and C<GGNFS>.
 
 
 =head1 AUTHORS

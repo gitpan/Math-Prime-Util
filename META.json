@@ -1,5 +1,5 @@
 {
-   "abstract" : "Utilities related to prime numbers, including fast generators / sievers",
+   "abstract" : "Utilities related to prime numbers, including fast sieves and factoring",
    "author" : [
       "Dana A Jacobsen <dana@acm.org>"
    ],
@@ -32,6 +32,7 @@
       },
       "runtime" : {
          "requires" : {
+            "Carp" : "0",
             "Exporter" : "5.562",
             "Test::More" : "0.45",
             "XSLoader" : "0.01",
@@ -40,5 +41,5 @@
       }
    },
    "release_status" : "stable",
-   "version" : "0.02"
+   "version" : "0.03"
 }

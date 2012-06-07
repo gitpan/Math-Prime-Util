@@ -7,7 +7,8 @@
 
 #include "util.h"
 #include "sieve.h"
-#include "bitarray.h"
+#include "factor.h"
+#include "ptypes.h"
 
 /*
  * I'm undecided as to whether we want this, or just let the functions alloc
@@ -45,7 +46,8 @@ static UV count_zero_bits(const unsigned char* m, UV nbytes)
 }
 
 
-static int _is_prime7(UV x)
+/* Does trial division, assuming x not divisible by 2, 3, or 5 */
+static int _is_trial_prime7(UV x)
 {
   UV q, i;
   i = 7;
@@ -59,7 +61,29 @@ static int _is_prime7(UV x)
     q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 2;
     q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 6;
   }
-  return 1;
+  return 2;
+}
+
+/* Does trial division or prob tests, assuming x not divisible by 2, 3, or 5 */
+static int _is_prime7(UV x)
+{
+  UV q, i;
+
+  if (x > MPU_PROB_PRIME_BEST)
+    return is_prob_prime(x);  /* We know this works for all 64-bit n */
+
+  i = 7;
+  while (1) {   /* trial division, skipping multiples of 2/3/5 */
+    q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 4;
+    q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 2;
+    q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 4;
+    q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 2;
+    q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 4;
+    q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 6;
+    q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 2;
+    q = x/i;  if (q<i) return 1;  if (x==(q*i)) return 0;   i += 6;
+  }
+  return 2;
 }
 
 
@@ -75,7 +99,34 @@ static const unsigned char prime_is_small[] =
    0x00,0x20,0x8a,0x00,0x20,0x8a,0x00,0x00,0x88,0x80,0x00,0x02,0x22,0x08,0x02};
 #define NPRIME_IS_SMALL (sizeof(prime_is_small)/sizeof(prime_is_small[0]))
 
+/* Return of 2 if n is prime, 0 if not.  Do it fast. */
 int is_prime(UV n)
+{
+  UV d, m;
+  unsigned char mtab;
+  const unsigned char* sieve;
+
+  if ( n < (NPRIME_IS_SMALL*8))
+    return ((prime_is_small[n/8] >> (n%8)) & 1) ? 2 : 0;
+
+  d = n/30;
+  m = n - d*30;
+  mtab = masktab30[m];  /* Bitmask in mod30 wheel */
+
+  /* Return 0 if a multiple of 2, 3, or 5 */
+  if (mtab == 0)
+    return 0;
+
+  if (n <= get_prime_cache(0, &sieve))
+    return ((sieve[d] & mtab) == 0) ? 2 : 0;
+
+  return _is_prime7(n);
+}
+
+/* Shortcut, asking for a very quick response of 1 = prime, 0 = dunno.
+ * No trial divisions will be done, making this useful for factoring.
+ */
+int is_definitely_prime(UV n)
 {
   UV d, m;
   unsigned char mtab;
@@ -95,8 +146,10 @@ int is_prime(UV n)
   if (n <= get_prime_cache(0, &sieve))
     return ((sieve[d] & mtab) == 0);
 
-  /* Trial division, mod 30 */
-  return _is_prime7(n);
+  if (n > MPU_PROB_PRIME_BEST)
+    return (is_prob_prime(n) == 2);
+
+  return 0;
 }
 
 
@@ -116,7 +169,7 @@ UV next_trial_prime(UV n)
   d = n/30;
   m = n - d*30;
   m = nextwheel30[m];  if (m == 1) d++;
-  while (!_is_prime7(d*30+m)) {
+  while (!_is_trial_prime7(d*30+m)) {
     m = nextwheel30[m];  if (m == 1) d++;
   }
   return(d*30+m);
@@ -140,6 +193,13 @@ UV next_prime(UV n)
     /* Not found, so must be larger than the cache size */
     n = sieve_size;
   }
+
+  /* Overflow */
+#if BITS_PER_WORD == 32
+  if (n > UVCONST(4294967291))  return 0;
+#else
+  if (n > UVCONST(18446744073709551557))  return 0;
+#endif
 
   d = n/30;
   m = n - d*30;
@@ -222,17 +282,17 @@ static const unsigned char prime_count_small[] =
    16,16,16,16,16,16,17,17,18,18,18,18,18,18,19};
 #define NPRIME_COUNT_SMALL  (sizeof(prime_count_small)/sizeof(prime_count_small[0]))
 
-static const float F1 = 1.0;
+static const double F1 = 1.0;
 UV prime_count_lower(UV x)
 {
-  float fx, flogx;
-  float a = 1.80;
+  double fx, flogx;
+  double a = 1.80;
 
   if (x < NPRIME_COUNT_SMALL)
     return prime_count_small[x];
 
-  fx = (float)x;
-  flogx = logf(x);
+  fx = (double)x;
+  flogx = log(x);
 
   if (x < 599)
     return (UV) (fx / (flogx-0.7));
@@ -255,14 +315,14 @@ UV prime_count_lower(UV x)
 
 UV prime_count_upper(UV x)
 {
-  float fx, flogx;
-  float a = 2.51;
+  double fx, flogx;
+  double a = 2.51;
 
   if (x < NPRIME_COUNT_SMALL)
     return prime_count_small[x];
 
-  fx = (float)x;
-  flogx = logf(x);
+  fx = (double)x;
+  flogx = log(x);
 
   /* This function is unduly complicated. */
 
@@ -501,7 +561,10 @@ UV nth_prime_approx(UV n)
   else if (n < 12000) approx += 3.0 * order;
   else if (n <150000) approx += 2.1 * order;
 
-  return (UV) rint(approx);
+  if (approx > (double)UV_MAX)
+    return 0;
+
+  return (UV) (approx + 0.5);
 }
 
 
@@ -516,7 +579,6 @@ UV nth_prime_approx(UV n)
 static UV count_segment(const unsigned char* sieve, UV nbytes, UV maxcount, UV* pos)
 {
   UV count = 0;
-  UV bytes_left;
   UV byte = 0;
 
   assert(sieve != 0);
