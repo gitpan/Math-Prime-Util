@@ -5,19 +5,20 @@ use Carp qw/croak confess/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.03';
+  $Math::Prime::Util::VERSION = '0.04';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
 # use parent qw( Exporter );
 use base qw( Exporter );
 our @EXPORT_OK = qw(
-                     prime_precalc prime_free
+                     prime_precalc prime_memfree
                      is_prime is_prob_prime miller_rabin
                      primes
                      next_prime  prev_prime
                      prime_count prime_count_lower prime_count_upper prime_count_approx
                      nth_prime nth_prime_lower nth_prime_upper nth_prime_approx
+                     random_prime random_ndigit_prime
                      factor
                    );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
@@ -35,7 +36,8 @@ BEGIN {
 }
 
 
-my $_maxparam = (_maxbits == 32) ? 4294967295 : 18446744073709551615;
+my $_maxparam  = (_maxbits == 32) ? 4294967295 : 18446744073709551615;
+my $_maxdigits = (_maxbits == 32) ? 10 : 20;
 
 sub primes {
   my $optref = {};  $optref = shift if ref $_[0] eq 'HASH';
@@ -49,6 +51,8 @@ sub primes {
   if ( (!defined $low) || (!defined $high) ||
        ($low =~ tr/0123456789//c) || ($high =~ tr/0123456789//c)
      ) {
+    $low  = 'undef' unless defined $low;
+    $high = 'undef' unless defined $high;
     croak "Parameters [ $low $high ] must be positive integers";
   }
 
@@ -95,6 +99,66 @@ sub primes {
   return $sref;
 }
 
+sub random_prime {
+  my $low = (@_ == 2)  ?  shift  :  2;
+  my $high = shift;
+  if ( (!defined $low) || (!defined $high) ||
+       ($low =~ tr/0123456789//c) || ($high =~ tr/0123456789//c)
+     ) {
+    $low  = 'undef' unless defined $low;
+    $high = 'undef' unless defined $high;
+    croak "Parameters [ $low $high ] must be positive integers";
+  }
+  croak "Parameters [ $low $high ] not in range 0-$_maxparam" unless $low <= $_maxparam && $high <= $_maxparam;
+  $low = 2 if $low < 2;
+
+  # Make sure we have a valid range.
+  # TODO: this is is killing performance with large numbers
+  $low = next_prime($low-1);
+  $high = ($high < ~0) ? prev_prime($high+1) : prev_prime($high);
+  return $low if ($low == $high) && is_prime($low);
+  return if $low >= $high;
+
+  # At this point low and high are both primes, and low < high.
+  my $range = $high - $low + 1;
+  my $prime;
+
+  if ($high < 30000) {
+    # nice deterministic solution, but gets very costly with large values.
+    my $li = ($low == 2) ? 1 : prime_count($low);
+    my $hi = prime_count($high);
+    my $irange = $hi - $li + 1;
+    my $rand = int(rand($irange));
+    $prime = nth_prime($li + $rand);
+  } else {
+    # random loop
+    if ($range <= 4294967295) {
+      do {
+        $prime = $low + int(rand($range));
+      }  while ( !($prime%2) || !($prime%3) || !is_prime($prime) );
+    } else {
+      do {
+        my $rand = ( (int(rand(4294967295)) << 32) + int(rand(4294967295)) ) % $range;
+        $prime = $low + $rand;
+      }  while ( !($prime%2) || !($prime%3) || !is_prime($prime) );
+    }
+  }
+  return $prime;
+}
+
+sub random_ndigit_prime {
+  my $digits = shift;
+  if ((!defined $digits) || ($digits > $_maxdigits) || ($digits < 1)) {
+    croak "Digits must be between 1 and $_maxdigits";
+  }
+  my $low = ($digits == 1) ? 0 : int(10 ** ($digits-1));
+  my $max = int(10 ** $digits);
+  $max = ~0 if $max > ~0;
+  return random_prime($low, $max);
+}
+
+# Perhaps a random_nbit_prime ?   Definition?
+
 # We use this object to let them control when memory is freed.
 package Math::Prime::Util::MemFree;
 use Carp qw/croak confess/;
@@ -107,7 +171,7 @@ sub new {
 sub DESTROY {
   my $self = shift;
   confess "instances count mismatch" unless $memfree_instances > 0;
-  Math::Prime::Util::prime_free if --$memfree_instances == 0;
+  Math::Prime::Util::prime_memfree if --$memfree_instances == 0;
 }
 package Math::Prime::Util;
 
@@ -132,7 +196,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.03
+Version 0.04
 
 
 =head1 SYNOPSIS
@@ -152,11 +216,14 @@ Version 0.03
   my @primes = @{primes( 500 )};
 
 
-  # is_prime returns 0 for composite, 1 for prime
+  # is_prime returns 0 for composite, 2 for prime
   say "$n is prime"  if is_prime($n);
 
+  # is_prob_prime returns 0 for composite, 2 for prime, and 1 for maybe prime
+  say "$n is ", qw(composite maybe_prime? prime)[is_prob_prime($n)];
 
-  # step to the next prime
+
+  # step to the next prime (returns 0 if the next one is more than ~0)
   $n = next_prime($n);
 
   # step back (returns 0 if given input less than 2)
@@ -193,10 +260,16 @@ Version 0.03
   prime_precalc( 1_000_000_000 );
 
   # Free any memory used by the module.
-  prime_free;
+  prime_memfree;
 
   # Alternate way to free.  When this leaves scope, memory is freed.
   my $mf = Math::Prime::Util::MemFree->new;
+
+
+  # Random primes
+  my $small_prime = random_prime(1000);      # random prime <= limit
+  my $rand_prime = random_prime(100, 10000); # random prime within a range
+  my $rand_prime = random_ndigit_prime(6);   # random 6-digit prime
 
 
 =head1 DESCRIPTION
@@ -393,6 +466,43 @@ then always be 0 (composite) or 2 (prime).  A later implementation may switch
 to a BPSW test, depending on speed.
 
 
+=head2 random_prime
+
+  my $small_prime = random_prime(1000);      # random prime <= limit
+  my $rand_prime = random_prime(100, 10000); # random prime within a range
+
+Returns a psuedo-randomly selected prime that will be greater than or equal
+to the lower limit and less than or equal to the upper limit.  If no lower
+limit is given, 2 is implied.  Returns undef if no primes exist within the
+range.  The L<rand> function is called one or more times for selection.
+
+This will return a uniform distribution of the primes in the range, meaning
+for each prime in the range, the chances are equally likely that it will be
+seen.
+
+The current algorithm does a random index selection for small numbers, which
+is deterministic.  For larger numbers, this can be very slow, so the
+obvious Monte Carlo method is used, where random numbers in the range are
+selected until one is prime.  That also gets slow as the number of digits
+increases, but not something that impacts us in 64-bit.
+
+If you want cryptographically secure primes, I suggest looking at
+L<Crypt::Primes> or something similar.  The current L<Math::Prime::Util>
+module does not use strong randomness, and its primes are ridiculously small
+by cryptographic standards.
+
+
+=head2 random_ndigit_prime
+
+  say "My 4-digit prime number is: ", random_ndigit_prime(4);
+
+Selects a random n-digit prime, where the input is an integer number of
+digits between 1 and the maximum native type (10 for 32-bit, 20 for 64-bit).
+One of the primes within that range (e.g. 1000 - 9999 for 4-digits) will be
+uniformly selected using the L<rand> function.
+
+
+
 =head1 UTILITY FUNCTIONS
 
 =head2 prime_precalc
@@ -406,9 +516,9 @@ current implementation this will calculate a sieve for all numbers up to the
 specified number.
 
 
-=head2 prime_free
+=head2 prime_memfree
 
-  prime_free;
+  prime_memfree;
 
 Frees any extra memory the module may have allocated.  Like with
 C<prime_precalc>, it is not necessary to call this, but if you're done
@@ -441,8 +551,9 @@ always result in the input value, though those are the only cases where
 the returned factors are not prime.
 
 The current algorithm is to use trial division for small numbers, while large
-numbers go through a sequence of small trials, SQUFOF, and Pollard's Rho.
-This process is repeated for each non-prime factor.
+numbers go through a sequence of small trials, SQUFOF, Pollard's Rho, and
+finally trial division for any survivors.  This process is repeated for
+each non-prime factor.
 
 
 =head2 trial_factor

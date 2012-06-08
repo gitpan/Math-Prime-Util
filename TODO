@@ -17,9 +17,6 @@
 
 - Faster SQUFOF
 
-- random_prime( {bits => 32,
-                 digits => 4,
-                 between => '4 and 100',
-                 between_nth => '26 and 42', } )
-  for super huge bases, we can use approx functions to get center, generate
-  a range, and then do random selection within it.
+- nth_prime bounds are < in the code, but <= in the documentation.
+
+- speed up random_prime for large numbers

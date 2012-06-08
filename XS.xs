@@ -18,7 +18,7 @@ void
 prime_precalc(IN UV n)
 
 void
-prime_free()
+prime_memfree()
 
 UV
 prime_count(IN UV n)
@@ -149,8 +149,8 @@ segment_primes(IN UV low, IN UV high, IN UV segment_size = 65536UL)
         UV segbase = low_d * 30;
         /* printf("  startd = %"UVuf"  endd = %"UVuf"\n", startd, endd); */
   
-        assert( seghigh_d >= low_d );
-        assert( range_d <= segment_size );
+        MPUassert( seghigh_d >= low_d, "segment_primes highd < lowd");
+        MPUassert( range_d <= segment_size, "segment_primes range > segment size");
 
         /* Sieve from startd*30+1 to endd*30+29.  */
         if (sieve_segment(sieve, low_d, seghigh_d) == 0) {
@@ -230,37 +230,51 @@ factor(IN UV n)
     if (n < 4) {
       XPUSHs(sv_2mortal(newSVuv( n ))); /* If n is 0-3, we're done. */
     } else {
+      UV tlim = 19;  /* Below this we've checked */
       UV factor_stack[MPU_MAX_FACTORS+1];
       int nstack = 0;
-      /* Quick trial divisions.  We could do tricky gcd magic here. */
+      /* Quick trial divisions.  Crude use of GCD to hopefully go faster. */
       while ( (n% 2) == 0 ) {  n /=  2;  XPUSHs(sv_2mortal(newSVuv(  2 ))); }
-      while ( (n% 3) == 0 ) {  n /=  3;  XPUSHs(sv_2mortal(newSVuv(  3 ))); }
-      while ( (n% 5) == 0 ) {  n /=  5;  XPUSHs(sv_2mortal(newSVuv(  5 ))); }
-      while ( (n% 7) == 0 ) {  n /=  7;  XPUSHs(sv_2mortal(newSVuv(  7 ))); }
-      while ( (n%11) == 0 ) {  n /= 11;  XPUSHs(sv_2mortal(newSVuv( 11 ))); }
-      while ( (n%13) == 0 ) {  n /= 13;  XPUSHs(sv_2mortal(newSVuv( 13 ))); }
-      while ( (n%17) == 0 ) {  n /= 17;  XPUSHs(sv_2mortal(newSVuv( 17 ))); }
+      if ( (n >= UVCONST(3*3)) && (gcd_ui(n, UVCONST(3234846615) != 1)) ) {
+        while ( (n% 3) == 0 ) {  n /=  3;  XPUSHs(sv_2mortal(newSVuv(  3 ))); }
+        while ( (n% 5) == 0 ) {  n /=  5;  XPUSHs(sv_2mortal(newSVuv(  5 ))); }
+        while ( (n% 7) == 0 ) {  n /=  7;  XPUSHs(sv_2mortal(newSVuv(  7 ))); }
+        while ( (n%11) == 0 ) {  n /= 11;  XPUSHs(sv_2mortal(newSVuv( 11 ))); }
+        while ( (n%13) == 0 ) {  n /= 13;  XPUSHs(sv_2mortal(newSVuv( 13 ))); }
+        while ( (n%17) == 0 ) {  n /= 17;  XPUSHs(sv_2mortal(newSVuv( 17 ))); }
+        while ( (n%19) == 0 ) {  n /= 19;  XPUSHs(sv_2mortal(newSVuv( 19 ))); }
+        while ( (n%23) == 0 ) {  n /= 23;  XPUSHs(sv_2mortal(newSVuv( 23 ))); }
+        while ( (n%29) == 0 ) {  n /= 29;  XPUSHs(sv_2mortal(newSVuv( 29 ))); }
+        tlim = 31;
+      }
+      if ( (n >= UVCONST(31*31)) && (gcd_ui(n, UVCONST(95041567) != 1)) ) {
+        while ( (n%31) == 0 ) {  n /= 31;  XPUSHs(sv_2mortal(newSVuv( 31 ))); }
+        while ( (n%37) == 0 ) {  n /= 37;  XPUSHs(sv_2mortal(newSVuv( 37 ))); }
+        while ( (n%41) == 0 ) {  n /= 41;  XPUSHs(sv_2mortal(newSVuv( 41 ))); }
+        while ( (n%43) == 0 ) {  n /= 43;  XPUSHs(sv_2mortal(newSVuv( 43 ))); }
+        while ( (n%47) == 0 ) {  n /= 47;  XPUSHs(sv_2mortal(newSVuv( 47 ))); }
+        tlim = 53;
+      }
       do { /* loop over each remaining factor */
-        while ( (n >= (19*19)) && (!is_definitely_prime(n)) ) {
+        while ( (n >= (tlim*tlim)) && (!is_definitely_prime(n)) ) {
           int split_success = 0;
-          if (n > UVCONST(60000000) ) {  /* tune this */
+          if (n > UVCONST(10000000) ) {  /* tune this */
             /* For sufficiently large n, try more complex methods. */
             /* SQUFOF (succeeds 98-99.9%) */
             split_success = squfof_factor(n, factor_stack+nstack, 256*1024)-1;
-            assert( (split_success == 0) || (split_success == 1) );
             /* a few rounds of Pollard rho (succeeds most of the rest) */
             if (!split_success) {
               split_success = prho_factor(n, factor_stack+nstack, 400)-1;
-              assert( (split_success == 0) || (split_success == 1) );
             }
           }
           if (split_success) {
+            MPUassert( split_success == 1, "split factor returned more than 2 factors");
             nstack++;
             n = factor_stack[nstack];
           } else {
             /* trial divisions */
-            UV f = 19;
-            UV m = 19;
+            UV f = tlim;
+            UV m = tlim % 30;
             UV limit = sqrt((double) n);
             while (f <= limit) {
               if ( (n%f) == 0 ) {

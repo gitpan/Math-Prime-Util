@@ -1,14 +1,13 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
-#include <limits.h>
-#include <math.h>
+//#include <stdio.h>
+//#include <stdlib.h>
+//#include <string.h>
+//#include <limits.h>
+//#include <math.h>
 
+#include "ptypes.h"
 #include "factor.h"
 #include "util.h"
 #include "sieve.h"
-#include "ptypes.h"
 
 /*
  * You need to remember to use UV for unsigned and IV for signed types that
@@ -77,86 +76,97 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
   return nfactors;
 }
 
-static UV gcd_ui(UV x, UV y) {
-  UV t;
 
-  if (y < x) { t = x; x = y; y = t; }
+#if (BITS_PER_WORD == 32) && HAVE_STD_U64
 
-  while (y > 0) {
-    x = x % y;
-    t = x; x = y; y = t;
-  }
-  return x;
-}
+  /* We have 64-bit available, but UV is 32-bit.  Do the math in 64-bit.
+   * Even if it is emulated, it should be as fast or faster than us doing it.
+   */
+  #define addmod(n,a,m)  (UV)(((uint64_t)(n)+(uint64_t)(a)) % ((uint64_t)(m)))
+  #define mulmod(a,b,m)  (UV)(((uint64_t)(a)*(uint64_t)(b)) % ((uint64_t)(m)))
+  #define sqrmod(n,m)    (UV)(((uint64_t)(n)*(uint64_t)(n)) % ((uint64_t)(m)))
 
-/* if n is smaller than this, you can multiply without overflow */
-#define HALF_WORD (UVCONST(1) << (BITS_PER_WORD/2))
-
-static UV mulmod(UV a, UV b, UV m) {
-  UV r = 0;
-  while (b > 0) {
-    if (b & 1) {
-      if (r == 0) {
-        r = a;
-      } else {
-        r = m - r;
-        r = (a >= r)  ?  a-r  :  m-r+a;
-      }
-    }
-    a = (a > (m-a))  ?  (a-m)+a  :  a+a;
-    b >>= 1;
-  }
-  return r;
-}
-
-/* n^power mod m */
-static UV powmod(UV n, UV power, UV m) {
-  UV t = 1;
-  if (m < HALF_WORD) {
-    n %= m;
-    while (power) {
-      if (power & 1)
-        t = (t*n)%m;
-      n = (n*n)%m;
-      power >>= 1;
-    }
-  } else {
+  static UV powmod(UV n, UV power, UV m) {
+    UV t = 1;
     while (power) {
       if (power & 1)
         t = mulmod(t, n, m);
-      n = (n < HALF_WORD) ? (n*n)%m : mulmod(n, n, m);
+      n = sqrmod(n, m);
       power >>= 1;
     }
+    return t;
   }
-  return t;
-}
 
-/* n + a mod m */
-static UV addmod(UV n, UV a, UV m) {
-  return ((m-n) > a)  ?  n+a  :  n+a-m;
-}
+#else
 
-/* n^2 mod m */
-#define powsqr(n, m)  (n < HALF_WORD) ? (n*n)%m : mulmod(n,n,m)
+  /* UV is the largest integral type available (that we know of). */
+
+  /* if n is smaller than this, you can multiply without overflow */
+  #define HALF_WORD (UVCONST(1) << (BITS_PER_WORD/2))
+
+  static UV _mulmod(UV a, UV b, UV m) {
+    UV r = 0;
+    while (b > 0) {
+      if (b & 1) {
+        if (r == 0) {
+          r = a;
+        } else {
+          r = m - r;
+          r = (a >= r)  ?  a-r  :  m-r+a;
+        }
+      }
+      a = (a > (m-a))  ?  (a-m)+a  :  a+a;
+      b >>= 1;
+    }
+    return r;
+  }
+
+  #define addmod(n,a,m) ((((m)-(n)) > (a))  ?  ((n)+(a))  :  ((n)+(a)-(m)))
+  #define mulmod(a,b,m) (((a)|(b)) < HALF_WORD) ? ((a)*(b))%(m) : _mulmod(a,b,m)
+  #define sqrmod(n,m)   ((n) < HALF_WORD)       ? ((n)*(n))%(m) : _mulmod(n,n,m)
+
+  /* n^power mod m */
+  static UV powmod(UV n, UV power, UV m) {
+    UV t = 1;
+    if (m < HALF_WORD) {
+      n %= m;
+      while (power) {
+        if (power & 1)
+          t = (t*n)%m;
+        n = (n*n)%m;
+        power >>= 1;
+      }
+    } else {
+      while (power) {
+        if (power & 1)
+          t = mulmod(t, n, m);
+        n = sqrmod(n,m);
+        power >>= 1;
+      }
+    }
+    return t;
+  }
+
+#endif
 
 /* n^power + a mod m */
-#define powmodadd(n, p, a, m)  addmod(powmod(n,p,m),a,m)
+#define powaddmod(n, p, a, m)  addmod(powmod(n,p,m),a,m)
 
 /* n^2 + a mod m */
-#define powsqradd(n, a, m)     addmod(powsqr(n,m), a, m)
+#define sqraddmod(n, a, m)     addmod(sqrmod(n,m),  a,m)
 
 
 /* Miller-Rabin probabilistic primality test
  * Returns 1 if probably prime relative to the bases, 0 if composite.
  * Bases must be between 2 and n-2
  */
-int miller_rabin(UV n, const UV *bases, UV nbases)
+int miller_rabin(UV n, const UV *bases, int nbases)
 {
   int b;
   int s = 0;
   UV d = n-1;
 
-  assert(n > 3);
+  MPUassert(n > 3, "MR called with n <= 3");
 
   while ( (d&1) == 0 ) {
     s++;
@@ -175,7 +185,7 @@ int miller_rabin(UV n, const UV *bases, UV nbases)
     if ( (x == 1) || (x == (n-1)) )  continue;
 
     for (r = 0; r < s; r++) {
-      x = powsqr(x, n);
+      x = sqrmod(x, n);
       if (x == 1) {
         return 0;
       } else if (x == (n-1)) {
@@ -285,7 +295,7 @@ int fermat_factor(UV n, UV *factors, UV rounds)
 {
   IV sqn, x, y, r;
 
-  assert( (n >= 3) && ((n%2) != 0) );
+  MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in fermat_factor");
 
   sqn = sqrt((double) n);
   x = 2 * sqn + 1;
@@ -301,10 +311,10 @@ int fermat_factor(UV n, UV *factors, UV rounds)
     } while (r > 0);
   }
   r = (x-y)/2;
-  if ( (r != 1) && (r != n) ) {
+  if ( (r != 1) && ((UV)r != n) ) {
     factors[0] = r;
     factors[1] = n/r;
-    assert( factors[0] * factors[1] == n );
+    MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
     return 2;
   }
   factors[0] = n;
@@ -318,12 +328,12 @@ int holf_factor(UV n, UV *factors, UV rounds)
 {
   UV i, s, m, f;
 
-  assert( (n >= 3) && ((n%2) != 0) );
+  MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in holf_factor");
 
   for (i = 1; i <= rounds; i++) {
     s = sqrt(n*i);                      /* TODO: overflow here */
     if ( (s*s) != (n*i) )  s++;
-    m = powsqr(s, n);
+    m = sqrmod(s, n);
     /* Cheaper would be:
      *     if (m is probably not a perfect sequare)  continue;
      *     f = sqrt(m);
@@ -339,7 +349,7 @@ int holf_factor(UV n, UV *factors, UV rounds)
         break;
       factors[0] = f;
       factors[1] = n/f;
-      assert( factors[0] * factors[1] == n );
+      MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
       return 2;
     }
   }
@@ -359,7 +369,7 @@ int pbrent_factor(UV n, UV *factors, UV rounds)
   UV Xi = 2;
   UV Xm = 2;
 
-  assert( (n >= 3) && ((n%2) != 0) );
+  MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in pbrent_factor");
 
   switch (n%4) {
     case 0:  a =  1; break;
@@ -370,12 +380,12 @@ int pbrent_factor(UV n, UV *factors, UV rounds)
   }
 
   for (i = 1; i <= rounds; i++) {
-    Xi = powsqradd(Xi, a, n);
+    Xi = sqraddmod(Xi, a, n);
     f = gcd_ui( (Xi>Xm) ? Xi-Xm : Xm-Xi, n);
     if ( (f != 1) && (f != n) ) {
       factors[0] = f;
       factors[1] = n/f;
-      assert( factors[0] * factors[1] == n );
+      MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
       return 2;
     }
     if ( (i & (i-1)) == 0)   /* i is a power of 2 */
@@ -397,7 +407,7 @@ int prho_factor(UV n, UV *factors, UV rounds)
   UV U = 7;
   UV V = 7;
 
-  assert( (n >= 3) && ((n%2) != 0) );
+  MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in prho_factor");
 
   switch (n%4) {
     case 0:  a =  5; break;
@@ -408,9 +418,9 @@ int prho_factor(UV n, UV *factors, UV rounds)
   }
 
   for (i = 1; i <= rounds; i++) {
-    U = powsqradd(U, a, n);
-    V = powsqradd(V, a, n);
-    V = powsqradd(V, a, n);
+    U = sqraddmod(U, a, n);
+    V = sqraddmod(V, a, n);
+    V = sqraddmod(V, a, n);
     f = gcd_ui( (U > V) ? U-V : V-U, n);
     if (f == n) {
       if (in_loop++)     /* Mark that we've been here */
@@ -418,7 +428,7 @@ int prho_factor(UV n, UV *factors, UV rounds)
     } else if (f != 1) {
       factors[0] = f;
       factors[1] = n/f;
-      assert( factors[0] * factors[1] == n );
+      MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
       return 2;
     }
   }
@@ -436,7 +446,7 @@ int pminus1_factor(UV n, UV *factors, UV rounds)
   UV f, i;
   UV kf = 13;
 
-  assert( (n >= 3) && ((n%2) != 0) );
+  MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in pminus1_factor");
 
   for (i = 1; i <= rounds; i++) {
     kf = powmod(kf, i, n);
@@ -445,7 +455,7 @@ int pminus1_factor(UV n, UV *factors, UV rounds)
     if ( (f != 1) && (f != n) ) {
       factors[0] = f;
       factors[1] = n/f;
-      assert( factors[0] * factors[1] == n );
+      MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
       return 2;
     }
   }
@@ -465,13 +475,13 @@ static void enqu(IV q, IV *iter) {
 
 int squfof_factor(UV n, UV *factors, UV rounds)
 {
-  UV rounds2 = rounds/16;
+  IV rounds2 = (IV) (rounds/16);
   UV temp;
   IV iq,ll,l2,p,pnext,q,qlast,r,s,t,i;
   IV jter, iter;
   int reloop;
 
-  assert( (n >= 3) && ((n%2) != 0) );
+  MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in squfof_factor");
 
   /* TODO:  What value of n leads to overflow? */
 
@@ -495,7 +505,7 @@ int squfof_factor(UV n, UV *factors, UV rounds)
   /*  the end of the loop.  Is there a faster way? The current way is     */
   /*  EXPENSIVE! (many branches and double prec sqrt)                     */
 
-  for (jter=0; jter < rounds; jter++) {
+  for (jter=0; (UV)jter < rounds; jter++) {
     iq = (s + p)/q;
     pnext = iq*q - p;
     if (q <= ll) {
@@ -526,7 +536,7 @@ int squfof_factor(UV n, UV *factors, UV rounds)
     break;
   }   /* end of main loop */
 
-  if (jter >= rounds) {
+  if ((UV)jter >= rounds) {
     factors[0] = n;  return 1;
   }
 
@@ -570,7 +580,7 @@ int squfof_factor(UV n, UV *factors, UV rounds)
 
   if ((q & 1) == 0) q/=2;      /* q was factor or 2*factor   */
 
-  if ( (q == 1) || (q == n) ) {
+  if ( (q == 1) || ((UV)q == n) ) {
     factors[0] = n;  return 1;
   }
 
@@ -580,7 +590,7 @@ int squfof_factor(UV n, UV *factors, UV rounds)
 
   factors[0] = p;
   factors[1] = q;
-  assert( factors[0] * factors[1] == n );
+  MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
   return 2;
 }
 
