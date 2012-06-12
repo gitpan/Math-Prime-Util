@@ -20,14 +20,21 @@ prime_precalc(IN UV n)
 void
 prime_memfree()
 
+void
+_prime_memfreeall()
+
 UV
-prime_count(IN UV n)
+prime_count(IN UV low, IN UV high = 0)
   CODE:
+    if (high == 0) {   /* Without a Perl layer in front of this, we'll have */
+      high = low;      /* the pathological case of a-0 turning into 0-a.    */
+      low = 0;
+    }
     if (GIMME_V == G_VOID) {
-      prime_precalc(n);
+      prime_precalc(high);
       RETVAL = 0;
     } else {
-      RETVAL = prime_count(n);
+      RETVAL = prime_count(low, high);
     }
   OUTPUT:
     RETVAL
@@ -140,6 +147,12 @@ segment_primes(IN UV low, IN UV high, IN UV segment_size = 65536UL)
       /* To protect vs. overflow, work entirely with d. */
       low_d  = low  / 30;
       high_d = high / 30;
+
+      {  /* Avoid recalculations of this */
+        UV endp = (high_d >= (UV_MAX/30))  ?  UV_MAX-2  :  30*high_d+29;
+        prime_precalc( sqrt(endp) + 0.1 + 1 );
+      }
+
       while ( low_d <= high_d ) {
         UV seghigh_d = ((high_d - low_d) < segment_size)
                        ? high_d
@@ -148,7 +161,7 @@ segment_primes(IN UV low, IN UV high, IN UV segment_size = 65536UL)
         UV seghigh = (seghigh_d == high_d) ? high : (seghigh_d*30+29);
         UV segbase = low_d * 30;
         /* printf("  startd = %"UVuf"  endd = %"UVuf"\n", startd, endd); */
-  
+
         MPUassert( seghigh_d >= low_d, "segment_primes highd < lowd");
         MPUassert( range_d <= segment_size, "segment_primes range > segment size");
 
@@ -262,9 +275,13 @@ factor(IN UV n)
             /* For sufficiently large n, try more complex methods. */
             /* SQUFOF (succeeds 98-99.9%) */
             split_success = squfof_factor(n, factor_stack+nstack, 256*1024)-1;
-            /* a few rounds of Pollard rho (succeeds most of the rest) */
+            /* A few rounds of Pollard rho (succeeds most of the rest) */
             if (!split_success) {
               split_success = prho_factor(n, factor_stack+nstack, 400)-1;
+            }
+            /* Some rounds of HOLF, good for close to perfect squares */
+            if (!split_success) {
+              split_success = holf_factor(n, factor_stack+nstack, 2000)-1;
             }
           }
           if (split_success) {
@@ -275,13 +292,13 @@ factor(IN UV n)
             /* trial divisions */
             UV f = tlim;
             UV m = tlim % 30;
-            UV limit = sqrt((double) n);
+            UV limit = (UV) (sqrt(n)+0.1);
             while (f <= limit) {
               if ( (n%f) == 0 ) {
                 do {
                   n /= f;  XPUSHs(sv_2mortal(newSVuv( f )));
                 } while ( (n%f) == 0 );
-                limit = sqrt((double) n);
+                limit = (UV) (sqrt(n)+0.1);
               }
               f += wheeladvance30[m];
               m =  nextwheel30[m];
@@ -357,8 +374,8 @@ miller_rabin(IN UV n, ...)
   CODE:
     if (items < 2)
       croak("No bases given to miller_rabin");
-    if ( (n == 0) || (n == 1) ) XSRETURN(0);   /* 0 and 1 are composite */
-    if ( (n == 2) || (n == 3) ) XSRETURN(2);   /* 2 and 3 are prime */
+    if ( (n == 0) || (n == 1) ) XSRETURN_IV(0);   /* 0 and 1 are composite */
+    if ( (n == 2) || (n == 3) ) XSRETURN_IV(2);   /* 2 and 3 are prime */
     while (c < items) {
       int b = 0;
       while (c < items) {
@@ -376,3 +393,12 @@ miller_rabin(IN UV n, ...)
 
 int
 is_prob_prime(IN UV n)
+
+double
+ExponentialIntegral(double x)
+
+double
+LogarithmicIntegral(double x)
+
+double
+RiemannR(double x)

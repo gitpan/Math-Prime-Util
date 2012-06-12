@@ -12,12 +12,16 @@ extern UV  prev_prime(UV x);
 extern UV  prime_count_lower(UV x);
 extern UV  prime_count_upper(UV x);
 extern UV  prime_count_approx(UV x);
-extern UV  prime_count(UV x);
+extern UV  prime_count(UV low, UV high);
 
 extern UV  nth_prime_lower(UV n);
 extern UV  nth_prime_upper(UV x);
 extern UV  nth_prime_approx(UV x);
 extern UV  nth_prime(UV x);
+
+extern double ExponentialIntegral(double x);
+extern double LogarithmicIntegral(double x);
+extern double RiemannR(double x);
 
 #define SEGMENT_CHUNK_SIZE  UVCONST(262144)
 extern unsigned char* get_prime_segment(void);

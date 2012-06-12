@@ -9,14 +9,18 @@
 
 - Add test to check maxbits in compiled library vs. Perl
 
-- Li(n)
-
 - Pure perl implementations
 
 - input validation (in XS, or do we need to make Perl wrappers for everything?)
 
 - Faster SQUFOF
 
-- nth_prime bounds are < in the code, but <= in the documentation.
-
 - speed up random_prime for large numbers
+
+- better prime count upper/lower bounds
+
+- Thread-safety.  Change all uses of sieve and segment to include a free call.
+  For segment we can:
+     1) mutex  (holy slowdown, batman)
+     2) use one cache, and malloc/free if the cache isn't available.
+  For sieve I think we'll need a counting semaphore.

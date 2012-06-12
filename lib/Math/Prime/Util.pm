@@ -5,7 +5,7 @@ use Carp qw/croak confess/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.04';
+  $Math::Prime::Util::VERSION = '0.05';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -20,6 +20,7 @@ our @EXPORT_OK = qw(
                      nth_prime nth_prime_lower nth_prime_upper nth_prime_approx
                      random_prime random_ndigit_prime
                      factor
+                     ExponentialIntegral LogarithmicIntegral RiemannR
                    );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
 
@@ -33,6 +34,9 @@ BEGIN {
     # We could insert a Pure Perl implementation here.
     croak "XS Code not available: $@";
   }
+}
+END {
+  _prime_memfreeall;
 }
 
 
@@ -123,23 +127,31 @@ sub random_prime {
   my $range = $high - $low + 1;
   my $prime;
 
+  # Note:  I was using rand($range), but Math::Random::MT ignores the argument
+  #        instead of following its documentation.
+  my $irandf = (exists &::rand) ? sub { return int(::rand()*shift); }
+                                : sub { return int(rand()*shift); };
+
   if ($high < 30000) {
     # nice deterministic solution, but gets very costly with large values.
     my $li = ($low == 2) ? 1 : prime_count($low);
     my $hi = prime_count($high);
     my $irange = $hi - $li + 1;
-    my $rand = int(rand($irange));
+    my $rand = $irandf->($irange);
     $prime = nth_prime($li + $rand);
   } else {
     # random loop
+    my $loop_limit = 2000 * 1000;  # To protect against broken rand
     if ($range <= 4294967295) {
       do {
-        $prime = $low + int(rand($range));
+        $prime = $low + $irandf->($range);
+        croak "Random function broken?" if $loop_limit-- < 0;
       }  while ( !($prime%2) || !($prime%3) || !is_prime($prime) );
     } else {
       do {
-        my $rand = ( (int(rand(4294967295)) << 32) + int(rand(4294967295)) ) % $range;
+        my $rand = ( ($irandf->(4294967295) << 32) + $irandf->(4294967295) ) % $range;
         $prime = $low + $rand;
+        croak "Random function broken?" if $loop_limit-- < 0;
       }  while ( !($prime%2) || !($prime%3) || !is_prime($prime) );
     }
   }
@@ -231,7 +243,8 @@ Version 0.04
 
 
   # Return Pi(n) -- the number of primes E<lt>= n.
-  my $number_of_primes = prime_count( 1_000_000 );
+  $primepi = prime_count( 1_000_000 );
+  $primepi = prime_count( 10**14, 10**14+1000 );  # also does ranges
 
   # Quickly return an approximation to Pi(n)
   my $approx_number_of_primes = prime_count_approx( 10**17 );
@@ -326,8 +339,9 @@ using wheel factorization, or a segmented sieve.
   $n = next_prime($n);
 
 Returns the next prime greater than the input number.  0 is returned if the
-next prime is larger than a native integer type (the last primes being
-C<4,294,967,291> in 32-bit Perl and C<18,446,744,073,709,551,557> in 64-bit).
+next prime is larger than a native integer type (the last representable
+primes being C<4,294,967,291> in 32-bit Perl and
+C<18,446,744,073,709,551,557> in 64-bit).
 
 
 =head2 prev_prime
@@ -340,16 +354,27 @@ input is C<2> or lower.
 
 =head2 prime_count
 
-  my $number_of_primes = prime_count( 1_000 );
+  my $primepi = prime_count( 1_000 );
+  my $pirange = prime_count( 1_000, 10_000 );
 
-Returns the Prime Count function C<Pi(n)>.  The current implementation relies
-on sieving to find the primes within the interval, so will take some time and
-memory.  It uses a segmented sieve if the primary sieve is not large enough,
-so is very memory efficient.  However, time growth is slightly more than
-linear with C<n>, so it can take a very long time.  A hybrid table approach
-is the usual means taken to speed this up, which a later version may do.  For
-very large inputs the methods of Meissel, Lehmer, or
-Lagarias-Miller-Odlyzko-Deleglise-Rivat may be appropriate.
+Returns the Prime Count function C<Pi(n)>, also called C<primepi> in some
+math packages.  When given two arguments, it returns the inclusive
+count of primes between the ranges (e.g. C<(13,17)> returns 2, C<14,17>
+and C<13,16> return 1, and C<14,16> returns 0).
+
+The current implementation relies on sieving to find the primes within the
+interval, so will take some time and memory.  It uses a segmented sieve so
+is very memory efficient, and also allows fast results even with large
+base values.  The complexity for C<prime_count(a, b)> is approximately
+C<O(sqrt(a) + (b-a))>, where the first term is typically negligible below
+C<~ 10^11>.  Memory use is proportional only to C<sqrt(a)>, with total
+memory use under 1MB for any base under C<10^14>.
+
+A later implementation may work on improving performance for values, both
+in reducing memory use (the current maximum is 140MB at C<2^64>) and improving
+speed.  Possibilities include a hybrid table approach, using an explicit
+formula with C<li(x)> or C<R(x)>, or one of the Meissel, Lehmer,
+or Lagarias-Miller-Odlyzko-Deleglise-Rivat methods.
 
 
 =head2 prime_count_upper
@@ -370,8 +395,8 @@ A common place these would be used is sizing an array to hold the first C<$n>
 primes.  It may be desirable to use a bit more memory than is necessary, to
 avoid calling C<prime_count>.
 
-These routines use hand-verified tight limits below a range at least C<2^32>,
-and fall back to the proven Dusart bounds of
+These routines use hand-verified tight limits below a range at least C<2^35>,
+and fall back to the Dusart bounds of
 
     x/logx * (1 + 1/logx + 1.80/log^2x) <= Pi(x)
 
@@ -387,10 +412,10 @@ above that range.
         " primes below one quintillion.\n";
 
 Returns an approximation to the C<prime_count> function, without having to
-generate any primes.  The results are very close for small numbers, but less
-so with large ranges.  The current implementation is 0.00033% too small
-for the example, but takes under a microsecond and no memory to get the
-result.
+generate any primes.  The current implementation uses the Riemann R function
+which is quite accurate: an error of less than C<0.0005%> is typical for
+input values over C<2^32>.  A slightly faster (0.1ms vs. 1ms), but much less
+accurate, answer can be obtained by averaging the upper and lower bounds.
 
 
 =head2 nth_prime
@@ -491,6 +516,16 @@ L<Crypt::Primes> or something similar.  The current L<Math::Prime::Util>
 module does not use strong randomness, and its primes are ridiculously small
 by cryptographic standards.
 
+Perl's L<rand> function is normally called, but if the sub C<main::rand>
+exists, it will be used instead.  When called with no arguments it should
+return a float value between 0 and 1-epsilon, with 32 bits of randomness.
+Examples:
+
+  # Use Mersenne Twister
+  use Math::Random::MT::Auto qw/rand/;
+
+  # Use my custom random function
+  sub rand { ... }
 
 =head2 random_ndigit_prime
 
@@ -618,6 +653,46 @@ input value.  On some inputs they will take a very long time, while on
 others they succeed in a remarkably short time.
 
 
+
+=head1 MATHEMATICAL FUNCTIONS
+
+=head2 ExponentialIntegral
+
+  my $Ei = ExponentialIntegral($x);
+
+Given a non-zero floating point input C<x>, this returns the exponential integral
+of C<x>, defined as the integral of C<e^t/t dt> from C<-infinity> to C<x>.
+Depending on the input, the integral
+is calculated using continued fractions (negative C<x>), a convergent series
+(small positive C<x>), or an asymptotic divergent series (large positive C<x>).
+This function only considers the real part.
+
+=head2 LogarithmicIntegral
+
+  my $li = LogarithmicIntegral($x)
+
+Given a positive floating point input, returns the floating point logarithmic
+integral of C<x>, defined as the integral of C<dt/ln t> from C<0> to C<x>.
+If given a negative input, the function will croak.  The function returns
+0 at C<x = 0>, and C<-infinity> at C<x = 1>.
+
+This is often known as C<li(x)>.  A related function is the offset logarithmic
+integral, sometimes known as C<Li(x)> which avoids the singularity at 1.  It
+may be defined as C<Li(x) = li(x) - li(2)>.
+
+This function is implemented as C<li(x) = Ei(ln x)> after handling special
+values.
+
+=head2 RiemannR
+
+  my $r = RiemannR($x);
+
+Given a positive non-zero floating point input, returns the floating
+point value of Riemann's R function.  Riemann's R function gives a very close
+approximation to the prime counting function.
+
+
+
 =head1 LIMITATIONS
 
 I have not completed testing all the functions near the word size limit
@@ -630,6 +705,11 @@ Perl versions earlier than 5.8.0 have issues with 64-bit.  The test suite will
 try to determine if your Perl is broken.  This will show up in factoring tests.
 Perl 5.6.2 32-bit works fine, as do later versions with 32-bit and 64-bit.
 
+Because static caches are used, many functions are not threadsafe.  If you
+use C<prime_precalc> and all calls have inputs smaller than that number,
+then only C<nth_prime> is problematic.  This will be addressed in a later
+implementation.
+
 
 =head1 PERFORMANCE
 
@@ -637,6 +717,7 @@ Counting the primes to C<10^10> (10 billion), with time in seconds.
 Pi(10^10) = 455,052,511.
 
        1.9  primesieve 3.6 forced to use only a single thread
+       2.2  yafu 1.31
        5.6  Tomás Oliveira e Silva's segmented sieve v2 (Sep 2010)
        6.6  primegen (optimized Sieve of Atkin)
       11.2  Tomás Oliveira e Silva's segmented sieve v1 (May 2003)

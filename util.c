@@ -1,8 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 #include <math.h>
+
+/* It took until C99 to get this macro */
+#ifndef INFINITY
+#define INFINITY (DBL_MAX + DBL_MAX)
+#endif
 
 #include "util.h"
 #include "sieve.h"
@@ -238,6 +242,109 @@ UV prev_prime(UV n)
 
 
 
+/* Given a sieve of size nbytes, walk it counting zeros (primes) until:
+ *
+ * (1) we counted them all: return the count, which will be less than maxcount.
+ *
+ * (2) we hit maxcount: set position to the index of the maxcount'th prime
+ *     and return count (which will be equal to maxcount).
+ */
+static UV count_segment_maxcount(const unsigned char* sieve, UV nbytes, UV maxcount, UV* pos)
+{
+  UV count = 0;
+  UV byte = 0;
+
+  MPUassert(sieve != 0, "count_segment_maxcount incorrect args");
+  MPUassert(pos != 0, "count_segment_maxcount incorrect args");
+  *pos = 0;
+  if ( (nbytes == 0) || (maxcount == 0) )
+    return 0;
+
+  while ( (byte < nbytes) && (count < maxcount) )
+    count += byte_zeros[sieve[byte++]];
+
+  if (count >= maxcount) { /* One too far -- back up */
+    count -= byte_zeros[sieve[--byte]];
+  }
+
+  MPUassert(count < maxcount, "count_segment_maxcount wrong count");
+
+  if (byte == nbytes)
+    return count;
+
+  /* The result is somewhere in the next byte */
+  START_DO_FOR_EACH_SIEVE_PRIME(sieve, byte*30+1, nbytes*30-1)
+    if (++count == maxcount)  { *pos = p; return count; }
+  END_DO_FOR_EACH_SIEVE_PRIME;
+
+  MPUassert(0, "count_segment_maxcount failure");
+  return 0;
+}
+
+/* Given a sieve of size nbytes, counting zeros (primes) but excluding the
+ * areas outside lowp and highp.
+ */
+static UV count_segment_ranged(const unsigned char* sieve, UV nbytes, UV lowp, UV highp)
+{
+  UV count = 0;
+
+  UV lo_d = lowp/30;
+  UV lo_m = lowp - lo_d*30;
+  UV hi_d = highp/30;
+  UV hi_m = highp - hi_d*30;
+
+  MPUassert( sieve != 0, "count_segment_maxcount incorrect args");
+
+  if (hi_d >= nbytes) {
+    hi_d = nbytes-1;
+    highp = hi_d*30+29;
+  }
+
+  if ( (nbytes == 0) || (highp < lowp) )
+    return 0;
+
+#if 0
+  /* Dead simple way */
+  START_DO_FOR_EACH_SIEVE_PRIME(sieve, lowp, highp)
+    count++;
+  END_DO_FOR_EACH_SIEVE_PRIME;
+  return count;
+#endif
+
+  /* Count first fragment */
+  if (lo_m > 1) {
+    UV upper = (highp <= (lo_d*30+29)) ? highp : (lo_d*30+29);
+    START_DO_FOR_EACH_SIEVE_PRIME(sieve, lowp, upper)
+      count++;
+    END_DO_FOR_EACH_SIEVE_PRIME;
+    lowp = upper+2;
+    lo_d = lowp/30;
+    lo_m = lowp - lo_d*30;
+  }
+  if (highp < lowp)
+    return count;
+
+  /* Count bytes in the middle */
+  {
+    UV count_bytes = hi_d - lo_d + (hi_m == 29);
+    if (count_bytes > 0) {
+      count += count_zero_bits(sieve+lo_d, count_bytes);
+      lowp += 30*count_bytes;
+      lo_d = lowp/30;
+      lo_m = lowp - lo_d*30;
+    }
+  }
+  if (highp < lowp)
+    return count;
+
+  /* Count last fragment */
+  START_DO_FOR_EACH_SIEVE_PRIME(sieve, lowp, highp)
+    count++;
+  END_DO_FOR_EACH_SIEVE_PRIME;
+
+  return count;
+}
+
 
 /*
  * The pi(x) prime count functions.  prime_count(x) gives an exact number,
@@ -285,7 +392,7 @@ static const double F1 = 1.0;
 UV prime_count_lower(UV x)
 {
   double fx, flogx;
-  double a = 1.80;
+  double a = 1.80;     /* Dusart 1999, page 14 */
 
   if (x < NPRIME_COUNT_SMALL)
     return prime_count_small[x];
@@ -296,17 +403,21 @@ UV prime_count_lower(UV x)
   if (x < 599)
     return (UV) (fx / (flogx-0.7));
 
-  if      (x <     2700) {  a = 0.30; }
-  else if (x <     5500) {  a = 0.90; }
-  else if (x <    19400) {  a = 1.30; }
-  else if (x <    32299) {  a = 1.60; }
-  else if (x <   176000) {  a = 1.80; }
-  else if (x <   315000) {  a = 2.10; }
-  else if (x <  1100000) {  a = 2.20; }
-  else if (x <  4500000) {  a = 2.31; }
-  else if (x <233000000) {  a = 2.36; }
-  else if (x <240000000) {  a = 2.32; }
-  else if (x <UVCONST(0xFFFFFFFF)) {  a = 2.32; }
+  if      (x <     2700)  { a = 0.30; }
+  else if (x <     5500)  { a = 0.90; }
+  else if (x <    19400)  { a = 1.30; }
+  else if (x <    32299)  { a = 1.60; }
+  else if (x <   176000)  { a = 1.80; }
+  else if (x <   315000)  { a = 2.10; }
+  else if (x <  1100000)  { a = 2.20; }
+  else if (x <  4500000)  { a = 2.31; }
+  else if (x <233000000)  { a = 2.36; }
+#if BITS_PER_WORD == 32
+  else a = 2.32;
+#else
+  else if (x < UVCONST( 5433800000)) { a = 2.32; }
+  else if (x < UVCONST(60000000000)) { a = 2.15; }
+#endif
 
   return (UV) ( (fx/flogx) * (F1 + F1/flogx + a/(flogx*flogx)) );
 }
@@ -315,7 +426,7 @@ UV prime_count_lower(UV x)
 UV prime_count_upper(UV x)
 {
   double fx, flogx;
-  double a = 2.51;
+  double a = 2.51;    /* Dusart 1999, page 14 */
 
   if (x < NPRIME_COUNT_SMALL)
     return prime_count_small[x];
@@ -352,7 +463,11 @@ UV prime_count_upper(UV x)
   else if (x <400000000) {  a = 2.375; }
   else if (x <510000000) {  a = 2.370; }
   else if (x <682000000) {  a = 2.367; }
-  else if (x <UVCONST(0xFFFFFFFF)) {  a = 2.362; }
+#if BITS_PER_WORD == 32
+  else a = 2.362;
+#else
+  else if (x < UVCONST(60000000000)) { a = 2.362; }
+#endif
 
   /*
    * An alternate idea:
@@ -378,85 +493,94 @@ UV prime_count_upper(UV x)
 
 UV prime_count_approx(UV x)
 {
-  /* Placeholder for fancy algorithms, like Tomás Oliveira e Silva's:
+  /*
+   * A simple way:
+   *     return ((prime_count_lower(x) + prime_count_upper(x)) / 2);
+   * With the current bounds, this is ~131k at 10^10 and 436B at 10^19.
+   *
+   * The logarithmic integral works quite well, with absolute errors of
+   * ~3100 at 10^10 and ~100M at 10^19.
+   *
+   * Riemann's R function works astoundingly well, with errors of ~1828
+   * at 10^10 and 24M at 10^19.
+   *
+   * Getting fancier, one try using Riemann's pi formula:
    *     http://trac.sagemath.org/sage_trac/ticket/8135
-   * or an approximation to Li(x) plus a delta.
    */
-  UV lower = prime_count_lower(x);
-  UV upper = prime_count_upper(x);
-  return ((lower + upper) / 2);
+  double R;
+  if (x < NPRIME_COUNT_SMALL)
+    return prime_count_small[x];
+
+  R = RiemannR(x);
+  /* We could add the additional factor:
+   *   R = R - (1.0 / log(x)) + (M_1_PI * atan(M_PI/log(x)))
+   * but it's extraordinarily small, so not worth calculating here.
+   */
+  return (UV)(R+0.5);
 }
 
 
-UV prime_count(UV n)
+UV prime_count(UV low, UV high)
 {
-  const unsigned char* sieve;
-  static UV last_bytes = 0;
-  static UV last_count = 3;
-  UV s, bytes;
-  UV count = 3;
+  const unsigned char* cache_sieve;
+  unsigned char* segment;
+  UV segment_size, low_d, high_d;
+  UV count = 0;
 
-  if (n < NPRIME_COUNT_SMALL)
-    return prime_count_small[n];
+  if ( (low <= 2) && (high < NPRIME_COUNT_SMALL) )
+    return prime_count_small[high];
 
-  bytes = n/30;
-  s = 0;
+  if ((low <= 2) && (high >= 2)) count++;
+  if ((low <= 3) && (high >= 3)) count++;
+  if ((low <= 5) && (high >= 5)) count++;
+  if (low < 7)  low = 7;
 
-  if (n <= get_prime_cache(0, &sieve)) {
+  if (low > high)  return count;
 
-    /* We have enough primes -- just count them. */
+  low_d = low/30;
+  high_d = high/30;
 
-    /* Start from last word position if we can.  This is a big speedup when
-     * calling prime_count many times with successively larger numbers. */
-    if (bytes >= last_bytes) {
-      s = last_bytes;
-      count = last_count;
+  /* Count full bytes only -- no fragments from primary cache */
+  segment_size = get_prime_cache(0, &cache_sieve) / 30;
+  if (segment_size < high_d) {
+    /* Expand sieve to sqrt(n) */
+    UV endp = (high_d >= (UV_MAX/30))  ?  UV_MAX-2  :  30*high_d+29;
+    segment_size = get_prime_cache( sqrt(endp) + 1 , &cache_sieve) / 30;
+  }
+
+  if (low_d <= segment_size) {
+    /* Count all the primes in the primary cache in our range */
+    count += count_segment_ranged(cache_sieve, segment_size, low, high);
+
+    if (high_d <= segment_size)
+      return count;
+
+    low_d = segment_size;
+  }
+
+  /* More primes needed.  Repeatedly segment sieve */
+  segment_size = SEGMENT_CHUNK_SIZE;
+  segment = get_prime_segment();
+  if (segment == 0)
+    return 0;
+
+  while (low_d <= high_d)
+  {
+    UV seghigh_d = ((high_d - low_d) < segment_size)
+                   ? high_d
+                   : (low_d + segment_size-1);
+    UV range_d = seghigh_d - low_d + 1;
+    UV seglow  = (low_d*30 < low) ? low : low_d*30;
+    UV seghigh = (seghigh_d == high_d) ? high : (seghigh_d*30+29);
+
+    if (sieve_segment(segment, low_d, seghigh_d) == 0) {
+      croak("Could not segment sieve from %"UVuf" to %"UVuf, low_d*30+1, 30*seghigh_d+29);
+      break;
     }
 
-    count += count_zero_bits(sieve+s, bytes-s);
+    count += count_segment_ranged(segment, segment_size, seglow - low_d*30, seghigh - low_d*30);
 
-    last_bytes = bytes;
-    last_count = count;
-
-    START_DO_FOR_EACH_SIEVE_PRIME(sieve, 30*bytes, n)
-      count++;
-    END_DO_FOR_EACH_SIEVE_PRIME;
-
-  } else {
-
-    /* We don't have enough primes.  Repeatedly segment sieve */
-    UV const segment_size = SEGMENT_CHUNK_SIZE;
-    unsigned char* segment;
-
-    /* Get this over with once */
-    prime_precalc( sqrt(n) + 2 );
-
-    segment = get_prime_segment();
-    if (segment == 0)
-      return 0;
-
-    for (s = 0; s <= bytes; s += segment_size) {
-      /* We want to sieve one extra byte, to handle the last fragment */
-      UV sieve_bytes = ((bytes-s) >= segment_size) ? segment_size : bytes-s+1;
-      UV count_bytes = ((bytes-s) >= segment_size) ? segment_size : bytes-s;
-
-      /* printf("sieving from %"UVuf" to %"UVuf"\n", 30*s+1, 30*(s+sieve_bytes-1)+29); */
-      if (sieve_segment(segment, s, s + sieve_bytes - 1) == 0) {
-        croak("Could not segment sieve from %"UVuf" to %"UVuf, 30*s+1, 30*(s+sieve_bytes)+29);
-        break;
-      }
-
-      if (count_bytes > 0)
-        count += count_zero_bits(segment, count_bytes);
-
-    }
-    s -= segment_size;
-
-    /*printf("counting fragment from %"UVuf" to %"UVuf"\n", 30*bytes-30*s, n-30*s); */
-    START_DO_FOR_EACH_SIEVE_PRIME(segment, 30*bytes - s*30, n - s*30)
-      count++;
-    END_DO_FOR_EACH_SIEVE_PRIME;
-
+    low_d += range_d;
   }
 
   return count;
@@ -472,42 +596,49 @@ static const unsigned short primes_small[] =
    409,419,421,431,433,439,443,449,457,461,463,467,479,487,491,499};
 #define NPRIMES_SMALL (sizeof(primes_small)/sizeof(primes_small[0]))
 
-/* The nth prime will be more than this number */
+/* The nth prime will be greater than or equal to this number */
 UV nth_prime_lower(UV n)
 {
   double fn = (double) n;
   double flogn, flog2n, lower;
 
   if (n < NPRIMES_SMALL)
-    return (n==0) ? 0 : primes_small[n]-1;
+    return (n==0) ? 0 : primes_small[n];
 
   flogn  = log(n);
-  flog2n = log(flogn);
+  flog2n = log(flogn);    /* Note distinction between log_2(n) and log^2(n) */
 
-  /* Dusart 1999, for all n >= 2 */
+  /* Dusart 1999 page 14, for all n >= 2 */
   lower = fn * (flogn + flog2n - 1.0 + ((flog2n-2.25)/flogn));
 
-  if (lower > (double)UV_MAX)
-    return 0;
+  /* Watch out for overflow */
+  if (lower >= (double)UV_MAX) {
+#if BITS_PER_WORD == 32
+    if (n <= UVCONST(203280221)) return UVCONST(4294967291);
+#else
+    if (n <= UVCONST(425656284035217743)) return UVCONST(18446744073709551557);
+#endif
+    croak("nth_prime_lower(%"UVuf") overflow", n);
+  }
 
   return (UV) lower;
 }
 
 
-/* The nth prime will be less than this number */
+/* The nth prime will be less or equal to this number */
 UV nth_prime_upper(UV n)
 {
   double fn = (double) n;
   double flogn, flog2n, upper;
 
   if (n < NPRIMES_SMALL)
-    return primes_small[n]+1;
+    return primes_small[n];
 
   flogn  = log(n);
-  flog2n = log(flogn);
+  flog2n = log(flogn);    /* Note distinction between log_2(n) and log^2(n) */
 
   if (n >= 39017)
-    upper = fn * ( flogn  +  flog2n - 0.9484 ); /* Dusart 1999 */
+    upper = fn * ( flogn  +  flog2n - 0.9484 ); /* Dusart 1999 page 14*/
   else if (n >= 27076)
     upper = fn * (flogn + flog2n - 1.0 + ((flog2n-1.80)/flogn)); /*Dusart 1999*/
   else if (n >= 7022)
@@ -515,9 +646,15 @@ UV nth_prime_upper(UV n)
   else
     upper = fn * ( flogn + flog2n );
 
-  /* Special case to not overflow any 32-bit */
-  if (upper > (double)UV_MAX)
-    return (n <= UVCONST(203280221))  ?  UVCONST(4294967292)  :  0;
+  /* Watch out for  overflow */
+  if (upper >= (double)UV_MAX) {
+#if BITS_PER_WORD == 32
+    if (n <= UVCONST(203280221)) return UVCONST(4294967291);
+#else
+    if (n <= UVCONST(425656284035217743)) return UVCONST(18446744073709551557);
+#endif
+    croak("nth_prime_upper(%"UVuf") overflow", n);
+  }
 
   return (UV) ceil(upper);
 }
@@ -537,19 +674,25 @@ UV nth_prime_approx(UV n)
   fn = (double) n;
   flogn = log(n);
   flog2n = log(flogn);
- 
+
   /* Cipolla 1902:
    *    m=0   fn * ( flogn + flog2n - 1 );
    *    m=1   + ((flog2n - 2)/flogn) );
    *    m=2   - (((flog2n*flog2n) - 6*flog2n + 11) / (2*flogn*flogn))
    *    + O((flog2n/flogn)^3)
+   *
+   * Shown in Dusart 1999 page 12, as well as other sources such as:
+   *   http://www.emis.de/journals/JIPAM/images/153_02_JIPAM/153_02.pdf
+   * where the main issue you run into is that you're doing polynomial
+   * interpolation, so it oscillates like crazy with many high-order terms.
+   * Hence I'm leaving it at m=2.
    */
   approx = fn * ( flogn + flog2n - 1
                   + ((flog2n - 2)/flogn)
                   - (((flog2n*flog2n) - 6*flog2n + 11) / (2*flogn*flogn))
                 );
 
-  /* Apply a correction to help keep small inputs close. */
+  /* Apply a correction to help keep values close */
   order = flog2n/flogn;
   order = order*order*order * fn;
 
@@ -560,53 +703,31 @@ UV nth_prime_approx(UV n)
   else if (n <  4000) approx += 4.3 * order;
   else if (n < 12000) approx += 3.0 * order;
   else if (n <150000) approx += 2.1 * order;
+  else if (n <200000000) approx += 0.0 * order;
+  else                approx += -0.010 * order; /* -0.025 is better */
 
-  if (approx > (double)UV_MAX)
-    return 0;
+  /* For all three analytical functions, it is possible that for a given valid
+   * input, we will not be able to return an output that fits in the UV type.
+   * For example, if they ask for the 203280222nd prime, we should return
+   * 4294967311.  But in 32-bit, that overflows.  What we do is calculate our
+   * double precision value.  If that would overflow, then we look at the input
+   * and if it is <= the index of the last representable prime, then we return
+   * the last representable prime.  Otherwise, we croak an overflow message.
+   * This should maintain the invariant:
+   *    nth_prime_lower(n)  <=  nth_prime(n)  <=  nth_prime_upper(n)
+   */
+  if (approx >= (double)UV_MAX) {
+#if BITS_PER_WORD == 32
+    if (n <= UVCONST(203280221)) return UVCONST(4294967291);
+#else
+    if (n <= UVCONST(425656284035217743)) return UVCONST(18446744073709551557);
+#endif
+    croak("nth_prime_approx(%"UVuf") overflow", n);
+  }
 
   return (UV) (approx + 0.5);
 }
 
-
-/*
- * Given a sieve of size nbytes, walk it counting zeros (primes) until:
- *
- * (1) we counted them all: return the count, which will be less than maxcount.
- *
- * (2) we hit maxcount: set position to the index of the maxcount'th prime
- *     and return count (which will be equal to maxcount).
- */
-static UV count_segment(const unsigned char* sieve, UV nbytes, UV maxcount, UV* pos)
-{
-  UV count = 0;
-  UV byte = 0;
-
-  MPUassert(sieve != 0, "count_segment incorrect args");
-  MPUassert(pos != 0, "count_segment incorrect args");
-  *pos = 0;
-  if ( (nbytes == 0) || (maxcount == 0) )
-    return 0;
-
-  while ( (byte < nbytes) && (count < maxcount) )
-    count += byte_zeros[sieve[byte++]];
-
-  if (count >= maxcount) { /* One too far -- back up */
-    count -= byte_zeros[sieve[--byte]];
-  }
-
-  MPUassert(count < maxcount, "count_segment wrong count");
-
-  if (byte == nbytes)
-    return count;
-
-  /* The result is somewhere in the next byte */
-  START_DO_FOR_EACH_SIEVE_PRIME(sieve, byte*30+1, nbytes*30-1)
-    if (++count == maxcount)  { *pos = p; return count; }
-  END_DO_FOR_EACH_SIEVE_PRIME;
-
-  MPUassert(0, "count_segment failure");
-  return 0;
-}
 
 UV nth_prime(UV n)
 {
@@ -623,10 +744,7 @@ UV nth_prime(UV n)
 
   /* Determine a bound on the nth prime.  We know it comes before this. */
   upper_limit = nth_prime_upper(n);
-  if (upper_limit == 0) {
-    croak("nth_prime(%"UVuf") would overflow", n);
-    return 0;
-  }
+  MPUassert(upper_limit > 0, "nth_prime got an upper limit of 0");
 
   /* Get the primary cache, and ensure it is at least this large.  If the
    * input is small enough, get a sieve covering the range.  Otherwise, we'll
@@ -639,7 +757,7 @@ UV nth_prime(UV n)
     segment_size = get_prime_cache(sqrt(upper_limit), &cache_sieve) / 30;
 
   /* Count up everything in the cached sieve. */
-  count += count_segment(cache_sieve, segment_size, target, &p);
+  count += count_segment_maxcount(cache_sieve, segment_size, target, &p);
   if (count == target)
     return p;
 
@@ -662,11 +780,216 @@ UV nth_prime(UV n)
     }
 
     /* Count up everything in this segment */
-    count += count_segment(segment, segment_size, target-count, &p);
+    count += count_segment_maxcount(segment, segment_size, target-count, &p);
 
     if (count < target)
       segbase += segment_size;
   }
   MPUassert(count == target, "nth_prime got incorrect count");
   return ( (segbase*30) + p );
+}
+
+
+
+
+/*
+ * See:
+ *  "Multiple-Precision Exponential Integral and Related Functions"
+ *      by David M. Smith, and
+ *  "On the Evaluation of the Complex-Valued Exponential Integral"
+ *      by Vincent Pegoraro and Philipp Slusallek
+ *  "Numerical Recipes" 3rd edition
+ *      by William H. Press et al.
+ *
+ * Any mistakes here are completely my fault.  This code has not been
+ * verified for anything serious.  For better reulsts, see:
+ *    http://www.trnicely.net/pi/pix_0000.htm
+ * which although the author claims are demonstration programs, will
+ * produce more usable results than this code does.
+ */
+
+static double const euler_mascheroni = 0.57721566490153286060651209008240243104215933593992;
+static double const li2 = 1.045163780117492784844588889194613136522615578151;
+
+double ExponentialIntegral(double x) {
+  double const tol = 0.0000000001;
+  double val, term, fact_n;
+  double y, t;
+  double sum = 0.0;
+  double c = 0.0;
+  int n;
+
+  if (x == 0) croak("Invalid input to ExponentialIntegral:  x must be != 0");
+
+  if (x < 0) {
+    /* continued fraction */
+    double old;
+    double lc = 0;
+    double ld = 1 / (1 - x);
+    val = ld * (-exp(x));
+    for (n = 1; n <= 2000; n++) {
+      lc = 1 / (2*n + 1 - x - n*n*lc);
+      ld = 1 / (2*n + 1 - x - n*n*ld);
+      old = val;
+      val *= ld/lc;
+      if ( fabs(val-old) <= tol*fabs(val) )
+        break;
+    }
+  } else if (x < -log(tol)) {
+    /* Convergent series */
+    fact_n = 1;
+
+    y = euler_mascheroni-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+    y = log(x)-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+
+    for (n = 1; n <= 100; n++) {
+      fact_n *= x/n;
+      term = fact_n/n;
+      y = term-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+      /* printf("C  after adding %.8lf, val = %.8lf\n", term, sum); */
+      if (term < tol) break;
+    }
+    val = sum;
+  } else {
+    /* Asymptotic divergent series */
+    double last_term;
+
+    val = exp(x) / x;
+    term = 1.0;
+    y = 1.0-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+
+    for (n = 1; n <= 100; n++) {
+      last_term = term;
+      term *= n/x;
+      if (term < (tol/val)) break;
+      if (term < last_term) {
+        y = term-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+        /* printf("A  after adding %.8lf, sum = %.8lf\n", term, sum); */
+      } else {
+        y = (-last_term/3)-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+        /* printf("A  after adding %.8lf, sum = %.8lf\n", -last_term/3, sum); */
+        break;
+      }
+    }
+    val *= sum;
+  }
+
+  return val;
+}
+
+double LogarithmicIntegral(double x) {
+  if (x == 0) return 0;
+  if (x == 1) return -INFINITY;
+  if (x == 2) return li2;
+  if (x <= 0) croak("Invalid input to ExponentialIntegral:  x must be > 0");
+  return ExponentialIntegral(log(x));
+}
+
+/*
+ * Storing the first 10-20 Zeta values makes sense.  Past that it is purely
+ * to avoid making the call to generate them ourselves.  We could cache the
+ * calculated values. */
+static const double riemann_zeta_table[] = {
+  1.6449340668482264364724151666460251892,  /* zeta(2) */
+  1.2020569031595942853997381615114499908,
+  1.0823232337111381915160036965411679028,
+  1.0369277551433699263313654864570341681,
+  1.0173430619844491397145179297909205279,
+  1.0083492773819228268397975498497967596,
+  1.0040773561979443393786852385086524653,
+  1.0020083928260822144178527692324120605,
+  1.0009945751278180853371459589003190170,
+  1.0004941886041194645587022825264699365,
+  1.0002460865533080482986379980477396710,
+  1.0001227133475784891467518365263573957,
+  1.0000612481350587048292585451051353337,
+  1.0000305882363070204935517285106450626,
+  1.0000152822594086518717325714876367220,
+  1.0000076371976378997622736002935630292,  /* zeta(17)  Past here all we're */
+  1.0000038172932649998398564616446219397,  /* zeta(18)  getting is speed.   */
+  1.0000019082127165539389256569577951013,
+  1.0000009539620338727961131520386834493,
+  1.0000004769329867878064631167196043730,
+  1.0000002384505027277329900036481867530,
+  1.0000001192199259653110730677887188823,
+  1.0000000596081890512594796124402079358,
+  1.0000000298035035146522801860637050694,
+  1.0000000149015548283650412346585066307,
+  1.0000000074507117898354294919810041706,
+  1.0000000037253340247884570548192040184,
+  1.0000000018626597235130490064039099454,
+  1.0000000009313274324196681828717647350,
+  1.0000000004656629065033784072989233251,
+  1.0000000002328311833676505492001455976,
+  1.0000000001164155017270051977592973835,
+  1.0000000000582077208790270088924368599,
+  1.0000000000291038504449709968692942523,
+  1.0000000000145519218910419842359296322,
+  1.0000000000072759598350574810145208690,
+  1.0000000000036379795473786511902372363,
+  1.0000000000018189896503070659475848321,
+  1.0000000000009094947840263889282533118,
+};
+#define NPRECALC_ZETA (sizeof(riemann_zeta_table)/sizeof(riemann_zeta_table[0]))
+
+static double evaluate_zeta(double x) {
+  double const tol = 1e-14;
+  double y, t;
+  double sum = 0.0;
+  double c = 0.0;
+  double term;
+  int k;
+
+  /* Simple method.  Slow and inaccurate near x=1, but iterations and accuracy
+   * improve quickly.
+   */
+
+  term = 1.0;          y = term-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+  term = 1.0/exp2(x);  y = term-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+
+  for (k = 3; k <= 100000; k++) {
+    if (term < tol) break;
+    if      (k ==  4) term = 1.0 / exp2(2*x);
+    else if (k ==  8) term = 1.0 / exp2(4*x);
+    else if (k == 16) term = 1.0 / exp2(8*x);
+    else              term = 1.0 / pow(k, x);
+    y = term-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+  }
+  return sum;
+}
+
+double RiemannR(double x) {
+  double const tol = 1e-14;
+  double y, t, part_term, term, flogx, zeta;
+  double sum = 0.0;
+  double c = 0.0;
+  int k;
+
+  if (x <= 0) croak("Invalid input to ReimannR:  x must be > 0");
+
+  y = 1.0-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+
+  flogx = log(x);
+  part_term = 1;
+
+  /* Do small k with zetas from table */
+  for (k = 1; k <= (int)NPRECALC_ZETA; k++) {
+    zeta = riemann_zeta_table[k+1-2];
+    part_term *= flogx / k;
+    term = part_term / (k * zeta);
+    y = term-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+    if (term < tol) break;
+    /* printf("R  after adding %.8lf, sum = %.8lf\n", term, sum); */
+  }
+  /* Finish with function */
+  for (; k <= 10000; k++) {
+    if (term < tol) break;
+    zeta = evaluate_zeta(k+1);
+    part_term *= flogx / k;
+    term = part_term / (k * zeta);
+    y = term-c;  t = sum+y;  c = (t-sum)-y;  sum = t;
+    /* printf("R  after adding %.8lf, sum = %.8lf\n", term, sum); */
+  }
+
+  return sum;
 }

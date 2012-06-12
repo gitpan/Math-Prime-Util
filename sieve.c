@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 #include <math.h>
 
 #include "sieve.h"
@@ -33,8 +32,10 @@ UV get_prime_cache(UV n, const unsigned char** sieve)
     prime_cache_size = 0;
 
     /* Sieve a bit more than asked, to mitigate thrashing */
-    if (n < (UV_MAX-3840))
-      n += 3840;
+    if (n >= (UV_MAX-3840))
+      n = UV_MAX;
+    else
+      n = ((n + 3840)/30)*30;
     /* TODO: testing near 2^32-1 */
 
     prime_cache_sieve = sieve_erat30(n);
@@ -66,7 +67,7 @@ void prime_precalc(UV n)
   /* TODO: should we prealloc the segment here? */
 }
 
-void prime_memfree(void)
+void _prime_memfreeall(void)
 {
   if (prime_cache_sieve != 0)
       free(prime_cache_sieve);
@@ -74,6 +75,11 @@ void prime_memfree(void)
   prime_cache_size = 0;
 
   free_prime_segment();
+}
+
+void prime_memfree(void)
+{
+  _prime_memfreeall();
 
   prime_precalc(0);
 }

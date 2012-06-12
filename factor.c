@@ -1,8 +1,7 @@
-//#include <stdio.h>
-//#include <stdlib.h>
-//#include <string.h>
-//#include <limits.h>
-//#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
 
 #include "ptypes.h"
 #include "factor.h"
@@ -51,7 +50,7 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
     return nfactors;
   }
 
-  limit = sqrt((double) n);
+  limit = (UV) (sqrt(n)+0.1);
   if (limit > maxtrial)
     limit = maxtrial;
 
@@ -65,7 +64,7 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
         factors[nfactors++] = f;
         n /= f;
       } while ( (n%f) == 0 );
-      newlimit = sqrt(n);
+      newlimit = (UV) (sqrt(n)+0.1);
       if (newlimit < limit)  limit = newlimit;
     }
     f += wheeladvance30[m];
@@ -86,24 +85,30 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
   #define mulmod(a,b,m)  (UV)(((uint64_t)(a)*(uint64_t)(b)) % ((uint64_t)(m)))
   #define sqrmod(n,m)    (UV)(((uint64_t)(n)*(uint64_t)(n)) % ((uint64_t)(m)))
 
-  static UV powmod(UV n, UV power, UV m) {
-    UV t = 1;
-    while (power) {
-      if (power & 1)
-        t = mulmod(t, n, m);
-      n = sqrmod(n, m);
-      power >>= 1;
-    }
-    return t;
+#elif defined(__GNUC__) && defined(__x86_64__)
+
+  /* GCC on a 64-bit Intel x86 */
+  static UV _mulmod(UV a, UV b, UV c) {
+    UV d; /* to hold the result of a*b mod c */
+    /* calculates a*b mod c, stores result in d */
+    asm ("mov %1, %%rax;"        /* put a into rax */
+         "mul %2;"               /* mul a*b -> rdx:rax */
+         "div %3;"               /* (a*b)/c -> quot in rax remainder in rdx */
+         "mov %%rdx, %0;"        /* store result in d */
+         :"=r"(d)                /* output */
+         :"r"(a), "r"(b), "r"(c) /* input */
+         :"%rax", "%rdx"         /* clobbered registers */
+        );
+    return d;
   }
+  #define mulmod(a,b,m) _mulmod(a,b,m)
+  #define sqrmod(n,m)   _mulmod(n,n,m)
 
 #else
 
   /* UV is the largest integral type available (that we know of). */
 
-  /* if n is smaller than this, you can multiply without overflow */
-  #define HALF_WORD (UVCONST(1) << (BITS_PER_WORD/2))
-
+  /* Do it by hand */
   static UV _mulmod(UV a, UV b, UV m) {
     UV r = 0;
     while (b > 0) {
@@ -121,11 +126,30 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
     return r;
   }
 
-  #define addmod(n,a,m) ((((m)-(n)) > (a))  ?  ((n)+(a))  :  ((n)+(a)-(m)))
-  #define mulmod(a,b,m) (((a)|(b)) < HALF_WORD) ? ((a)*(b))%(m) : _mulmod(a,b,m)
-  #define sqrmod(n,m)   ((n) < HALF_WORD)       ? ((n)*(n))%(m) : _mulmod(n,n,m)
+  /* if n is smaller than this, you can multiply without overflow */
+  #define HALF_WORD (UVCONST(1) << (BITS_PER_WORD/2))
+  #define mulmod(a,b,m) (((a)|(b)) < HALF_WORD) ? ((a)*(b))%(m):_mulmod(a,b,m)
+  #define sqrmod(n,m)   ((n) < HALF_WORD)       ? ((n)*(n))%(m):_mulmod(n,n,m)
 
-  /* n^power mod m */
+#endif
+
+#ifndef addmod
+  #define addmod(n,a,m) ((((m)-(n)) > (a))  ?  ((n)+(a))  :  ((n)+(a)-(m)))
+#endif
+
+/* n^power mod m */
+#ifndef HALF_WORD
+  static UV powmod(UV n, UV power, UV m) {
+    UV t = 1;
+    while (power) {
+      if (power & 1)
+        t = mulmod(t, n, m);
+      n = sqrmod(n, m);
+      power >>= 1;
+    }
+    return t;
+  }
+#else
   static UV powmod(UV n, UV power, UV m) {
     UV t = 1;
     if (m < HALF_WORD) {
@@ -146,7 +170,6 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
     }
     return t;
   }
-
 #endif
 
 /* n^power + a mod m */
@@ -155,6 +178,54 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
 /* n^2 + a mod m */
 #define sqraddmod(n, a, m)     addmod(sqrmod(n,m),  a,m)
 
+/* Return 0 if n is not a perfect square.  Set sqrtn to int(sqrt(n)) if so.
+ *
+ * A simplistic solution (but not unhelpful) is:
+ *
+ *     return ( ((m&2)!= 0) || ((m&7)==5) || ((m&11) == 8) )  ?  0  :  1;
+ *
+ * The following Bloom filter cascade works very well indeed.  Read all
+ * about it here: http://mersenneforum.org/showpost.php?p=110896
+ */
+static int is_perfect_square(UV n, UV* sqrtn)
+{
+  UV m;  /* lm */
+  m = n & 127;
+  if ((m*0x8bc40d7d) & (m*0xa1e2f5d1) & 0x14020a)  return 0;
+  /* 82% of non-squares rejected here */
+
+#if 0
+  /* The big deal with this technique is that you do two total operations,
+   * one cheap (the & 127 above), one expensive (the modulo below) on n.
+   * The rest of the operations are 32-bit operations.  This is a huge win
+   * if n is multiprecision.
+   * However, in this file we're doing native precision sqrt, so it just
+   * isn't expensive enough to justify this second filter set.
+   */
+  lm = n % UVCONST(63*25*11*17*19*23*31);
+  m = lm % 63;
+  if ((m*0x3d491df7) & (m*0xc824a9f9) & 0x10f14008) return 0;
+  m = lm % 25;
+  if ((m*0x1929fc1b) & (m*0x4c9ea3b2) & 0x51001005) return 0;
+  m = 0xd10d829a*(lm%31);
+  if (m & (m+0x672a5354) & 0x21025115) return 0;
+  m = lm % 23;
+  if ((m*0x7bd28629) & (m*0xe7180889) & 0xf8300) return 0;
+  m = lm % 19;
+  if ((m*0x1b8bead3) & (m*0x4d75a124) & 0x4280082b) return 0;
+  m = lm % 17;
+  if ((m*0x6736f323) & (m*0x9b1d499) & 0xc0000300) return 0;
+  m = lm % 11;
+  if ((m*0xabf1a3a7) & (m*0x2612bf93) & 0x45854000) return 0;
+  /* 99.92% of non-squares are rejected now */
+#endif
+  m = sqrt(n);
+  if (n != (m*m))
+    return 0;
+
+  if (sqrtn != 0) *sqrtn = m;
+  return 1;
+}
 
 /* Miller-Rabin probabilistic primality test
  * Returns 1 if probably prime relative to the bases, 0 if composite.
@@ -177,9 +248,12 @@ int miller_rabin(UV n, const UV *bases, int nbases)
     UV a = bases[b];
     UV x;
 
-    /* Skip invalid bases */
-    if ( (a < 2) || (a > (n-2)) )
+    if (a < 2)
+      croak("Base %"UVuf" is invalid", a);
+#if 0
+    if (a > (n-2))
       croak("Base %"UVuf" is invalid for input %"UVuf, a, n);
+#endif
 
     x = powmod(a, d, n);
     if ( (x == 1) || (x == (n-1)) )  continue;
@@ -297,7 +371,7 @@ int fermat_factor(UV n, UV *factors, UV rounds)
 
   MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in fermat_factor");
 
-  sqn = sqrt((double) n);
+  sqn = (UV) (sqrt(n)+0.1);
   x = 2 * sqn + 1;
   y = 1;
   r = (sqn*sqn) - n;
@@ -334,15 +408,7 @@ int holf_factor(UV n, UV *factors, UV rounds)
     s = sqrt(n*i);                      /* TODO: overflow here */
     if ( (s*s) != (n*i) )  s++;
     m = sqrmod(s, n);
-    /* Cheaper would be:
-     *     if (m is probably not a perfect sequare)  continue;
-     *     f = sqrt(m);
-     *     if (f*f == m) { yay }
-     */
-    if ( ((m&2)!= 0) || ((m&7)==5) || ((m&11) == 8) )
-      continue;
-    f = sqrt(m);                        /* expensive */
-    if ( (f*f) == m ) {
+    if (is_perfect_square(m, &f)) {
       f = gcd_ui( (s>f) ? s-f : f-s, n);
       /* This should always succeed, but with overflow concerns.... */
       if ((f == 1) || (f == n))
