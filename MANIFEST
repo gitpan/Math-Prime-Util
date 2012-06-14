@@ -8,6 +8,8 @@ TODO
 XS.xs
 bitarray.h
 ptypes.h
+cache.h
+cache.c
 factor.h
 factor.c
 sieve.h
@@ -21,7 +23,6 @@ examples/bench-is-prime.pl
 examples/bench-miller-rabin.pl
 examples/bench-nthprime.pl
 examples/bench-pcapprox.pl
-examples/bench-primecount.pl
 examples/bench-random-prime.pl
 examples/test-factoring.pl
 examples/test-holf.pl

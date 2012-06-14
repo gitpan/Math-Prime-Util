@@ -8,28 +8,11 @@
 #define INFINITY (DBL_MAX + DBL_MAX)
 #endif
 
+#include "ptypes.h"
 #include "util.h"
 #include "sieve.h"
 #include "factor.h"
-#include "ptypes.h"
-
-/*
- * I'm undecided as to whether we want this, or just let the functions alloc
- * and free it per call.
- */
-static unsigned char* prime_segment = 0;
-unsigned char* get_prime_segment(void) {
-  if (prime_segment == 0)
-    prime_segment = (unsigned char*) malloc( SEGMENT_CHUNK_SIZE );
-  if (prime_segment == 0)
-    croak("Could not allocate %"UVuf" bytes for segment sieve", SEGMENT_CHUNK_SIZE);
-  return prime_segment;
-}
-void free_prime_segment(void) {
-  if (prime_segment != 0)
-    free(prime_segment);
-  prime_segment = 0;
-}
+#include "cache.h"
 
 static const unsigned char byte_zeros[256] =
   {8,7,7,6,7,6,6,5,7,6,6,5,6,5,5,4,7,6,6,5,6,5,5,4,6,5,5,4,5,4,4,3,
@@ -559,10 +542,9 @@ UV prime_count(UV low, UV high)
   }
 
   /* More primes needed.  Repeatedly segment sieve */
-  segment_size = SEGMENT_CHUNK_SIZE;
-  segment = get_prime_segment();
+  segment = get_prime_segment(&segment_size);
   if (segment == 0)
-    return 0;
+    croak("Could not get segment memory");
 
   while (low_d <= high_d)
   {
@@ -582,6 +564,7 @@ UV prime_count(UV low, UV high)
 
     low_d += range_d;
   }
+  free_prime_segment(segment);
 
   return count;
 }
@@ -763,10 +746,9 @@ UV nth_prime(UV n)
 
   /* Start segment sieving.  Get memory to sieve into. */
   segbase = segment_size;
-  segment_size = SEGMENT_CHUNK_SIZE;
-  segment = get_prime_segment();
+  segment = get_prime_segment(&segment_size);
   if (segment == 0)
-    return 0;
+    croak("Could not get segment memory");
 
   while (count < target) {
     /* Limit the segment size if we know the answer comes earlier */
@@ -785,6 +767,7 @@ UV nth_prime(UV n)
     if (count < target)
       segbase += segment_size;
   }
+  free_prime_segment(segment);
   MPUassert(count == target, "nth_prime got incorrect count");
   return ( (segbase*30) + p );
 }
