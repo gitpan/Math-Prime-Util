@@ -22,7 +22,7 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "ExtUtils::MakeMaker" : "0"
+            "Test::More" : "0.45"
          }
       },
       "configure" : {
@@ -34,12 +34,11 @@
          "requires" : {
             "Carp" : "0",
             "Exporter" : "5.562",
-            "Test::More" : "0.45",
             "XSLoader" : "0.01",
             "perl" : "5.006002"
          }
       }
    },
    "release_status" : "stable",
-   "version" : "0.06"
+   "version" : "0.07"
 }

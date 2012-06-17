@@ -3,7 +3,7 @@ abstract: 'Utilities related to prime numbers, including fast sieves and factori
 author:
   - 'Dana A Jacobsen <dana@acm.org>'
 build_requires:
-  ExtUtils::MakeMaker: 0
+  Test::More: 0.45
 configure_requires:
   ExtUtils::MakeMaker: 0
 dynamic_config: 1
@@ -20,7 +20,6 @@ no_index:
 requires:
   Carp: 0
   Exporter: 5.562
-  Test::More: 0.45
   XSLoader: 0.01
   perl: 5.006002
-version: 0.06
+version: 0.07
