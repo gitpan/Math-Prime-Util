@@ -18,24 +18,11 @@
 
 - Faster SQUFOF
 
-- Init a 1k static const with the 7/11/13 marks, and use that to init both
-  erat30 and segment_sieve.
-
 - speed up random_prime for large numbers
 
 - better prime count upper/lower bounds
 
-- Thread-safety.  Change all uses of sieve and segment to include a free call.
-  For segment we can:
-     1) mutex  (holy slowdown, batman)
-     2) use one cache, and malloc/free if the cache isn't available.
-  For sieve I think we'll need a counting semaphore.
-
 - Move .c / .h files into separate directory.
   version does it in a painful way.  Something simpler to be had?
 
-- Iterator or tie?
-
-- Get rid of erat_simple and bitarray.h.  They're only there for comparison.
-
-- Need to be more aware of precision for the math operations.
+- tests for tie

@@ -1,10 +1,10 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
-#use Math::Primality;
+use Math::Primality;
 use Math::Prime::XS;
 use Math::Prime::Util;
-#use Math::Pari;
+use Math::Pari;
 #use Math::Prime::FastSieve;
 use Benchmark qw/:all/;
 use List::Util qw/min max/;
@@ -34,12 +34,12 @@ sub test_at_digits {
   print "is_prime for 1000 random $digits-digit numbers ($min_num - $max_num)\n";
 
   cmpthese($count,{
-    #'Math::Primality' => sub { Math::Primality::is_prime($_) for @nums },
+    'Math::Primality' => sub { Math::Primality::is_prime($_) for @nums },
     'M::P::XS' => sub { Math::Prime::XS::is_prime($_) for @nums },
     #'M::P::FS' => sub { $sieve->isprime($_) for @nums },
     'M::P::U' => sub { Math::Prime::Util::is_prime($_) for @nums },
     'MPU prob' => sub { Math::Prime::Util::is_prob_prime($_) for @nums },
-    #'Math::Pari' => sub { Math::Pari::isprime($_) for @nums },
+    'Math::Pari' => sub { Math::Pari::isprime($_) for @nums },
   });
   print "\n";
 }

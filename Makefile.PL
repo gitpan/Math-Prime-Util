@@ -7,14 +7,12 @@ WriteMakefile1(
     LICENSE      => 'perl',
     AUTHOR       => 'Dana A Jacobsen <dana@acm.org>',
 
-    LIBS         => [''],   # e.g., '-lm'
-    DEFINE       => '',     # e.g., '-DHAVE_SOMETHING'
-    INC          => '',     # e.g., '-I/usr/include/other'
     OBJECT       => 'cache.o ' .
                     'factor.o '  .
                     'sieve.o '  .
                     'util.o '  .
                     'XS.o',
+    LIBS         => ['-lm'],
 
     BUILD_REQUIRES => {
                     'Test::More'       => '0.45',
@@ -22,7 +20,9 @@ WriteMakefile1(
     PREREQ_PM    => {
                       'Exporter'         => '5.562',
                       'XSLoader'         => '0.01',
-                      'Carp'             => '0',
+                      'Carp'             => 0,
+                      'Tie::Array'       => 0,
+                      'base'             => 0,
                     },
 
     MIN_PERL_VERSION => 5.006002,

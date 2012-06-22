@@ -7,7 +7,6 @@
 #include "cache.h"
 #include "sieve.h"
 #include "util.h"
-#include "bitarray.h"
 #include "factor.h"
 
 MODULE = Math::Prime::Util	PACKAGE = Math::Prime::Util
@@ -74,7 +73,7 @@ prev_prime(IN UV n)
 UV
 _get_prime_cache_size()
   CODE:
-    RETVAL = get_prime_cache_size();
+    RETVAL = get_prime_cache(0, 0);
   OUTPUT:
     RETVAL
 
@@ -94,6 +93,7 @@ sieve_primes(IN UV low, IN UV high)
   CODE:
     if (low <= high) {
       if (get_prime_cache(high, &sieve) < high) {
+        release_prime_cache(sieve);
         croak("Could not generate sieve for %"UVuf, high);
       } else {
         if ((low <= 2) && (high >= 2)) { av_push(av, newSVuv( 2 )); }
@@ -103,6 +103,7 @@ sieve_primes(IN UV low, IN UV high)
         START_DO_FOR_EACH_SIEVE_PRIME( sieve, low, high ) {
            av_push(av,newSVuv(p));
         } END_DO_FOR_EACH_SIEVE_PRIME
+        release_prime_cache(sieve);
       }
     }
     RETVAL = newRV_noinc( (SV*) av );
@@ -167,8 +168,8 @@ segment_primes(IN UV low, IN UV high);
 
         /* Sieve from startd*30+1 to endd*30+29.  */
         if (sieve_segment(sieve, low_d, seghigh_d) == 0) {
+          release_prime_segment(sieve);
           croak("Could not segment sieve from %"UVuf" to %"UVuf, segbase+1, seghigh);
-          break;
         }
 
         START_DO_FOR_EACH_SIEVE_PRIME( sieve, low - segbase, seghigh - segbase )
@@ -178,7 +179,7 @@ segment_primes(IN UV low, IN UV high);
         low_d += range_d;
         low = seghigh+2;
       }
-      free_prime_segment(sieve);
+      release_prime_segment(sieve);
     }
     RETVAL = newRV_noinc( (SV*) av );
   OUTPUT:
@@ -209,33 +210,6 @@ erat_primes(IN UV low, IN UV high)
   OUTPUT:
     RETVAL
 
-
-SV*
-erat_simple_primes(IN UV low, IN UV high)
-  PREINIT:
-    UV* sieve;
-    UV s;
-    AV* av = newAV();
-  CODE:
-    if (low <= high) {
-      sieve = sieve_erat(high);
-      if (sieve == 0) {
-        croak("Could not generate sieve for %"UVuf, high);
-      } else {
-        if (low <= 2) { av_push(av, newSVuv( 2 )); low = 3; }
-        low  = low/2;
-        high = (high-1)/2;
-        for (s = low; s <= high; s++) {
-          if ( ! IS_SET_ARRAY_BIT(sieve, s) ) {
-            av_push(av,newSVuv( 2*s+1 ));
-          }
-        }
-        Safefree(sieve);
-      }
-    }
-    RETVAL = newRV_noinc( (SV*) av );
-  OUTPUT:
-    RETVAL
 
 void
 factor(IN UV n)
@@ -283,7 +257,7 @@ factor(IN UV n)
             if (!split_success) {
               split_success = holf_factor(n, factor_stack+nstack, 2000)-1;
             }
-            /* Very, very few numbers make it past here */
+            /* Less than 0.00003% of numbers make it past here. */
           }
           if (split_success) {
             MPUassert( split_success == 1, "split factor returned more than 2 factors");

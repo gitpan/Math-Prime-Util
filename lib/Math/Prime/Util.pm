@@ -1,11 +1,11 @@
 package Math::Prime::Util;
 use strict;
 use warnings;
-use Carp qw/croak confess/;
+use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.07';
+  $Math::Prime::Util::VERSION = '0.08';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -19,7 +19,7 @@ our @EXPORT_OK = qw(
                      prime_count prime_count_lower prime_count_upper prime_count_approx
                      nth_prime nth_prime_lower nth_prime_upper nth_prime_approx
                      random_prime random_ndigit_prime
-                     factor
+                     factor all_factors
                      ExponentialIntegral LogarithmicIntegral RiemannR
                    );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
@@ -42,6 +42,8 @@ END {
 
 my $_maxparam  = (_maxbits == 32) ? 4294967295 : 18446744073709551615;
 my $_maxdigits = (_maxbits == 32) ? 10 : 20;
+my $_maxprime  = (_maxbits == 32) ? 4294967291 : 18446744073709551557;
+my $_maxprimeidx=(_maxbits == 32) ?  203280221 :   425656284035217743;
 
 sub primes {
   my $optref = {};  $optref = shift if ref $_[0] eq 'HASH';
@@ -92,9 +94,13 @@ sub primes {
     }
   }
 
+  if ($method =~ /^Simple\w*$/i) {
+    carp "Method 'Simple' is deprecated.";
+    $method = 'Erat';
+  }
+
   if    ($method =~ /^Trial$/i)     { $sref = trial_primes($low, $high); }
   elsif ($method =~ /^Erat\w*$/i)   { $sref = erat_primes($low, $high); }
-  elsif ($method =~ /^Simple\w*$/i) { $sref = erat_simple_primes($low, $high); }
   elsif ($method =~ /^Seg\w*$/i)    { $sref = segment_primes($low, $high); }
   elsif ($method =~ /^Sieve$/i)     { $sref = sieve_primes($low, $high); }
   else { croak "Unknown prime method: $method"; }
@@ -176,23 +182,23 @@ sub random_ndigit_prime {
 
 # Perhaps a random_nbit_prime ?   Definition?
 
-# We use this object to let them control when memory is freed.
-package Math::Prime::Util::MemFree;
-use Carp qw/croak confess/;
-my $memfree_instances = 0;
-sub new {
-  my $self = bless {}, shift;
-  $memfree_instances++;
-  return $self;
+sub all_factors {
+  my $n = shift;
+  my @factors = factor($n);
+  my %all_factors;
+  foreach my $f1 (@factors) {
+    next if $f1 >= $n;
+    my @all = keys %all_factors;;
+    foreach my $f2 (@all) {
+      $all_factors{$f1*$f2} = 1 if ($f1*$f2) < $n;
+    }
+    $all_factors{$f1} = 1;
+  }
+  @factors = sort {$a<=>$b} keys %all_factors;
+  return @factors;
 }
-sub DESTROY {
-  my $self = shift;
-  confess "instances count mismatch" unless $memfree_instances > 0;
-  Math::Prime::Util::prime_memfree if --$memfree_instances == 0;
-}
-package Math::Prime::Util;
 
-
+use Math::Prime::Util::MemFree;
 
 1;
 
@@ -213,7 +219,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.07
+Version 0.08
 
 
 =head1 SYNOPSIS
@@ -303,9 +309,11 @@ functions inside Perl now, I recommend L<Math::Pari>.
 
 The default sieving and factoring are intended to be (and currently are)
 the fastest on CPAN, including L<Math::Prime::XS>, L<Math::Prime::FastSieve>,
-and L<Math::Factor::XS>.  L<Math::Pari> is slower in some things, faster in
-others.
+and L<Math::Factor::XS>.  It seems to be faster than L<Math::Pari> for
+everything except factoring certain 16-20 digit numbers.
 
+The module is thread-safe and allows concurrency between Perl threads while
+still sharing a prime cache.  It is not itself multithreaded.
 
 
 =head1 FUNCTIONS
@@ -583,6 +591,7 @@ in place because you still have an object.
 =head2 factor
 
   my @factors = factor(3_369_738_766_071_892_021);
+  # returns (204518747,16476429743)
 
 Produces the prime factors of a positive number input.  They may not be in
 numerical order.  The special cases of C<n = 0> and C<n = 1> will
@@ -591,9 +600,19 @@ always result in the input value, though those are the only cases where
 the returned factors are not prime.
 
 The current algorithm is to use trial division for small numbers, while large
-numbers go through a sequence of small trials, SQUFOF, Pollard's Rho, and
-finally trial division for any survivors.  This process is repeated for
-each non-prime factor.
+numbers go through a sequence of small trials, SQUFOF, Pollard's Rho, Hart's
+one line factorization, and finally trial division for any survivors.  This
+process is repeated for each non-prime factor.
+
+
+=head2 all_factors
+
+  my @divisors = all_factors(30);   # returns (2, 3, 5, 6, 10, 15)
+
+Produces all the divisors of a positive number input.  1 and the input number
+are excluded (which implies that an empty list is returned for any prime
+number input).  The divisors are a power set of multiplications of the prime
+factors, returned as a uniqued sorted list.
 
 
 =head2 trial_factor
@@ -665,12 +684,17 @@ others they succeed in a remarkably short time.
 
   my $Ei = ExponentialIntegral($x);
 
-Given a non-zero floating point input C<x>, this returns the exponential integral
-of C<x>, defined as the integral of C<e^t/t dt> from C<-infinity> to C<x>.
-Depending on the input, the integral
-is calculated using continued fractions (negative C<x>), a convergent series
-(small positive C<x>), or an asymptotic divergent series (large positive C<x>).
-This function only considers the real part.
+Given a non-zero floating point input C<x>, this returns the real-valued
+exponential integral of C<x>, defined as the integral of C<e^t/t dt>
+from C<-infinity> to C<x>.
+Depending on the input, the integral is calculated using
+continued fractions (C<x E<lt> -1>),
+rational Chebyshev approximation (C< -1 E<lt> x E<lt> 0>),
+a convergent series (small positive C<x>),
+or an asymptotic divergent series (large positive C<x>).
+
+Accuracy should be at least 14 digits.
+
 
 =head2 LogarithmicIntegral
 
@@ -688,6 +712,9 @@ may be defined as C<Li(x) = li(x) - li(2)>.
 This function is implemented as C<li(x) = Ei(ln x)> after handling special
 values.
 
+Accuracy should be at least 14 digits.
+
+
 =head2 RiemannR
 
   my $r = RiemannR($x);
@@ -695,6 +722,8 @@ values.
 Given a positive non-zero floating point input, returns the floating
 point value of Riemann's R function.  Riemann's R function gives a very close
 approximation to the prime counting function.
+
+Accuracy should be at least 14 digits.
 
 
 
@@ -704,22 +733,25 @@ I have not completed testing all the functions near the word size limit
 (e.g. C<2^32> for 32-bit machines).  Please report any problems you find.
 
 The extra factoring algorithms are mildly interesting but really limited by
-not being big number aware.
+not being big number aware.  Assuming a desktop PC, every 32-bit number
+should be factored by the main routine in a few microseconds, and 64-bit
+numbers should be a few milliseconds at worst.
 
-Perl versions earlier than 5.8.0 have issues with 64-bit.  The test suite will
-try to determine if your Perl is broken.  This will show up in factoring tests.
-Perl 5.6.2 32-bit works fine, as do later versions with 32-bit and 64-bit.
+Perl versions earlier than 5.8.0 have issues with 64-bit that show up in the
+factoring tests.  The test suite will try to determine if your Perl is broken.
+If you use later versions of Perl, or Perl 5.6.2 32-bit, or Perl 5.6.2 64-bit
+and keep numbers below C<~ 2^52>, then everything works.  The best solution is
+to update to a more recent Perl.
 
-Because static caches are used, many functions are not threadsafe.  If you
-use C<prime_precalc> and all calls have inputs smaller than that number,
-then only C<nth_prime> is problematic.  This will be addressed in a later
-implementation.
+The module is thread-safe and should allow good concurrency.
 
 
 =head1 PERFORMANCE
 
 Counting the primes to C<10^10> (10 billion), with time in seconds.
 Pi(10^10) = 455,052,511.
+
+   External C programs in C / C++:
 
        1.9  primesieve 3.6 forced to use only a single thread
        2.2  yafu 1.31
@@ -728,7 +760,9 @@ Pi(10^10) = 455,052,511.
       11.2  Tomás Oliveira e Silva's segmented sieve v1 (May 2003)
       17.0  Pari 2.3.5 (primepi)
 
-       5.9  My segmented SoE
+   Small portable functions suitable for plugging into XS:
+
+       5.3  My segmented SoE used in this module
       15.6  My Sieve of Eratosthenes using a mod-30 wheel
       17.2  A slightly modified verion of Terje Mathisen's mod-30 sieve
       35.5  Basic Sieve of Eratosthenes on odd numbers
@@ -748,10 +782,39 @@ Perl modules, counting the primes to C<800_000_000> (800 million), in seconds:
    [hours]  Math::Primality             0.04
 
 
-C<is_prime> is slightly faster than M::P::XS for small inputs, but is much
-faster with larger ones  (5x faster for 8-digit, over 50x for 14-digit).
-Math::Pari is relatively slow for small inputs, but becomes faster in the
-13-digit range.
+
+C<is_prime>: my impressions:
+
+   Module                    Small inputs   Large inputs (10-20dig)
+   -----------------------   -------------  ----------------------
+   Math::Prime::Util         Very fast      Pretty fast
+   Math::Prime::XS           Very fast      Very, very slow if no small factors
+   Math::Pari                Slow           OK
+   Math::Prime::FastSieve    Very fast      N/A (too much memory)
+   Math::Primality           Very slow      Very slow
+
+The differences are in the implementations:
+   - L<Math::Prime::FastSieve> only works in a sieved range, which is really
+     fast if you can do it (M::P::U will do the same if you call
+     C<prime_precalc>).  Larger inputs just need too much time and memory
+     for the sieve.
+   - L<Math::Primality> uses a GMP BPSW test which is overkill for our 64-bit
+     range.  It's generally an order of magnitude or two slower than any
+     of the others.  
+   - L<Math::Pari> has some very effective code, but it has some overhead to get
+     to it from Perl.  That means for small numbers it is relatively slow: an
+     order of magnitude slower than M::P::XS and M::P::Util (though arguably
+     this is only important for benchmarking since "slow" is ~2 microseconds).
+     Large numbers transition over to smarter tests so don't slow down much.
+   - L<Math::Prime::XS> does trial divisions, which is wonderful if the input
+     has a small factor (or is small itself).  But it can take 1000x longer
+     if given a large prime.
+   - L<Math::Prime::Util> looks in the sieve for a fast bit lookup if that
+     exists (default up to 30,000 but it can be expanded, e.g.
+     C<prime_precalc>), uses trial division for numbers higher than this but
+     not too large (0.1M on 64-bit machines, 100M on 32-bit machines), and a
+     deterministic set of Miller-Rabin tests for large numbers.
+
 
 
 Factoring performance depends on the input, and the algorithm choices used
@@ -775,6 +838,7 @@ seen claims that a lightweight QS can be faster for 15+ digits).  Some form
 of Quadratic Sieve is usually used for inputs in the 19-100 digit range, and
 beyond that is the Generalized Number Field Sieve.  For serious factoring,
 I recommend looking info C<yafu>, C<msieve>, C<Pari>, and C<GGNFS>.
+
 
 
 =head1 AUTHORS

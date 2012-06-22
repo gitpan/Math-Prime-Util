@@ -1,12 +1,13 @@
 Changes
 lib/Math/Prime/Util.pm
+lib/Math/Prime/Util/MemFree.pm
+lib/Math/Prime/Util/PrimeArray.pm
 LICENSE
 Makefile.PL
 MANIFEST
 README
 TODO
 XS.xs
-bitarray.h
 ptypes.h
 cache.h
 cache.c
@@ -33,6 +34,8 @@ examples/test-primes-yafu.pl
 examples/test-holf.pl
 examples/test-nthapprox.pl
 examples/test-pcapprox.pl
+examples/sophie_germain.pl
+examples/twin_primes.pl
 t/01-load.t
 t/02-can.t
 t/03-init.t
@@ -46,7 +49,9 @@ t/16-randomprime.t
 t/17-pseudoprime.t
 t/18-functions.t
 t/30-relations.t
+t/31-threading.t
 t/50-factoring.t
+t/51-primearray.t
 t/90-release-perlcritic.t
 t/91-release-pod-syntax.t
 t/92-release-pod-coverage.t
