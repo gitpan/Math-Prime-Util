@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.08';
+  $Math::Prime::Util::VERSION = '0.09';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -24,29 +24,69 @@ our @EXPORT_OK = qw(
                    );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
 
+my $_pure_perl;
+
 BEGIN {
   eval {
     require XSLoader;
     XSLoader::load(__PACKAGE__, $Math::Prime::Util::VERSION);
     prime_precalc(0);
+    $_pure_perl = 0;
     1;
   } or do {
-    # We could insert a Pure Perl implementation here.
-    croak "XS Code not available: $@";
+    require Math::Prime::Util::PP;
+    $_pure_perl = 1;
+    #carp "Using Pure Perl implementation";
+    *_get_prime_cache_size = \&Math::Prime::Util::PP::_get_prime_cache_size;
+    *_maxbits = \&Math::Prime::Util::PP::_maxbits;
+    *_prime_memfreeall = \&Math::Prime::Util::PP::_prime_memfreeall;
+
+    *prime_memfree  = \&Math::Prime::Util::PP::prime_memfree;
+    *prime_precalc  = \&Math::Prime::Util::PP::prime_precalc;
+
+    *prime_count        = \&Math::Prime::Util::PP::prime_count;
+    *prime_count_upper  = \&Math::Prime::Util::PP::prime_count_upper;
+    *prime_count_lower  = \&Math::Prime::Util::PP::prime_count_lower;
+    *prime_count_approx = \&Math::Prime::Util::PP::prime_count_approx;
+    *nth_prime          = \&Math::Prime::Util::PP::nth_prime;
+    *nth_prime_upper    = \&Math::Prime::Util::PP::nth_prime_upper;
+    *nth_prime_lower    = \&Math::Prime::Util::PP::nth_prime_lower;
+    *nth_prime_approx   = \&Math::Prime::Util::PP::nth_prime_approx;
+
+    *is_prime       = \&Math::Prime::Util::PP::is_prime;
+    *next_prime     = \&Math::Prime::Util::PP::next_prime;
+    *prev_prime     = \&Math::Prime::Util::PP::prev_prime;
+
+    *miller_rabin   = \&Math::Prime::Util::PP::miller_rabin;
+    *is_prob_prime  = \&Math::Prime::Util::PP::is_prob_prime;
+
+    *factor         = \&Math::Prime::Util::PP::factor;
+    *trial_factor   = \&Math::Prime::Util::PP::trial_factor;
+    *fermat_factor  = \&Math::Prime::Util::PP::fermat_factor;
+    *holf_factor    = \&Math::Prime::Util::PP::holf_factor;
+    *squfof_factor  = \&Math::Prime::Util::PP::squfof_factor;
+    *pbrent_factor  = \&Math::Prime::Util::PP::pbrent_factor;
+    *prho_factor    = \&Math::Prime::Util::PP::prho_factor;
+    *pminus1_factor = \&Math::Prime::Util::PP::pminus1_factor;
+
+    *RiemannR            = \&Math::Prime::Util::PP::RiemannR;
+    *LogarithmicIntegral = \&Math::Prime::Util::PP::LogarithmicIntegral;
+    *ExponentialIntegral = \&Math::Prime::Util::PP::ExponentialIntegral;
+    # TODO: We should have some tests to verify XS vs. PP.
   }
 }
 END {
   _prime_memfreeall;
 }
 
-
 my $_maxparam  = (_maxbits == 32) ? 4294967295 : 18446744073709551615;
 my $_maxdigits = (_maxbits == 32) ? 10 : 20;
 my $_maxprime  = (_maxbits == 32) ? 4294967291 : 18446744073709551557;
 my $_maxprimeidx=(_maxbits == 32) ?  203280221 :   425656284035217743;
 
+
 sub primes {
-  my $optref = {};  $optref = shift if ref $_[0] eq 'HASH';
+  my $optref = (ref $_[0] eq 'HASH')  ?  shift  :  {};
   croak "no parameters to primes" unless scalar @_ > 0;
   croak "too many parameters to primes" unless scalar @_ <= 2;
   my $low = (@_ == 2)  ?  shift  :  2;
@@ -57,8 +97,8 @@ sub primes {
   if ( (!defined $low) || (!defined $high) ||
        ($low =~ tr/0123456789//c) || ($high =~ tr/0123456789//c)
      ) {
-    $low  = 'undef' unless defined $low;
-    $high = 'undef' unless defined $high;
+    $low  = '<undef>' unless defined $low;
+    $high = '<undef>' unless defined $high;
     croak "Parameters [ $low $high ] must be positive integers";
   }
 
@@ -66,6 +106,8 @@ sub primes {
   croak "Parameters [ $low $high ] not in range 0-$_maxparam" unless $low <= $_maxparam && $high <= $_maxparam;
 
   return $sref if ($low > $high) || ($high < 2);
+
+  return Math::Prime::Util::PP::primes($low,$high) if $_pure_perl;
 
   my $method = $optref->{'method'};
   $method = 'Dynamic' unless defined $method;
@@ -114,6 +156,7 @@ sub primes {
   return $sref;
 }
 
+
 sub random_prime {
   my $low = (@_ == 2)  ?  shift  :  2;
   my $high = shift;
@@ -129,8 +172,8 @@ sub random_prime {
 
   # Make sure we have a valid range.
   # TODO: this is is killing performance with large numbers
-  $low = next_prime($low-1);
-  $high = ($high < ~0) ? prev_prime($high+1) : prev_prime($high);
+  $low = next_prime($low - 1);
+  $high = ($high < ~0)  ?  prev_prime($high + 1)  :  prev_prime($high);
   return $low if ($low == $high) && is_prime($low);
   return if $low >= $high;
 
@@ -157,17 +200,18 @@ sub random_prime {
       do {
         $prime = $low + $irandf->($range);
         croak "Random function broken?" if $loop_limit-- < 0;
-      }  while ( !($prime%2) || !($prime%3) || !is_prime($prime) );
+      }  while ( !($prime % 2) || !($prime % 3) || !is_prime($prime) );
     } else {
       do {
         my $rand = ( ($irandf->(4294967295) << 32) + $irandf->(4294967295) ) % $range;
         $prime = $low + $rand;
         croak "Random function broken?" if $loop_limit-- < 0;
-      }  while ( !($prime%2) || !($prime%3) || !is_prime($prime) );
+      }  while ( !($prime % 2) || !($prime % 3) || !is_prime($prime) );
     }
   }
   return $prime;
 }
+
 
 sub random_ndigit_prime {
   my $digits = shift;
@@ -182,12 +226,14 @@ sub random_ndigit_prime {
 
 # Perhaps a random_nbit_prime ?   Definition?
 
+
 sub all_factors {
   my $n = shift;
   my @factors = factor($n);
   my %all_factors;
   foreach my $f1 (@factors) {
     next if $f1 >= $n;
+    # We're adding to %all_factors in the loop, so grab the keys now.
     my @all = keys %all_factors;;
     foreach my $f2 (@all) {
       $all_factors{$f1*$f2} = 1 if ($f1*$f2) < $n;
@@ -219,7 +265,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.08
+Version 0.09
 
 
 =head1 SYNOPSIS
@@ -313,7 +359,9 @@ and L<Math::Factor::XS>.  It seems to be faster than L<Math::Pari> for
 everything except factoring certain 16-20 digit numbers.
 
 The module is thread-safe and allows concurrency between Perl threads while
-still sharing a prime cache.  It is not itself multithreaded.
+still sharing a prime cache.  It is not itself multithreaded.  The one caveat
+is on Win32 where you must use C<precalc> if the function will use primes
+(C<primes>, C<prime_count> greater than 900M, C<nth_prime> greater than 45M).
 
 
 =head1 FUNCTIONS
@@ -743,7 +791,10 @@ If you use later versions of Perl, or Perl 5.6.2 32-bit, or Perl 5.6.2 64-bit
 and keep numbers below C<~ 2^52>, then everything works.  The best solution is
 to update to a more recent Perl.
 
-The module is thread-safe and should allow good concurrency.
+The module is thread-safe and should allow good concurrency on all platforms
+that support Perl threads except Win32 (Cygwin works).  With Win32, either
+don't use threads or make sure C<prime_precalc> is called before using
+C<primes>, C<prime_count>, or C<nth_prime> with large inputs.
 
 
 =head1 PERFORMANCE
@@ -772,14 +823,17 @@ Pi(10^10) = 455,052,511.
 
 Perl modules, counting the primes to C<800_000_000> (800 million), in seconds:
 
-  Time (s)  Module                      Version
-  --------  --------------------------  ------
-       0.4  Math::Prime::Util           0.02
-       0.9  Math::Prime::Util           0.01
-       2.9  Math::Prime::FastSieve      0.12
-      11.7  Math::Prime::XS             0.29
-      15.0  Bit::Vector                 7.2
-   [hours]  Math::Primality             0.04
+  Time (s)   Module                      Version  Notes
+  ---------  --------------------------  -------  -----------
+       0.36  Math::Prime::Util           0.09     segmented mod-30 sieve
+       0.9   Math::Prime::Util           0.01     mod-30 sieve
+       2.9   Math::Prime::FastSieve      0.12     decent odd-number sieve
+      11.7   Math::Prime::XS             0.29     "" but needs a count API
+      15.0   Bit::Vector                 7.2
+      59.1   Math::Prime::Util::PP       0.09     Perl
+     170.0   Faster Perl sieve (net)     2012-01  array of odds
+     548.1   RosettaCode sieve (net)     2012-06  simplistic Perl
+   >5000     Math::Primality             0.04     Perl + GMP
 
 
 
@@ -794,21 +848,26 @@ C<is_prime>: my impressions:
    Math::Primality           Very slow      Very slow
 
 The differences are in the implementations:
+
    - L<Math::Prime::FastSieve> only works in a sieved range, which is really
      fast if you can do it (M::P::U will do the same if you call
      C<prime_precalc>).  Larger inputs just need too much time and memory
      for the sieve.
+
    - L<Math::Primality> uses a GMP BPSW test which is overkill for our 64-bit
      range.  It's generally an order of magnitude or two slower than any
      of the others.  
+
    - L<Math::Pari> has some very effective code, but it has some overhead to get
      to it from Perl.  That means for small numbers it is relatively slow: an
      order of magnitude slower than M::P::XS and M::P::Util (though arguably
      this is only important for benchmarking since "slow" is ~2 microseconds).
      Large numbers transition over to smarter tests so don't slow down much.
+
    - L<Math::Prime::XS> does trial divisions, which is wonderful if the input
      has a small factor (or is small itself).  But it can take 1000x longer
      if given a large prime.
+
    - L<Math::Prime::Util> looks in the sieve for a fast bit lookup if that
      exists (default up to 30,000 but it can be expanded, e.g.
      C<prime_precalc>), uses trial division for numbers higher than this but
