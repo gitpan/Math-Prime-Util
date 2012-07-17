@@ -19,9 +19,13 @@ no_index:
     - inc
 requires:
   Carp: 0
+  Config: 0
   Exporter: 5.562
+  Math::BigFloat: 1.59
+  Math::BigInt: 1.88
   Tie::Array: 0
   XSLoader: 0.01
   base: 0
+  bignum: 0.23
   perl: 5.006002
-version: 0.09
+version: 0.10

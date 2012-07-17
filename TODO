@@ -9,20 +9,20 @@
 
 - Add test to check maxbits in compiled library vs. Perl
 
-- Pure perl implementations
+- Figure out documentation solution for PP.pm
 
-- input validation (in XS, or do we need to make Perl wrappers for everything?)
-  We can do inpuut val in XS by looking at the NV.  But I think long term we'll
-  have a little Perl front end for everything to route to bignum routines or
-  regular routines.
+- Is the current PP.pm setup the way we want to do it?
 
 - Faster SQUFOF
 
-- speed up random_prime for large numbers
-
-- better prime count upper/lower bounds
+- better prime count upper/lower bounds:
+    - Dusart 2010 "Estimates of Some Functions Over Primes without R.H."
+    - Schoenfeld or Stoll for with-RH limits
 
 - Move .c / .h files into separate directory.
   version does it in a painful way.  Something simpler to be had?
 
-- threading and Windows.  Ugh.
+- finish test suite for bignum.  Work on making it faster.
+
+- After the factoring changes, we need to use Devel::Cover again to ferret
+  out numbers that pass the early tests.

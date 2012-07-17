@@ -141,6 +141,7 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
 #ifndef HALF_WORD
   static UV powmod(UV n, UV power, UV m) {
     UV t = 1;
+    n %= m;
     while (power) {
       if (power & 1)
         t = mulmod(t, n, m);
@@ -152,8 +153,8 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
 #else
   static UV powmod(UV n, UV power, UV m) {
     UV t = 1;
+    n %= m;
     if (m < HALF_WORD) {
-      n %= m;
       while (power) {
         if (power & 1)
           t = (t*n)%m;
@@ -231,7 +232,7 @@ static int is_perfect_square(UV n, UV* sqrtn)
  * Returns 1 if probably prime relative to the bases, 0 if composite.
  * Bases must be between 2 and n-2
  */
-int miller_rabin(UV n, const UV *bases, int nbases)
+int _XS_miller_rabin(UV n, const UV *bases, int nbases)
 {
   int b;
   int s = 0;
@@ -273,7 +274,7 @@ int miller_rabin(UV n, const UV *bases, int nbases)
   return 1;
 }
 
-int is_prob_prime(UV n)
+int _XS_is_prob_prime(UV n)
 {
   UV bases[12];
   int nbases;
@@ -355,7 +356,7 @@ int is_prob_prime(UV n)
   }
 #endif
 #endif
-  prob_prime = miller_rabin(n, bases, nbases);
+  prob_prime = _XS_miller_rabin(n, bases, nbases);
   return 2*prob_prime;
 }
 
@@ -396,7 +397,7 @@ int fermat_factor(UV n, UV *factors, UV rounds)
 }
 
 /* Hart's One Line Factorization.
- * Translation from my GMP, missing perfect square calc and premult.
+ * Missing premult (hard to do in native precision without overflow)
  */
 int holf_factor(UV n, UV *factors, UV rounds)
 {
@@ -405,8 +406,10 @@ int holf_factor(UV n, UV *factors, UV rounds)
   MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in holf_factor");
 
   for (i = 1; i <= rounds; i++) {
-    s = sqrt(n*i);                      /* TODO: overflow here */
-    if ( (s*s) != (n*i) )  s++;
+    s = sqrt( (double)n * (double)i );
+    /* Assume s^2 isn't a perfect square.  We're rapidly losing precision
+     * so we won't be able to accurately detect it anyway. */
+    s++;    /* s = ceil(sqrt(n*i)) */
     m = sqrmod(s, n);
     if (is_perfect_square(m, &f)) {
       f = gcd_ui( (s>f) ? s-f : f-s, n);
@@ -424,79 +427,109 @@ int holf_factor(UV n, UV *factors, UV rounds)
 }
 
 
-/* Pollard / Brent
- *
- * Probabilistic.  If you give this a prime number, it will loop
- * until it runs out of rounds.
- */
+/* Pollard / Brent.  Brent's modifications to Pollard's Rho.  Maybe faster. */
 int pbrent_factor(UV n, UV *factors, UV rounds)
 {
-  UV a, f, i;
+  UV f, i, r;
   UV Xi = 2;
   UV Xm = 2;
+  UV a = 1;
+  const UV inner = 128;
 
   MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in pbrent_factor");
 
-  switch (n%4) {
-    case 0:  a =  1; break;
-    case 1:  a =  3; break;
-    case 2:  a =  5; break;
-    case 3:  a =  7; break;
-    default: a = 11; break;
-  }
-
-  for (i = 1; i <= rounds; i++) {
-    Xi = sqraddmod(Xi, a, n);
-    f = gcd_ui( (Xi>Xm) ? Xi-Xm : Xm-Xi, n);
-    if ( (f != 1) && (f != n) ) {
-      factors[0] = f;
-      factors[1] = n/f;
-      MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
-      return 2;
+  r = 1;
+  while (rounds > 0) {
+    UV rleft = (r > rounds) ? rounds : r;
+    UV saveXi;
+    /* Do rleft rounds, inner at a time */
+    while (rleft > 0) {
+      UV dorounds = (rleft > inner) ? inner : rleft;
+      UV m = 1;
+      saveXi = Xi;
+      for (i = 0; i < dorounds; i++) {
+        Xi = sqraddmod(Xi, a, n);
+        f = (Xi>Xm) ? Xi-Xm : Xm-Xi;
+        m = mulmod(m, f, n);
+      }
+      rleft -= dorounds;
+      rounds -= dorounds;
+      f = gcd_ui(m, n);
+      if (f != 1)
+        break;
     }
-    if ( (i & (i-1)) == 0)   /* i is a power of 2 */
+    /* If f == 1, then we didn't find a factor.  Move on. */
+    if (f == 1) {
+      r *= 2;
       Xm = Xi;
+      continue;
+    }
+    if (f == n) {  /* backup, with safety */
+      Xi = saveXi;
+      do {
+        Xi = sqraddmod(Xi, a, n);
+        f = gcd_ui( (Xi>Xm) ? Xi-Xm : Xm-Xi, n);
+      } while (f == 1 && r-- != 0);
+      if ( (f == 1) || (f == n) ) break;
+    }
+    factors[0] = f;
+    factors[1] = n/f;
+    MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
+    return 2;
   }
   factors[0] = n;
   return 1;
 }
 
-/* Pollard's Rho
- *
- * Probabilistic.  If you give this a prime number, it will loop
- * until it runs out of rounds.
- */
+/* Pollard's Rho. */
 int prho_factor(UV n, UV *factors, UV rounds)
 {
-  int in_loop = 0;
-  UV a, f, i;
+  UV a, f, i, m, oldU, oldV;
+  const UV inner = 128;
   UV U = 7;
   UV V = 7;
 
   MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in prho_factor");
 
-  switch (n%4) {
-    case 0:  a =  5; break;
-    case 1:  a =  7; break;
-    case 2:  a = 11; break;
-    case 3:  a =  1; break;
-    default: a =  3; break;
+  /* We could just as well say a = 1 */
+  switch (n%8) {
+    case 1:  a = 1; break;
+    case 3:  a = 2; break;
+    case 5:  a = 3; break;
+    case 7:  a = 5; break;
+    default: a = 7; break;
   }
 
-  for (i = 1; i <= rounds; i++) {
-    U = sqraddmod(U, a, n);
-    V = sqraddmod(V, a, n);
-    V = sqraddmod(V, a, n);
-    f = gcd_ui( (U > V) ? U-V : V-U, n);
-    if (f == n) {
-      if (in_loop++)     /* Mark that we've been here */
-        break;           /* Exit now if we're cycling */
-    } else if (f != 1) {
-      factors[0] = f;
-      factors[1] = n/f;
-      MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
-      return 2;
+  rounds = (rounds + inner - 1) / inner;
+
+  while (rounds-- > 0) {
+    m = 1; oldU = U; oldV = V;
+    for (i = 0; i < inner; i++) {
+      U = sqraddmod(U, a, n);
+      V = sqraddmod(V, a, n);
+      V = sqraddmod(V, a, n);
+      f = (U > V) ? U-V : V-U;
+      m = mulmod(m, f, n);
     }
+    f = gcd_ui(m, n);
+    if (f == 1)
+      continue;
+    if (f == n) {  /* back up to find a factor*/
+      U = oldU; V = oldV;
+      i = inner;
+      do {
+        U = sqraddmod(U, a, n);
+        V = sqraddmod(V, a, n);
+        V = sqraddmod(V, a, n);
+        f = gcd_ui( (U > V) ? U-V : V-U, n);
+      } while (f == 1 && i-- != 0);
+      if ( (f == 1) || (f == n) )
+        break;
+    }
+    factors[0] = f;
+    factors[1] = n/f;
+    MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
+    return 2;
   }
   factors[0] = n;
   return 1;

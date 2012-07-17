@@ -23,12 +23,16 @@ WriteMakefile1(
                       'Carp'             => 0,
                       'Tie::Array'       => 0,
                       'base'             => 0,
+                      'Config'           => 0,
+                      'bignum'           => '0.23',   # Used for bigint tests
+                      'Math::BigInt'     => '1.88',
+                      'Math::BigFloat'   => '1.59',
                     },
 
     MIN_PERL_VERSION => 5.006002,
 );
 
-sub WriteMakefile1 {
+sub WriteMakefile1 {   # Cribbed from eumm-upgrade by Alexandr Ciornii
   my %params = @_;
   my $eumm_version = $ExtUtils::MakeMaker::VERSION;
   $eumm_version = eval $eumm_version;

@@ -33,41 +33,43 @@ static UV count_zero_bits(const unsigned char* m, UV nbytes)
 
 
 /* Does trial division, assuming x not divisible by 2, 3, or 5 */
-static int _is_trial_prime7(UV x)
+static int _is_trial_prime7(UV n)
 {
-  UV q, i;
+  UV limit, i;
+  limit = sqrt(n);
   i = 7;
   while (1) {   /* trial division, skipping multiples of 2/3/5 */
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 4;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 2;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 4;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 2;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 4;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 6;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 2;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 6;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 6;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 6;
   }
   return 2;
 }
 
 /* Does trial division or prob tests, assuming x not divisible by 2, 3, or 5 */
-static int _is_prime7(UV x)
+static int _is_prime7(UV n)
 {
-  UV q, i;
+  UV limit, i;
 
-  if (x > MPU_PROB_PRIME_BEST)
-    return is_prob_prime(x);  /* We know this works for all 64-bit n */
+  if (n > MPU_PROB_PRIME_BEST)
+    return _XS_is_prob_prime(n);  /* We know this works for all 64-bit n */
 
+  limit = sqrt(n);
   i = 7;
   while (1) {   /* trial division, skipping multiples of 2/3/5 */
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 4;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 2;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 4;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 2;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 4;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 6;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 2;
-    q = x/i;  if (q<i) break;  if (x==(q*i)) return 0;   i += 6;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 6;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
+    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 6;
   }
   return 2;
 }
@@ -86,7 +88,7 @@ static const unsigned char prime_is_small[] =
 #define NPRIME_IS_SMALL (sizeof(prime_is_small)/sizeof(prime_is_small[0]))
 
 /* Return of 2 if n is prime, 0 if not.  Do it fast. */
-int is_prime(UV n)
+int _XS_is_prime(UV n)
 {
   UV d, m;
   unsigned char mtab;
@@ -140,7 +142,7 @@ int is_definitely_prime(UV n)
   if (isprime >= 0)  return isprime;
 
   if (n > MPU_PROB_PRIME_BEST)
-    return (is_prob_prime(n) == 2);
+    return (_XS_is_prob_prime(n) == 2);
 
   return 0;
 }
@@ -170,7 +172,7 @@ UV next_trial_prime(UV n)
 }
 
 
-UV next_prime(UV n)
+UV _XS_next_prime(UV n)
 {
   UV d, m;
   const unsigned char* sieve;
@@ -208,7 +210,7 @@ UV next_prime(UV n)
 }
 
 
-UV prev_prime(UV n)
+UV _XS_prev_prime(UV n)
 {
   UV d, m;
   const unsigned char* sieve;
@@ -378,7 +380,7 @@ static UV count_segment_ranged(const unsigned char* sieve, UV nbytes, UV lowp, U
  * The formulas of Dusart for higher x are better yet.  I recommend the paper
  * by Burde for further information.  Dusart's thesis is also a good resource.
  *
- * I have tweaked the bounds formulas for small (under 4000M) numbers so they
+ * I have tweaked the bounds formulas for small (under 70_000M) numbers so they
  * are tighter.  These bounds are verified via trial.  The Dusart bounds
  * (1.8 and 2.51) are used for larger numbers since those are proven.
  *
@@ -390,139 +392,7 @@ static const unsigned char prime_count_small[] =
    16,16,16,16,16,16,17,17,18,18,18,18,18,18,19};
 #define NPRIME_COUNT_SMALL  (sizeof(prime_count_small)/sizeof(prime_count_small[0]))
 
-static const double F1 = 1.0;
-UV prime_count_lower(UV x)
-{
-  double fx, flogx;
-  double a = 1.80;     /* Dusart 1999, page 14 */
-
-  if (x < NPRIME_COUNT_SMALL)
-    return prime_count_small[x];
-
-  fx = (double)x;
-  flogx = log(x);
-
-  if (x < 599)
-    return (UV) (fx / (flogx-0.7));
-
-  if      (x <     2700)  { a = 0.30; }
-  else if (x <     5500)  { a = 0.90; }
-  else if (x <    19400)  { a = 1.30; }
-  else if (x <    32299)  { a = 1.60; }
-  else if (x <   176000)  { a = 1.80; }
-  else if (x <   315000)  { a = 2.10; }
-  else if (x <  1100000)  { a = 2.20; }
-  else if (x <  4500000)  { a = 2.31; }
-  else if (x <233000000)  { a = 2.36; }
-#if BITS_PER_WORD == 32
-  else a = 2.32;
-#else
-  else if (x < UVCONST( 5433800000)) { a = 2.32; }
-  else if (x < UVCONST(60000000000)) { a = 2.15; }
-#endif
-
-  return (UV) ( (fx/flogx) * (F1 + F1/flogx + a/(flogx*flogx)) );
-}
-
-
-UV prime_count_upper(UV x)
-{
-  double fx, flogx;
-  double a = 2.51;    /* Dusart 1999, page 14 */
-
-  if (x < NPRIME_COUNT_SMALL)
-    return prime_count_small[x];
-
-  fx = (double)x;
-  flogx = log(x);
-
-  /* This function is unduly complicated. */
-
-  if (x < 1621)  return (UV) (fx / (flogx-1.048) + F1);
-  if (x < 5000)  return (UV) (fx / (flogx-1.071) + F1);
-  if (x < 15900) return (UV) (fx / (flogx-1.098) + F1);
-
-  if      (x <    24000) {  a = 2.30; }
-  else if (x <    59000) {  a = 2.48; }
-  else if (x <   350000) {  a = 2.52; }
-  else if (x <   355991) {  a = 2.54; }
-  else if (x <   356000) {  a = 2.51; }
-  else if (x <  3550000) {  a = 2.50; }
-  else if (x <  3560000) {  a = 2.49; }
-  else if (x <  5000000) {  a = 2.48; }
-  else if (x <  8000000) {  a = 2.47; }
-  else if (x < 13000000) {  a = 2.46; }
-  else if (x < 18000000) {  a = 2.45; }
-  else if (x < 31000000) {  a = 2.44; }
-  else if (x < 41000000) {  a = 2.43; }
-  else if (x < 48000000) {  a = 2.42; }
-  else if (x <119000000) {  a = 2.41; }
-  else if (x <182000000) {  a = 2.40; }
-  else if (x <192000000) {  a = 2.395; }
-  else if (x <213000000) {  a = 2.390; }
-  else if (x <271000000) {  a = 2.385; }
-  else if (x <322000000) {  a = 2.380; }
-  else if (x <400000000) {  a = 2.375; }
-  else if (x <510000000) {  a = 2.370; }
-  else if (x <682000000) {  a = 2.367; }
-#if BITS_PER_WORD == 32
-  else a = 2.362;
-#else
-  else if (x < UVCONST(60000000000)) { a = 2.362; }
-#endif
-
-  /*
-   * An alternate idea:
-   *  float alog[23] = {  2.30,2.30,2.30,2.30,2.30,2.30,2.30 ,2.30,2.30,2.30,
-   *                      2.47,2.49,2.53,2.50,2.49,2.49,2.456,2.44,2.40,2.370,
-   *                      2.362,2.362,2.362,2.362};
-   *  float clog[23] = {  0,   0,   0,   0,   0,   0,   0,    0,   0,   1,
-   *                      3,   1,   2,   1,   3,   2,   5,   -6,   1,   1,
-   *                      1,   1,   1,   1};
-   *  if ((int)flogx < 23) {
-   *    a = alog[(int)flogx];
-   *    return ((UV) ( (fx/flogx) * (F1 + F1/flogx + a/(flogx*flogx)) ) + clog[(int)flogx] + 0.01);
-   *  }
-   *
-   * Another thought is to use more terms in the Li(x) expansion along with
-   * a subtraction [Li(x) > Pi(x) for x < 10^316 or so, so for our 64-bit
-   * version we should be fine].
-   */
-
-  return (UV) ( (fx/flogx) * (F1 + F1/flogx + a/(flogx*flogx)) + F1 );
-}
-
-
-UV prime_count_approx(UV x)
-{
-  /*
-   * A simple way:
-   *     return ((prime_count_lower(x) + prime_count_upper(x)) / 2);
-   * With the current bounds, this is ~131k at 10^10 and 436B at 10^19.
-   *
-   * The logarithmic integral works quite well, with absolute errors of
-   * ~3100 at 10^10 and ~100M at 10^19.
-   *
-   * Riemann's R function works astoundingly well, with errors of ~1828
-   * at 10^10 and 24M at 10^19.
-   *
-   * Getting fancier, one try using Riemann's pi formula:
-   *     http://trac.sagemath.org/sage_trac/ticket/8135
-   */
-  double R;
-  if (x < NPRIME_COUNT_SMALL)
-    return prime_count_small[x];
-
-  R = RiemannR(x);
-  /* We could add the additional factor:
-   *   R = R - (1.0 / log(x)) + (M_1_PI * atan(M_PI/log(x)))
-   * but it's extraordinarily small, so not worth calculating here.
-   */
-  return (UV)(R+0.5);
-}
-
-
-UV prime_count(UV low, UV high)
+UV _XS_prime_count(UV low, UV high)
 {
   const unsigned char* cache_sieve;
   unsigned char* segment;
@@ -602,37 +472,9 @@ static const unsigned short primes_small[] =
    409,419,421,431,433,439,443,449,457,461,463,467,479,487,491,499};
 #define NPRIMES_SMALL (sizeof(primes_small)/sizeof(primes_small[0]))
 
-/* The nth prime will be greater than or equal to this number */
-UV nth_prime_lower(UV n)
-{
-  double fn = (double) n;
-  double flogn, flog2n, lower;
-
-  if (n < NPRIMES_SMALL)
-    return (n==0) ? 0 : primes_small[n];
-
-  flogn  = log(n);
-  flog2n = log(flogn);    /* Note distinction between log_2(n) and log^2(n) */
-
-  /* Dusart 1999 page 14, for all n >= 2 */
-  lower = fn * (flogn + flog2n - 1.0 + ((flog2n-2.25)/flogn));
-
-  /* Watch out for overflow */
-  if (lower >= (double)UV_MAX) {
-#if BITS_PER_WORD == 32
-    if (n <= UVCONST(203280221)) return UVCONST(4294967291);
-#else
-    if (n <= UVCONST(425656284035217743)) return UVCONST(18446744073709551557);
-#endif
-    croak("nth_prime_lower(%"UVuf") overflow", n);
-  }
-
-  return (UV) lower;
-}
-
-
+/* Note: We're keeping this here because we use it for nth_prime */
 /* The nth prime will be less or equal to this number */
-UV nth_prime_upper(UV n)
+static UV _XS_nth_prime_upper(UV n)
 {
   double fn = (double) n;
   double flogn, flog2n, upper;
@@ -643,15 +485,27 @@ UV nth_prime_upper(UV n)
   flogn  = log(n);
   flog2n = log(flogn);    /* Note distinction between log_2(n) and log^2(n) */
 
-  if (n >= 39017)
-    upper = fn * ( flogn  +  flog2n - 0.9484 ); /* Dusart 1999 page 14*/
-  else if (n >= 27076)
-    upper = fn * (flogn + flog2n - 1.0 + ((flog2n-1.80)/flogn)); /*Dusart 1999*/
-  else if (n >= 7022)
-    upper = fn * ( flogn  +  0.9385 * flog2n ); /* Robin 1983 */
+  if      (n >= 688383)    /* Dusart 2010 page 2 */
+    upper = fn * (flogn + flog2n - 1.0 + ((flog2n-2.00)/flogn));
+  else if (n >= 178974)    /* Dusart 2010 page 7 */
+    upper = fn * (flogn + flog2n - 1.0 + ((flog2n-1.95)/flogn));
+  else if (n >=  39017)    /* Dusart 1999 page 14 */
+    upper = fn * (flogn + flog2n - 0.9484);
+  else if (n >=     6)     /* Modified from Robin 1983 for 6-39016 _only_ */
+    upper = fn * ( flogn  +  0.6000 * flog2n );
   else
     upper = fn * ( flogn + flog2n );
 
+  /* For all three analytical functions, it is possible that for a given valid
+   * input, we will not be able to return an output that fits in the UV type.
+   * For example, if they ask for the 203280222nd prime, we should return
+   * 4294967311.  But in 32-bit, that overflows.  What we do is calculate our
+   * double precision value.  If that would overflow, then we look at the input
+   * and if it is <= the index of the last representable prime, then we return
+   * the last representable prime.  Otherwise, we croak an overflow message.
+   * This should maintain the invariant:
+   *    nth_prime_lower(n)  <=  nth_prime(n)  <=  nth_prime_upper(n)
+   */
   /* Watch out for  overflow */
   if (upper >= (double)UV_MAX) {
 #if BITS_PER_WORD == 32
@@ -666,76 +520,7 @@ UV nth_prime_upper(UV n)
 }
 
 
-UV nth_prime_approx(UV n)
-{
-  double fn, flogn, flog2n, order, approx;
-
-  if (n < NPRIMES_SMALL)
-    return primes_small[n];
-
-  /* This isn't too bad:
-   *    return ((nth_prime_lower(n) + nth_prime_upper(n)) / 2);
-   */
-
-  fn = (double) n;
-  flogn = log(n);
-  flog2n = log(flogn);
-
-  /* Cipolla 1902:
-   *    m=0   fn * ( flogn + flog2n - 1 );
-   *    m=1   + ((flog2n - 2)/flogn) );
-   *    m=2   - (((flog2n*flog2n) - 6*flog2n + 11) / (2*flogn*flogn))
-   *    + O((flog2n/flogn)^3)
-   *
-   * Shown in Dusart 1999 page 12, as well as other sources such as:
-   *   http://www.emis.de/journals/JIPAM/images/153_02_JIPAM/153_02.pdf
-   * where the main issue you run into is that you're doing polynomial
-   * interpolation, so it oscillates like crazy with many high-order terms.
-   * Hence I'm leaving it at m=2.
-   */
-  approx = fn * ( flogn + flog2n - 1
-                  + ((flog2n - 2)/flogn)
-                  - (((flog2n*flog2n) - 6*flog2n + 11) / (2*flogn*flogn))
-                );
-
-  /* Apply a correction to help keep values close */
-  order = flog2n/flogn;
-  order = order*order*order * fn;
-
-  if      (n <   259) approx += 10.4 * order;
-  else if (n <   775) approx += 7.52 * order;
-  else if (n <  1271) approx += 5.6 * order;
-  else if (n <  2000) approx += 5.2 * order;
-  else if (n <  4000) approx += 4.3 * order;
-  else if (n < 12000) approx += 3.0 * order;
-  else if (n <150000) approx += 2.1 * order;
-  else if (n <200000000) approx += 0.0 * order;
-  else                approx += -0.010 * order; /* -0.025 is better */
-
-  /* For all three analytical functions, it is possible that for a given valid
-   * input, we will not be able to return an output that fits in the UV type.
-   * For example, if they ask for the 203280222nd prime, we should return
-   * 4294967311.  But in 32-bit, that overflows.  What we do is calculate our
-   * double precision value.  If that would overflow, then we look at the input
-   * and if it is <= the index of the last representable prime, then we return
-   * the last representable prime.  Otherwise, we croak an overflow message.
-   * This should maintain the invariant:
-   *    nth_prime_lower(n)  <=  nth_prime(n)  <=  nth_prime_upper(n)
-   */
-  if (approx >= (double)UV_MAX) {
-#if BITS_PER_WORD == 32
-    if (n <= UVCONST(203280221)) return UVCONST(4294967291);
-#else
-    if (n <= UVCONST(425656284035217743)) return UVCONST(18446744073709551557);
-#endif
-    croak("nth_prime_approx(%"UVuf") overflow", n);
-  }
-
-  return (UV) (approx + 0.5);
-}
-
-
-UV nth_prime(UV n)
+UV _XS_nth_prime(UV n)
 {
   const unsigned char* cache_sieve;
   unsigned char* segment;
@@ -749,7 +534,7 @@ UV nth_prime(UV n)
     return primes_small[n];
 
   /* Determine a bound on the nth prime.  We know it comes before this. */
-  upper_limit = nth_prime_upper(n);
+  upper_limit = _XS_nth_prime_upper(n);
   MPUassert(upper_limit > 0, "nth_prime got an upper limit of 0");
 
   /* Get the primary cache, and ensure it is at least this large.  If the
@@ -823,7 +608,7 @@ UV nth_prime(UV n)
 static double const euler_mascheroni = 0.57721566490153286060651209008240243104215933593992;
 static double const li2 = 1.045163780117492784844588889194613136522615578151;
 
-double ExponentialIntegral(double x) {
+double _XS_ExponentialIntegral(double x) {
   double const tol = 1e-16;
   double val, term, fact_n;
   double y, t;
@@ -915,12 +700,12 @@ double ExponentialIntegral(double x) {
   return val;
 }
 
-double LogarithmicIntegral(double x) {
+double _XS_LogarithmicIntegral(double x) {
   if (x == 0) return 0;
   if (x == 1) return -INFINITY;
   if (x == 2) return li2;
   if (x <= 0) croak("Invalid input to LogarithmicIntegral:  x must be > 0");
-  return ExponentialIntegral(log(x));
+  return _XS_ExponentialIntegral(log(x));
 }
 
 /*
@@ -996,7 +781,7 @@ static double evaluate_zeta(double x) {
   return sum;
 }
 
-double RiemannR(double x) {
+double _XS_RiemannR(double x) {
   double const tol = 1e-16;
   double y, t, part_term, term, flogx, zeta;
   double sum = 0.0;
