@@ -28,4 +28,4 @@ requires:
   base: 0
   bignum: 0.23
   perl: 5.006002
-version: 0.10
+version: 0.11

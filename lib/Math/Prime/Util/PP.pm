@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.10';
+  $Math::Prime::Util::PP::VERSION = '0.11';
 }
 
 # The Pure Perl versions of all the Math::Prime::Util routines.
@@ -300,8 +300,8 @@ sub primes {
   # At some point even the pretty-fast pure perl sieve is going to be a
   # dog, and we should move to trials.  This is typical with a small range
   # on a large base.  More thought on the switchover should be done.
-  return trial_primes($low, $high) if ref($low)  =~ /^Math::Big/
-                                   || ref($high) =~ /^Math::Big/
+  return trial_primes($low, $high) if ref($low)  eq 'Math::BigInt'
+                                   || ref($high) eq 'Math::BigInt'
                                    || ($low > 1_000_000_000_000 && ($high-$low) < int($low/1_000_000));
 
   push @$sref, 2  if ($low <= 2) && ($high >= 2);
@@ -333,7 +333,10 @@ sub primes {
 sub next_prime {
   my($n) = @_;
   _validate_positive_integer($n);
-  return 0 if ($n >= ((_PP_prime_maxbits == 32) ? 4294967291 : 18446744073709551557)) && ref($n) ne 'Math::BigInt';
+  if ($n >= ((_PP_prime_maxbits == 32) ? 4294967291 : 18446744073709551557)) {
+    return 0 if ref($_[0]) ne 'Math::BigInt';
+    $n = $_[0];  # $n is a bigint now
+  }
   return $_prime_next_small[$n] if $n <= $#_prime_next_small;
 
   # Be careful trying to do:
@@ -401,7 +404,7 @@ sub prime_count {
   $high-- if ($high % 2) == 0; # Make high go to odd number.
   return $count if $low > $high;
 
-  if (   ref($low)  =~ /^Math::Big/ || ref($high) =~ /^Math::Big/
+  if (   ref($low) eq 'Math::BigInt' || ref($high) eq 'Math::BigInt'
       || $high > 16_000_000_000
       || ($high-$low) < int($low/1_000_000) ) {
     # Too big to sieve.
@@ -1147,7 +1150,7 @@ sub ExponentialIntegral {
 
   croak "Invalid input to ExponentialIntegral:  x must be != 0" if $x == 0;
 
-  $x = new Math::BigFloat "$x"  if defined $Math::BigFloat::VERSION && ref($x) ne 'Math::BigFloat';
+  $x = new Math::BigFloat "$x"  if defined $bignum::VERSION && ref($x) ne 'Math::BigFloat';
 
   my $val; # The result from one of the four methods
 
@@ -1276,10 +1279,10 @@ sub _evaluate_zeta {
   my($y, $t);
   my $c = 0.0;
 
-  $y = (1.0/(2.0**$x))-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
+  $y = (2.0 ** -$x)-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
 
   for my $k (3 .. 100000) {
-    my $term = 1.0 / ($k ** $x);
+    my $term = $k ** -$x;
     $y = $term-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
     last if abs($term) < $tol;
   }
@@ -1296,7 +1299,7 @@ sub RiemannR {
 
   croak "Invalid input to ReimannR:  x must be > 0" if $x <= 0;
 
-  $x = new Math::BigFloat "$x"  if defined $Math::BigFloat::VERSION && ref($x) ne 'Math::BigFloat';
+  $x = new Math::BigFloat "$x"  if defined $bignum::VERSION && ref($x) ne 'Math::BigFloat';
 
   $y = 1.0-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
   my $flogx = log($x);
@@ -1330,7 +1333,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.10
+Version 0.11
 
 
 =head1 SYNOPSIS
