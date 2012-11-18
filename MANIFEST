@@ -10,10 +10,14 @@ README
 TODO
 XS.xs
 ptypes.h
+aks.h
+aks.c
 cache.h
 cache.c
 factor.h
 factor.c
+lehmer.h
+lehmer.c
 sieve.h
 sieve.c
 util.h
@@ -23,11 +27,15 @@ examples/bench-factor.pl
 examples/bench-factor-extra.pl
 examples/bench-factor-semiprime.pl
 examples/bench-is-prime.pl
+examples/bench-isprime-bpsw.pl
 examples/bench-miller-rabin.pl
 examples/bench-nthprime.pl
 examples/bench-pcapprox.pl
 examples/bench-primecount.pl
 examples/bench-random-prime.pl
+examples/bench-pp-count.pl
+examples/bench-pp-isprime.pl
+examples/bench-pp-sieve.pl
 examples/test-factor-yafu.pl
 examples/test-factor-mpxs.pl
 examples/test-nextprime-yafu.pl
@@ -37,6 +45,15 @@ examples/test-nthapprox.pl
 examples/test-pcapprox.pl
 examples/sophie_germain.pl
 examples/twin_primes.pl
+examples/find_mr_bases.pl
+examples/test-bpsw.pl
+examples/test-euler-pari.pl
+examples/test-factor-gnufactor.pl
+examples/make-script-test-data.pl
+examples/test-primes-script.pl
+examples/test-primes-script2.pl
+bin/primes.pl
+bin/factor.pl
 t/01-load.t
 t/02-can.t
 t/03-init.t
@@ -59,5 +76,6 @@ t/81-bignum.t
 t/90-release-perlcritic.t
 t/91-release-pod-syntax.t
 t/92-release-pod-coverage.t
+.travis.yml
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)

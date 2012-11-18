@@ -1,7 +1,45 @@
 Revision history for Perl extension Math::Prime::Util.
 
+0.12  17 November 2012
+
+    - Add bin/primes.pl and bin/factor.pl
+
+    - Add functions:
+           primorial               product of primes <= n
+           pn_primorial            product of first n primes
+           prime_set_config        set config options
+           RiemannZeta             export and make accurate for small reals
+           is_provable_prime       prove primes after BPSW
+           is_aks_prime            prove prime via AKS
+
+    - Add 'assume_rh' configuration option (default: false) which can be set
+      to allow functions to assume the Riemann Hypothesis.
+
+    - Use the Schoenfeld bound for Pi(x) (x large) if assume_rh is true.
+
+    - valgrind testing
+
+    - Use long doubles for math functions.
+
+    - Some fixes and speedups for ranged primes().
+
+    - In the PP code, use 2 MR bases for more numbers when possible.
+
+    - Fixup of racing SQUFOF, and switch to use it in factor().
+
+    - Complete rewrite of XS p-1 factor routine, includes second stage.
+
+    - bug fix for prime_count on edge of cache.
+
+    - prime_count will use Lehmer prime counting algorithm for largish
+      sizes (above 4 million).  This is MUCH faster than sieving.
+
+    - nth_prime now uses the fast Lehmer prime count below the lower limit,
+      then sieves up from there.  This makes a big speed difference for inputs
+      over 10^6 or so -- over 100x faster for 10^9 and up.
+
 0.11  23 July 2012
-    - Turn of threading tests on Cygwin, as threads on some Cygwin platforms
+    - Turn off threading tests on Cygwin, as threads on some Cygwin platforms
       give random panics (my Win7 64-bit works fine, XP 32-bit does not).
     - Use pow instead of exp2 -- some systems don't have exp2.
     - Fix compile issues on MSC, thanks to Sisyphus.

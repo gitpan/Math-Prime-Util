@@ -4,7 +4,7 @@
       "Dana A Jacobsen <dana@acm.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.6302, CPAN::Meta::Converter version 2.120630",
+   "generated_by" : "ExtUtils::MakeMaker version 6.6302, CPAN::Meta::Converter version 2.120921",
    "license" : [
       "perl_5"
    ],
@@ -22,7 +22,8 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "Test::More" : "0.45"
+            "Test::More" : "0.45",
+            "bignum" : "0.22"
          }
       },
       "configure" : {
@@ -31,6 +32,9 @@
          }
       },
       "runtime" : {
+         "recommends" : {
+            "Math::BigInt::GMP" : "0"
+         },
          "requires" : {
             "Carp" : "0",
             "Config" : "0",
@@ -40,11 +44,10 @@
             "Tie::Array" : "0",
             "XSLoader" : "0.01",
             "base" : "0",
-            "bignum" : "0.23",
             "perl" : "5.006002"
          }
       }
    },
    "release_status" : "stable",
-   "version" : "0.11"
+   "version" : "0.12"
 }

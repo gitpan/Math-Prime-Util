@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.11';
+  $Math::Prime::Util::PP::VERSION = '0.12';
 }
 
 # The Pure Perl versions of all the Math::Prime::Util routines.
@@ -493,9 +493,9 @@ sub _native_powmod {
   my $t = 1;
   $n = $n % $m;
   while ($power) {
-    $t = ($t * $n) % $m if ($power & 1) != 0;
-    $n = ($n * $n) % $m;
+    $t = ($t * $n) % $m if ($power & 1);
     $power >>= 1;
+    $n = ($n * $n) % $m if $power;
   }
   $t;
 }
@@ -507,15 +507,15 @@ sub _powmod {
   if  ($m < $_half_word) {
     $n %= $m;
     while ($power) {
-      $t = ($t * $n) % $m if ($power & 1) != 0;
-      $n = ($n * $n) % $m;
+      $t = ($t * $n) % $m if ($power & 1);
       $power >>= 1;
+      $n = ($n * $n) % $m if $power;
     }
   } else {
     while ($power) {
-      $t = _mulmod($t, $n, $m) if ($power & 1) != 0;
-      $n = _mulmod($n, $n, $m);
+      $t = _mulmod($t, $n, $m) if ($power & 1);
       $power >>= 1;
+      $n = _mulmod($n, $n, $m) if $power;
     }
   }
   $t;
@@ -532,6 +532,36 @@ sub _gcd_ui {
   }
   $x;
 }
+
+sub _is_perfect_power {
+  my $n = shift;
+  my $log2n = _log2($n);
+  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+  for my $e (@{primes($log2n)}) {
+    return 1 if $n->copy()->broot($e)->bpow($e) == $n;
+  }
+  0;
+}
+
+sub _order {
+  my($r, $n, $lim) = @_;
+  $lim = $r unless defined $lim;
+
+  return 1 if ($n % $r) == 1;
+  for (my $j = 2; $j <= $lim; $j++) {
+    return $j if _powmod($n, $j, $r) == 1;
+  }
+  return $lim+1;
+}
+
+# same result as:  int($n->blog(2)->floor->bstr)
+sub _log2 {
+  my $n = shift;
+  my $log2n = 0;
+  $log2n++ while ($n >>= 1);
+  $log2n;
+}
+
 
 
 sub miller_rabin {
@@ -780,6 +810,126 @@ sub is_strong_lucas_pseudoprime {
     }
   }
   return 0;
+}
+
+
+my $_poly_bignum;
+sub _poly_new {
+  my @poly;
+  if ($_poly_bignum) {
+    foreach my $c (@_) {
+      push @poly, (ref $c eq 'Math::BigInt') ? $c->copy : Math::BigInt->new("$c");
+    }
+  } else {
+    push @poly, $_ for (@_);
+    push @poly, 0 unless scalar @poly;
+  }
+  return \@poly;
+}
+
+sub _poly_print {
+  my($poly) = @_;
+  warn "poly has null top degree" if $#$poly > 0 && !$poly->[-1];
+  foreach my $d (reverse 1 .. $#$poly) {
+    my $coef = $poly->[$d];
+    print "", ($coef != 1) ? $coef : "", ($d > 1) ? "x^$d" : "x", " + "
+      if $coef;
+  }
+  my $p0 = $poly->[0] || 0;
+  print "$p0\n";
+}
+
+sub _poly_mod_mul {
+  my($px, $py, $r, $n) = @_;
+
+  my $px_degree = $#$px;
+  my $py_degree = $#$py;
+  my @res;
+
+  # convolve(px, py) mod (X^r-1,n)
+  my @indices_y = grep { $py->[$_] } (0 .. $py_degree);
+  for (my $ix = 0; $ix <= $px_degree; $ix++) {
+    my $px_at_ix = $px->[$ix];
+    next unless $px_at_ix;
+    foreach my $iy (@indices_y) {
+      my $py_at_iy = $py->[$iy];
+      my $rindex = ($ix + $iy) % $r;  # reduce mod X^r-1
+      if (!defined $res[$rindex]) {
+        $res[$rindex] = $_poly_bignum ? Math::BigInt->bzero : 0
+      }
+      $res[$rindex] = ($res[$rindex] + ($py_at_iy * $px_at_ix)) % $n;
+    }
+  }
+  # In case we had upper terms go to zero after modulo, reduce the degree.
+  pop @res while !$res[-1];
+  return \@res;
+}
+
+sub _poly_mod_pow {
+  my($pn, $power, $r, $mod) = @_;
+  my $res = _poly_new(1);
+  my $p = $power;
+
+  while ($p) {
+    $res = _poly_mod_mul($res, $pn, $r, $mod) if ($p & 1);
+    $p >>= 1;
+    $pn  = _poly_mod_mul($pn,  $pn, $r, $mod) if $p;
+  }
+  return $res;
+}
+
+sub _test_anr {
+  my($a, $n, $r) = @_;
+  my $pp = _poly_mod_pow(_poly_new($a, 1), $n, $r, $n);
+  $pp->[$n % $r] = (($pp->[$n % $r] || 0) -  1) % $n;  # subtract X^(n%r)
+  $pp->[      0] = (($pp->[      0] || 0) - $a) % $n;  # subtract a
+  return 0 if scalar grep { $_ } @$pp;
+  1;
+}
+
+sub is_aks_prime {
+  my $n = shift;
+  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+
+  return 0 if $n < 2;
+  return 0 if _is_perfect_power($n);
+
+  # limit = floor( log2(n) * log2(n) ).  o_r(n) must be larger than this
+  my $sqrtn = int(Math::BigFloat->new($n)->bsqrt->bfloor->bstr);
+  my $log2n = Math::BigFloat->new($n)->blog(2);
+  my $log2_squared_n = $log2n * $log2n;
+  my $limit = int($log2_squared_n->bfloor->bstr);
+
+  my $r = next_prime($limit);
+  foreach my $f (@{primes(0,$r-1)}) {
+    return 1 if $f == $n;
+    return 0 if !($n % $f);
+  }
+
+  while ($r < $n) {
+    return 0 if !($n % $r);
+    #return 1 if $r >= $sqrtn;
+    last if _order($r, $n, $limit) > $limit;
+    $r = next_prime($r);
+  }
+
+  return 1 if $r >= $n;
+
+  # Since r is a prime, phi(r) = r-1
+  my $rlimit = int( Math::BigFloat->new($r)->bsub(1)
+                    ->bsqrt->bmul($log2n)->bfloor->bstr);
+
+  $_poly_bignum = 1;
+  if ( $n < ( (~0 == 4294967295) ? 65535 : 4294967295 ) ) {
+    $_poly_bignum = 0;
+    $n = int($n->bstr) if ref($n) eq 'Math::BigInt';
+  }
+
+  for (my $a = 1; $a <= $rlimit; $a++) {
+    return 0 unless _test_anr($a, $n, $r);
+  }
+
+  return 1;
 }
 
 
@@ -1043,6 +1193,7 @@ sub pbrent_factor {
   @factors;
 }
 
+# This code is bollocks.  See a proper implementation in factor.c
 sub pminus1_factor {
   my($n, $rounds) = @_;
   _validate_positive_integer($n);
@@ -1050,7 +1201,6 @@ sub pminus1_factor {
 
   my @factors = _basic_factor($n);
   return @factors if $n < 4;
-
 
   if ( ref($n) eq 'Math::BigInt' ) {
     my $kf = $n->copy->bzero->badd(13);
@@ -1270,22 +1420,25 @@ my @_Riemann_Zeta_Table = (
   0.0000000000009094947840263889282533118,
 );
 
-# Compute Riemann Zeta function.  Slow and inaccurate near x = 1, but improves
-# very rapidly (x = 5 is quite reasonable).
-sub _evaluate_zeta {
-  my($x) = @_;
-  my $tol = 1e-16;
+# Compute Riemann Zeta function minus 1.
+sub RiemannZeta {
+  my($x, $tol) = @_;
+  $tol = 1e-16 unless defined $tol;
   my $sum = 0.0;
   my($y, $t);
   my $c = 0.0;
 
-  $y = (2.0 ** -$x)-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
-
-  for my $k (3 .. 100000) {
-    my $term = $k ** -$x;
+  for my $k (2 .. 1000000) {
+    my $term = (2*$k+1) ** -$x;
     $y = $term-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
-    last if abs($term) < $tol;
+    last if $term < abs($tol*$sum);
   }
+  my $term = 3 ** -$x;
+  $y = $term-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
+  $t = 1.0 / (1.0 - (2 ** -$x));
+  $sum *= $t;
+  $sum += ($t - 1.0);
+
   $sum;
 }
 
@@ -1308,11 +1461,11 @@ sub RiemannR {
   for my $k (1 .. 10000) {
     # Small k from table, larger k from function
     my $zeta = ($k <= $#_Riemann_Zeta_Table) ? $_Riemann_Zeta_Table[$k+1-2]
-                                             : _evaluate_zeta($k+1);
+                                             : RiemannZeta($k+1);
     $part_term *= $flogx / $k;
     my $term = $part_term / ($k + $k * $zeta);
     $y = $term-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
-    last if abs($term) < $tol;
+    last if abs($term/$sum) < $tol;
   }
   $sum;
 }
@@ -1326,6 +1479,9 @@ __END__
 
 =pod
 
+=encoding utf8
+
+
 =head1 NAME
 
 Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
@@ -1333,7 +1489,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.11
+Version 0.12
 
 
 =head1 SYNOPSIS
@@ -1533,6 +1689,12 @@ sources call this a strong Lucas-Selfridge pseudoprime).  This is one half
 of the BPSW primality test (the Miller-Rabin strong pseudoprime test with
 base 2 being the other half).
 
+=head2 is_aks_prime
+
+Takes a positive number as input, and returns 1 if the input can be proven
+prime using the AKS primality test.  This code is included for completeness
+and as an example, but is impractically slow.
+
 
 =head1 UTILITY FUNCTIONS
 
@@ -1662,6 +1824,20 @@ This function is implemented as C<li(x) = Ei(ln x)> after handling special
 values.
 
 Accuracy should be at least 14 digits.
+
+=head2 RiemannZeta
+
+  my $z = RiemannZeta($s);
+
+Given a floating point input C<s> where C<s E<gt>= 0.5>, returns the floating
+point value of ζ(s)-1, where ζ(s) is the Riemann zeta function.  One is
+subtracted to ensure maximum precision for large values of C<s>.  The zeta
+function is the sum from k=1 to infinity of C<1 / k^s>
+
+Accuracy should be at least 14 digits, but currently does not increase
+accuracy with big floats.  Small integer values are returned from a table,
+values between 0.5 and 5 use rational Chebyshev approximation, and larger
+values use a series.
 
 
 =head2 RiemannR
