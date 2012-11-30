@@ -4,26 +4,31 @@
 #include <math.h>
 
 /*
- * The AKS v6 algorithm, for native integers, where n < 2^(wordbits/2)-1.
- * Hence on 64-bit machines this works for n < 4294967295, because we do
- *   r = (r + a * b) % n
- * where r, a, and b are mod n.  This could be extended to a full word by
- * using a mulmod function (like factor.c has), but it's easier to go to
- * GMP at that point, which also lets one do r or 2r modulos instead of r*r.
+ * The AKS v6 algorithm, for native integers.  Based on the AKS v6 paper.
+ * As with most AKS implementations, it's really slow.
+ *
+ * When n < 2^(wordbits/2)-1, we can do a straightforward intermediate:
+ *      r = (r + a * b) % n
+ * If n is larger, then these are replaced with:
+ *      r = addmod( r, mulmod(a, b, n), n)
+ * which is a lot more work, but keeps us correct.
+ *
+ * Software that does polynomial convolutions followed by a modulo can be
+ * very fast, but will fail when n >= (2^wordbits)/r.
+ *
+ * This is all much easier in GMP.
  *
  * Copyright 2012, Dana Jacobsen.
  */
 
 #define SQRTN_SHORTCUT 1
-#define VERBOSE 0
 
 #include "ptypes.h"
 #include "util.h"
 #include "sieve.h"
 #include "factor.h"
 #include "cache.h"
-
-#define addmod(n,a,m) ((((m)-(n)) > (a))  ?  ((n)+(a))  :  ((n)+(a)-(m)))
+#include "mulmod.h"
 
 static UV log2floor(UV n) {
   UV log2n = 0;
@@ -37,9 +42,8 @@ static int is_perfect_power(UV x) {
   UV b, last;
   if ((x & (x-1)) == 0)  return 1;          /* powers of 2    */
   b = sqrt(x); if (b*b == x)  return 1;     /* perfect square */
-  b = cbrt(x); if (b*b*b == x)  return 1;   /* perfect cube   */
   last = log2floor(x) + 1;
-  for (b = 5; b < last; b = _XS_next_prime(b)) {
+  for (b = 3; b < last; b = _XS_next_prime(b)) {
     UV root = pow(x, 1.0 / (double)b);
     if (pow(root, b) == x)  return 1;
   }
@@ -81,7 +85,11 @@ static void poly_mod_mul(UV* px, UV* py, UV* res, UV r, UV mod)
       pyj = py[j];
       if (pyj == 0)  continue;
       rindex = (i+j) < r ? i+j : i+j-r; /* (i+j) % r */
-      res[rindex] = (res[rindex] + (pxi*pyj) ) % mod;
+      if (mod < HALF_WORD) {
+        res[rindex] = (res[rindex] + (pxi*pyj) ) % mod;
+      } else {
+        res[rindex] = muladdmod(pxi, pyj, res[rindex], mod);
+      }
     }
   }
   memcpy(px, res, r * sizeof(UV)); /* put result in px */
@@ -91,10 +99,6 @@ static void poly_mod_sqr(UV* px, UV* res, UV r, UV mod)
   int d, s;
   UV sum, rindex;
   UV degree = r-1;
-
-  /* we sum a max of r*mod*mod between modulos */
-  if (mod > sqrt(UV_MAX/r))
-    return poly_mod_mul(px, px, res, r, mod);
 
   memset(res, 0, r * sizeof(UV)); /* zero out sums */
   for (d = 0; d <= 2*degree; d++) {
@@ -113,18 +117,22 @@ static UV* poly_mod_pow(UV* pn, UV power, UV r, UV mod)
 {
   UV* res;
   UV* temp;
+  int use_sqr = (mod > sqrt(UV_MAX/r)) ? 0 : 1;
 
   Newz(0, res, r, UV);
   New(0, temp, r, UV);
   if ( (res == 0) || (temp == 0) )
-    croak("Couldn't allocate space for polynomial of degree %lu\n", r);
+    croak("Couldn't allocate space for polynomial of degree %lu\n", (unsigned long) r);
 
   res[0] = 1;
 
   while (power) {
     if (power & 1)  poly_mod_mul(res, pn, temp, r, mod);
     power >>= 1;
-    if (power)      poly_mod_sqr(pn, temp, r, mod);
+    if (power) {
+      if (use_sqr)  poly_mod_sqr(pn, temp, r, mod);
+      else          poly_mod_mul(pn, pn, temp, r, mod);
+    }
   }
   Safefree(temp);
   return res;
@@ -139,7 +147,7 @@ static int test_anr(UV a, UV n, UV r)
 
   Newz(0, pn, r, UV);
   if (pn == 0)
-    croak("Couldn't allocate space for polynomial of degree %lu\n", r);
+    croak("Couldn't allocate space for polynomial of degree %lu\n", (unsigned long) r);
   a %= r;
   pn[0] = a;
   pn[1] = 1;
@@ -159,14 +167,7 @@ int _XS_is_aks_prime(UV n)
 {
   UV sqrtn, limit, r, rlimit, a;
   double log2n;
-
-  /* Check for overflow */
-#if BITS_PER_WORD == 32
-  if (n >= UVCONST(65535))
-#else
-  if (n >= UVCONST(4294967295))
-#endif
-    croak("aks(%"UVuf") overflow", n);
+  int verbose = _XS_get_verbose();
 
   if (n < 2)
     return 0;
@@ -180,7 +181,7 @@ int _XS_is_aks_prime(UV n)
   log2n = log(n) / log(2);   /* C99 has a log2() function */
   limit = (UV) floor(log2n * log2n);
 
-  if (VERBOSE) { printf("limit is %lu\n", limit); }
+  if (verbose) { printf("# aks limit is %lu\n", (unsigned long) limit); }
 
   for (r = 2; r < n; r++) {
     if ((n % r) == 0)
@@ -198,13 +199,13 @@ int _XS_is_aks_prime(UV n)
 
   rlimit = (UV) floor(sqrt(r-1) * log2n);
 
-  if (VERBOSE) { printf("r = %lu  rlimit = %lu\n", r, rlimit); }
+  if (verbose) { printf("# aks r = %lu  rlimit = %lu\n", (unsigned long) r, (unsigned long) rlimit); }
 
   for (a = 1; a <= rlimit; a++) {
     if (! test_anr(a, n, r) )
       return 0;
-    if (VERBOSE) { printf("."); fflush(stdout); }
+    if (verbose>1) { printf("."); fflush(stdout); }
   }
-  if (VERBOSE) { printf("\n"); }
+  if (verbose>1) { printf("\n"); }
   return 1;
 }

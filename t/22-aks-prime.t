@@ -3,18 +3,11 @@ use strict;
 use warnings;
 
 use Test::More;
-use Math::Prime::Util::PrimeArray;
+use Math::Prime::Util qw/is_aks_prime/;
 
-# From List::Util
-sub shuffle (@) {
-    my @a=\(@_);
-    my $n;
-    my $i=@_;
-    map {
-      $n = rand($i--);
-      (${$a[$n]}, $a[$n] = $a[$i])[0];
-    } @_;
-}
+my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
+my $extra = defined $ENV{RELEASE_TESTING} && $ENV{RELEASE_TESTING};
+my $broken64 = (18446744073709550592 == ~0);
 
 my @small_primes = qw/
 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97
@@ -48,67 +41,33 @@ my @small_primes = qw/
 3359 3361 3371 3373 3389 3391 3407 3413 3433 3449 3457 3461 3463 3467 3469 3491
 3499 3511 3517 3527 3529 3533 3539 3541 3547 3557 3559 3571 /;
 
-my %test_indices = (
-     377 => 2593,
-    1999 => 17389,
-    4500 => 43063,
-    4999 => 48611,
-   15678 => 172157,
-   30107 => 351707,
-   78901 => 1005413,
-  123456 => 1632913,
-);
-  
+plan tests =>   6   # range
+              + 1   # small number
+              + 2   # medium numbers
+              + 1*$extra
+              + 0;
 
-plan tests => 3 + 2 + scalar(keys %test_indices) + 8;
+ok(!eval { is_aks_prime(undef); }, "is_prime(undef)");
+ok( is_aks_prime(2),  '2 is prime');
+ok(!is_aks_prime(1),  '1 is not prime');
+ok(!is_aks_prime(0),  '0 is not prime');
+ok(!is_aks_prime(-1), '-1 is not prime');
+ok(!is_aks_prime(-2), '-2 is not prime');
 
-{
-  my @primes;  tie @primes, 'Math::Prime::Util::PrimeArray';
-  my (@order, @got, @exp);
+# Simple number (cought by sqrt test)
+is( is_aks_prime(877), 1, "is_aks_prime(877) is true" );
 
-  # Random
-  @order = shuffle (0 .. $#small_primes);
-  @got = map { $primes[$_] } @order;
-  @exp = map { $small_primes[$_] } @order;
-  is_deeply(\@got, \@exp, "primes 0 .. $#small_primes can be randomly selected");
+# Perhaps let them know this is probably not a hung test?
+# This runs in milliseconds on an i3930K, but many seconds on an UltraSPARC.
+#diag "Unfortunately these tests are very slow.";
 
-  # Forwards
-  @order = (0 .. $#small_primes);
-  @got = map { $primes[$_] } @order;
-  @exp = map { $small_primes[$_] } @order;
-  is_deeply(\@got, \@exp, "primes 0 .. $#small_primes in forward order");
+# The first number that makes it past the sqrt test to actually run.
+is( is_aks_prime(69197), 1, "is_aks_prime(69197) is true" );
 
-  # Backwards
-  @order = reverse (0 .. $#small_primes);
-  @got = map { $primes[$_] } @order;
-  @exp = map { $small_primes[$_] } @order;
-  is_deeply(\@got, \@exp, "primes 0 .. $#small_primes in reverse order");
-}
+# A small composite that runs the real primality test.
+is( is_aks_prime(69199), 0, "is_aks_prime(69199) is false" );
 
-{
-  my @primes;  tie @primes, 'Math::Prime::Util::PrimeArray';
-  is_deeply( [@primes[0..50]], [@small_primes[0..50]], "51 primes using array slice" );
-  is_deeply( [sort {$a<=>$b} @primes[shuffle (0 .. $#small_primes)]], \@small_primes, "random array slice of small primes" );
-}
-
-{
-  my @primes;  tie @primes, 'Math::Prime::Util::PrimeArray';
-  while (my($n, $pn) = each(%test_indices)) {
-    is( $primes[$n], $pn, "primes[$n] == $pn" );
-  }
-}
-
-# Test shifting
-{
-  my @primes;  tie @primes, 'Math::Prime::Util::PrimeArray';
-  is( shift @primes, 2, "shift 2");
-  is( shift @primes, 3, "shift 3");
-  is( shift @primes, 5, "shift 5");
-  is( shift @primes, 7, "shift 7");
-  is( shift @primes, 11, "shift 11");
-  is( $primes[0], 13, "13 after shifts");
-  unshift @primes, 1;
-  is( $primes[0], 11, "11 after unshift");
-  unshift @primes, 3;
-  is( $primes[0], 3, "3 after unshift 3");
+if ($extra) {
+  # A composite (product of two 5-digit primes)
+  is( is_aks_prime(1262952907), 0, "is_aks_prime(1262952907) is false" );
 }

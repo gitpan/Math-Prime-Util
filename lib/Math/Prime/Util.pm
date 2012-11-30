@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.13';
+  $Math::Prime::Util::VERSION = '0.14';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -24,7 +24,9 @@ our @EXPORT_OK = qw(
                      nth_prime nth_prime_lower nth_prime_upper nth_prime_approx
                      random_prime random_ndigit_prime random_nbit_prime random_maurer_prime
                      primorial pn_primorial
-                     factor all_factors moebius euler_phi
+                     factor all_factors
+                     moebius euler_phi jordan_totient
+                     divisor_sum
                      ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR
                    );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
@@ -57,6 +59,7 @@ BEGIN {
   require Math::Prime::Util::PP;  Math::Prime::Util::PP->import();
 
   eval {
+    return 0 if defined $ENV{MPU_NO_XS} && $ENV{MPU_NO_XS} == 1;
     require XSLoader;
     XSLoader::load(__PACKAGE__, $Math::Prime::Util::VERSION);
     prime_precalc(0);
@@ -82,11 +85,13 @@ BEGIN {
     *pminus1_factor = \&Math::Prime::Util::PP::pminus1_factor;
   };
 
-  # See if they have the GMP module
   $_Config{'gmp'} = 0;
-  $_Config{'gmp'} = 1 if eval { require Math::Prime::Util::GMP;
-                                Math::Prime::Util::GMP->import();
-                                1; };
+  # See if they have the GMP module and haven't requested it not to be used.
+  if (!defined $ENV{MPU_NO_GMP} || $ENV{MPU_NO_GMP} != 1) {
+    $_Config{'gmp'} = 1 if eval { require Math::Prime::Util::GMP;
+                                  Math::Prime::Util::GMP->import();
+                                  1; };
+  }
 }
 END {
   _prime_memfreeall;
@@ -104,12 +109,18 @@ if ($_Config{'maxbits'} == 32) {
   $_Config{'maxprimeidx'} = 425656284035217743;
 }
 $_Config{'assume_rh'} = 0;
+$_Config{'verbose'} = 0;
 
 # used for code like:
 #    return _XS_foo($n)  if $n <= $_XS_MAXVAL
 # which builds into one scalar whether XS is available and if we can call it.
 my $_XS_MAXVAL = $_Config{'xs'}  ?  $_Config{'maxparam'}  :  -1;
 my $_HAVE_GMP = $_Config{'gmp'};
+
+# Infinity in Perl is rather O/S specific.
+our $_Infinity = 0+'inf';
+$_Infinity = 20**20**20 if 65535 > $_Infinity;   # E.g. Windows
+our $_Neg_Infinity = -$_Infinity;
 
 # Notes on how we're dealing with big integers:
 #
@@ -140,7 +151,7 @@ sub prime_get_config {
 
   $config{'precalc_to'} = ($_Config{'xs'})
                         ? _get_prime_cache_size()
-                        : Math::Prime::Util::PP::_get_prime_cache_size;
+                        : Math::Prime::Util::PP::_get_prime_cache_size();
 
   return \%config;
 }
@@ -160,6 +171,14 @@ sub prime_set_config {
       $_HAVE_GMP = $_Config{'gmp'};
     } elsif ($param =~ /^(assume[_ ]?)?[ge]?rh$/ || $param =~ /riemann\s*h/) {
       $_Config{'assume_rh'} = ($value) ? 1 : 0;
+    } elsif ($param eq 'verbose') {
+      if    ($value =~ /^\d+$/) { }
+      elsif ($value =~ /^[ty]/i) { $value = 1; }
+      elsif ($value =~ /^[fn]/i) { $value = 0; }
+      else { croak("Invalid setting for verbose.  0, 1, 2, etc."); }
+      $_Config{'verbose'} = $value;
+      _XS_set_verbose($value) if $_Config{'xs'};
+      Math::Prime::Util::GMP::_GMP_set_verbose($value) if $_Config{'gmp'};
     } else {
       croak "Unknown or invalid configuration setting: $param\n";
     }
@@ -198,9 +217,9 @@ sub _validate_positive_integer {
 sub _upgrade_to_float {
   my($n) = @_;
   return $n unless defined $Math::BigInt::VERSION || defined $Math::BigFloat::VERSION;
-  do { require Math::BigFloat; Math::BigFloat->import(try=>'GMP,Pari') }
+  do { require Math::BigFloat; Math::BigFloat->import() }
      if defined $Math::BigInt::VERSION && !defined $Math::BigFloat::VERSION;
-  return Math::BigFloat->new($n);
+  return Math::BigFloat->new($n);   # $n is a Math::BigInt
 }
 
 my @_primes_small = (
@@ -240,10 +259,12 @@ sub primes {
   if ($high > $_XS_MAXVAL) {
     if ($_HAVE_GMP) {
       $sref = Math::Prime::Util::GMP::primes($low,$high);
-      # Convert the returned strings into BigInts
-      croak "Internal error: large value without bigint loaded."
-            unless defined $Math::BigInt::VERSION;
-      @$sref = map { Math::BigInt->new("$_") } @$sref;
+      if ($high > ~0) {
+        # Convert the returned strings into BigInts
+        croak "Internal error: large value without bigint loaded."
+              unless defined $Math::BigInt::VERSION;
+        @$sref = map { Math::BigInt->new("$_") } @$sref;
+      }
       return $sref;
     }
     return Math::Prime::Util::PP::primes($low,$high);
@@ -263,8 +284,9 @@ sub primes {
     } elsif (($high <= (65536*30)) || ($high <= _get_prime_cache_size())) {
       $method = 'Sieve';
 
-    # More memory than we should reasonably use for base sieve?
-    } elsif ($high > (32*1024*1024*30)) {
+    # At some point the segmented sieve is faster than the base sieve, not
+    # to mention using much less memory.
+    } elsif ($high > (1024*1024*30)) {
       $method = 'Segment';
       # The segment sieve doesn't itself use a segmented sieve for the base,
       # so it will slow down for very large endpoints (larger than 10^16).
@@ -528,7 +550,10 @@ sub primes {
         $_random_ndigit_ranges[$digits] = [next_prime($low), prev_prime($high)];
       } else {
         my $low  = int(10 ** ($digits-1));
-        my $high = int(10 ** $digits);
+        my $high = int(10 ** int($digits));
+        # Note: Perl 5.6.2 cannot represent 10**15 as an integer, so things will
+        # crash all over the place if you try.  We can stringify it, but then it
+        # starts failing math tests later.
         $high = ~0 if $high > ~0;
         $_random_ndigit_ranges[$digits] = [next_prime($low), prev_prime($high)];
       }
@@ -569,8 +594,8 @@ sub primes {
     return random_nbit_prime($k) if $k <= $p0;
 
     eval {
-      require Math::BigInt;   Math::BigInt->import(   try=>'GMP,Pari' );
-      require Math::BigFloat; Math::BigFloat->import( try=>'GMP,Pari' );
+      require Math::BigInt;   Math::BigInt->import( try=>'GMP,Pari' );
+      require Math::BigFloat; Math::BigFloat->import();
       1;
     } or do {
       croak "Cannot load Math::BigInt and Math::BigFloat";
@@ -584,7 +609,7 @@ sub primes {
     if ($k > 2*$m) {
       my $rbits = 0;
       while ($rbits <= $m) {
-        my $s = Math::BigFloat->new( $irandf->($rand_max_val) )->bdiv($rand_max_val);
+        my $s = Math::BigFloat->new( "$irandf->($rand_max_val)" )->bdiv($rand_max_val);
         my $r = Math::BigFloat->new(2)->bpow($s-1);
         $rbits = $k - ($r*$k);
       }
@@ -650,8 +675,6 @@ sub primes {
 
       return $n;
     }
-    no Math::BigFloat;
-    no Math::BigInt;
   }
 }
 
@@ -728,7 +751,7 @@ sub moebius {
   # Quick check for small replicated factors
   return 0 if ($n >= 25) && (!($n % 4) || !($n % 9) || !($n % 25));
 
-  my @factors = factor($n);
+  my @factors = ($n <= $_XS_MAXVAL) ? _XS_factor($n) : factor($n);
   my %all_factors;
   foreach my $factor (@factors) {
     return 0 if $all_factors{$factor}++;
@@ -747,7 +770,8 @@ sub euler_phi {
   return 1 if $n <= 1;
 
   my %factor_mult;
-  my @factors = grep { !$factor_mult{$_}++ } factor($n);
+  my @factors = grep { !$factor_mult{$_}++ }
+                ($n <= $_XS_MAXVAL) ? _XS_factor($n) : factor($n);
 
   # Direct from Euler's product formula.  Note division will be exact.
   #my $totient = $n;
@@ -777,6 +801,54 @@ sub euler_phi {
     $totient->bmul($f)  for (2 .. $factor_mult{$factor});
   }
   $totient;
+}
+
+# Jordan's totient -- a generalization of Euler's totient.
+sub jordan_totient {
+  my($k, $n) = @_;
+  _validate_positive_integer($k, 1);
+  return euler_phi($n) if $k == 1;
+
+  return 0 if defined $n && $n <= 0;  # Following SAGE's logic here.
+  _validate_positive_integer($n);
+  return 1 if $n <= 1;
+
+  my %factor_mult;
+  my @factors = grep { !$factor_mult{$_}++ }
+                ($n <= $_XS_MAXVAL) ? _XS_factor($n) : factor($n);
+
+  my $totient = $n - $n + 1;
+
+  if (ref($n) ne 'Math::BigInt') {
+    foreach my $factor (@factors) {
+      my $fmult = int($factor ** $k);
+      $totient *= ($fmult - 1);
+      $totient *= $fmult for (2 .. $factor_mult{$factor});
+    }
+  } else {
+    foreach my $factor (@factors) {
+      my $fmult = $n->copy->bzero->badd("$factor")->bpow($k);
+      $totient->bmul($fmult->copy->bsub(1));
+      $totient->bmul($fmult) for (2 .. $factor_mult{$factor});
+    }
+  }
+  return $totient;
+}
+
+# Mathematica and Pari both have functions like this.
+sub divisor_sum {
+  my($n, $sub) = @_;
+  croak "Second argument must be a code ref" unless ref($sub) eq 'CODE';
+  return 0 if defined $n && $n <= 1;
+  _validate_positive_integer($n);
+
+  my @afactors = all_factors($n);
+
+  my $sum = $n - $n;  # zero as an object of type $n.
+  foreach my $f (1, all_factors($n), $n) {
+    $sum += $sub->($f);
+  }
+  return $sum;
 }
 
 # Omega function A001221.  Just an example.
@@ -812,7 +884,7 @@ sub _omega {
 
 sub is_prime {
   my($n) = @_;
-  return 0 if $n <= 0;
+  return 0 if defined $n && $n < 2;
   _validate_positive_integer($n);
 
   return _XS_is_prime($n) if $n <= $_XS_MAXVAL;
@@ -822,11 +894,10 @@ sub is_prime {
 
 sub is_aks_prime {
   my($n) = @_;
-  return 0 if $n <= 0;
+  return 0 if defined $n && $n < 2;
   _validate_positive_integer($n);
 
-  my $max_xs = ($_Config{'maxparam'} > 4294967295) ? 4294967294 : 65534;
-  return _XS_is_aks_prime($n) if $n <= $_XS_MAXVAL && $n <= $max_xs;
+  return _XS_is_aks_prime($n) if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_aks_prime($n) if $_HAVE_GMP
                        && defined &Math::Prime::Util::GMP::is_aks_prime;
   return Math::Prime::Util::PP::is_aks_prime($n);
@@ -840,6 +911,9 @@ sub next_prime {
   # If we have XS and n is either small or bigint is unknown, then use XS.
   return _XS_next_prime($n) if $n <= $_XS_MAXVAL
              && (!defined $bigint::VERSION || $n < $_Config{'maxprime'} );
+
+  # Try to stick to the plan with respect to maximum return values.
+  return 0 if ref($_[0]) ne 'Math::BigInt' && $n >= $_Config{'maxprime'};
 
   if ($_HAVE_GMP) {
     # If $n is a bigint object, try to make the return value the same
@@ -890,14 +964,18 @@ sub prime_count {
     }
     return _XS_prime_count($low,$high);
   }
+  # We can relax these constraints if MPU::GMP gets a Lehmer implementation.
   return Math::Prime::Util::GMP::prime_count($low,$high) if $_HAVE_GMP
-                       && defined &Math::Prime::Util::GMP::prime_count;
+                       && defined &Math::Prime::Util::GMP::prime_count
+                       && (   (ref($high) eq 'Math::BigInt')
+                           || (($high-$low) < int($low/1_000_000))
+                          );
   return Math::Prime::Util::PP::prime_count($low,$high);
 }
 
 sub _prime_count_lehmer {
   my($n) = @_;
-  return 0 if $n <= 0;
+  return 0 if defined $n && $n < 2;
   _validate_positive_integer($n);
 
   return _XS_lehmer_pi($n) if $n <= $_XS_MAXVAL;
@@ -1048,7 +1126,7 @@ sub is_provable_prime {
   }
 
   for (my $a = 2; $a < $nm1; $a++) {
-    my $ap = Math::BigInt->new($a);
+    my $ap = Math::BigInt->new("$a");
     # 1. a^(n-1) = 1 mod n.
     next if $ap->copy->bmodpow($nm1, $n) != 1;
     # 2. a^((n-1)/f) != 1 mod n for all f.
@@ -1070,6 +1148,12 @@ sub prime_count_approx {
 
   return $_prime_count_small[$x] if $x <= $#_prime_count_small;
 
+  # Below 2^58th or so, all differences between the high precision and C double
+  # precision result are less than 0.5.
+  if ($x <= $_XS_MAXVAL && $x <= 144115188075855872) {
+    return int(_XS_RiemannR($x) + 0.5);
+  }
+
   # Turn on high precision FP if they gave us a big number.
   $x = _upgrade_to_float($x) if ref($x) eq 'Math::BigInt';
 
@@ -1088,7 +1172,9 @@ sub prime_count_approx {
 
   # my $result = int(LogarithmicIntegral($x) - LogarithmicIntegral(sqrt($x))/2);
 
-  my $result = RiemannR($x) + 0.5;
+  my $xlen = (ref($x) eq 'Math::BigFloat') ? length($x->bfloor->bstr()) : length(int($x));
+  my $tol = 10**-$xlen;
+  my $result = RiemannR($x, $tol) + 0.5;
 
   return Math::BigInt->new($result->bfloor->bstr()) if ref($result) eq 'Math::BigFloat';
   return int($result);
@@ -1332,29 +1418,25 @@ sub RiemannZeta {
   my($n) = @_;
   croak("Invalid input to ReimannZeta:  x must be > 0") if $n <= 0;
 
-  #return Math::Prime::Util::PP::RiemannZeta($n) if defined $bignum::VERSION || ref($n) eq 'Math::BigFloat';
-  return Math::Prime::Util::PP::RiemannZeta($n) if !$_Config{'xs'};
-  return _XS_RiemannZeta($n);
+  return Math::Prime::Util::PP::RiemannZeta($n) if defined $bignum::VERSION || ref($n) eq 'Math::BigFloat';
+  return _XS_RiemannZeta($n) if $n <= $_XS_MAXVAL;
+  return Math::Prime::Util::PP::RiemannZeta($n);
 }
 
 sub RiemannR {
-  my($n) = @_;
+  my($n, $tol) = @_;
   croak("Invalid input to ReimannR:  x must be > 0") if $n <= 0;
 
-  return Math::Prime::Util::PP::RiemannR($n) if defined $bignum::VERSION || ref($n) eq 'Math::BigFloat';
-  return Math::Prime::Util::PP::RiemannR($n) if !$_Config{'xs'};
-  return _XS_RiemannR($n);
-
-  # We could make a new object, like:
-  #    require Math::BigFloat;
-  #    my $bign = new Math::BigFloat "$n";
-  #    my $result = Math::Prime::Util::PP::RiemannR($bign);
-  #    return $result;
+  return Math::Prime::Util::PP::RiemannR($n, $tol) if defined $bignum::VERSION || ref($n) eq 'Math::BigFloat';
+  return _XS_RiemannR($n) if $n <= $_XS_MAXVAL;
+  return Math::Prime::Util::PP::RiemannR($n, $tol);
 }
 
 sub ExponentialIntegral {
   my($n) = @_;
-  croak "Invalid input to ExponentialIntegral:  x must be != 0" if $n == 0;
+  return $_Neg_Infinity if $n == 0;
+  return 0              if $n == $_Neg_Infinity;
+  return $_Infinity     if $n == $_Infinity;
 
   return Math::Prime::Util::PP::ExponentialIntegral($n) if defined $bignum::VERSION || ref($n) eq 'Math::BigFloat';
   return Math::Prime::Util::PP::ExponentialIntegral($n) if !$_Config{'xs'};
@@ -1363,21 +1445,20 @@ sub ExponentialIntegral {
 
 sub LogarithmicIntegral {
   my($n) = @_;
-  return 0 if $n == 0;
+  return 0              if $n == 0;
+  return $_Neg_Infinity if $n == 1;
+  return $_Infinity     if $n == $_Infinity;
+  if ($n == 2) {
+    return (defined $bignum::VERSION || ref($n) eq 'Math::BigFloat')
+           ? Math::BigFloat->new('1.045163780117492784844588889194613136522615578151201575832909144075013205210359530172717405626383356306')
+           : 1.045163780117492784844588889194613136522615578151;
+  }
+
   croak("Invalid input to LogarithmicIntegral:  x must be >= 0") if $n <= 0;
 
-  if ( defined $bignum::VERSION || ref($n) eq 'Math::BigFloat' ) {
-    return Math::BigFloat->binf('-') if $n == 1;
-    return Math::BigFloat->new('1.045163780117492784844588889194613136522615578151201575832909144075013205210359530172717405626383356306') if $n == 2;
-  } else {
-    if ($n == 1) {
-      my $neg_infinity = 0+'-inf';
-      return (-9)**9**9 if $neg_infinity == 0;
-      return $neg_infinity;
-    }
-    return 1.045163780117492784844588889194613136522615578151 if $n == 2;
-  }
-  ExponentialIntegral(log($n));
+  return Math::Prime::Util::PP::LogarithmicIntegral($n)
+   if defined $bignum::VERSION || ref($n) eq 'Math::BigFloat' || !$_Config{'xs'};
+  return _XS_LogarithmicIntegral($n);
 }
 
 #############################################################################
@@ -1403,7 +1484,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.13
+Version 0.14
 
 
 =head1 SYNOPSIS
@@ -1470,11 +1551,15 @@ Version 0.13
   # Get all factors
   @divisors = all_factors( $n );
 
-  # Euler phi (aka the totient) on a large number
+  # Euler phi (Euler's totient) on a large number
   use bigint;  say euler_phi( 801294088771394680000412 );
+  say jordan_totient(5, 1234);  # Jordan's totient
 
   # Moebius function used to calculate Mertens
   $sum += moebius($_) for (1..200); say "Mertens(200) = $sum";
+
+  # divisor sum
+  $sigma = divisor_sum( $n, sub { $_[0] } );
 
   # The primorial n# (product of all primes <= n)
   say "15# (2*3*5*7*11*13) is ", primorial(15);
@@ -1903,6 +1988,41 @@ C<n E<lt> 1>.  This follows the logic used by SAGE.  Mathematic/WolframAlpha
 also returns 0 for input 0, but returns C<euler_phi(-n)> for C<n E<lt> 0>.
 
 
+=head2 jordan_totient
+
+  say "Jordan's totient J_$k($n) is ", jordan_totient($k, $n);
+
+Returns Jordan's totient function for a given integer value.  Jordan's totient
+is a generalization of Euler's totient, where
+  C<jordan_totient(1,$n) == euler_totient($n)>
+This counts the number of k-tuples less than or equal to n that form a coprime
+tuple with n.  As with C<euler_phi>, 0 is returned for all C<n E<lt> 1>.
+This function can be used to generate some other useful functions, such as
+the Dedikind psi function, where C<psi(n) = J(2,n) / J(1,n)>.
+
+
+=head2 divisor_sum
+
+  say "Sum of divisors of $n:", divisor_sum( $n, sub { $_[0] } );
+
+This function takes a positive integer as input, along with a code reference.
+For each positive divisor of the input, including 1 and itself, the coderef
+is called with the divisor as the only argument, and the return values summed.
+There are a number of utilities this can be used for, though it may not be the
+most efficient way to calculate them.  Example:
+
+  divisor_sum( $n, sub { my $d=shift; $d**5 * moebius($n/$d); } );
+
+calculates the 5th Jordan totient (OEIS 59378).  In this example we have a
+specific function C<jordan_totient> that can compute this more efficiently.
+
+  divisor_sum( $n, sub { $_[0] ** $k } );
+
+calculates sigma_k (OEIS A000005, A000203, A001157, A001158 for k=0..3).  The
+simple sigma shown as the first example can be used to find aliquot sums,
+abundant numbers, perfect numbers, and more.
+
+
 =head2 primorial
 
   $prim = primorial(11); #        11# = 2*3*5*7*11 = 2310
@@ -2273,18 +2393,17 @@ Accuracy should be at least 14 digits.
 
   my $z = RiemannZeta($s);
 
-Given a floating point input C<s> where C<s E<gt>= 0.5>, returns the floating
+Given a floating point input C<s> where C<s E<gt> 0>, returns the floating
 point value of ζ(s)-1, where ζ(s) is the Riemann zeta function.  One is
 subtracted to ensure maximum precision for large values of C<s>.  The zeta
-function is the sum from k=1 to infinity of C<1 / k^s>.
+function is the sum from k=1 to infinity of C<1 / k^s>.  This function only
+uses real arguments, so is basically the Euler Zeta function.
 
-Since the argument and the result are real, this is technically the Euler Zeta
-function.
-
-Accuracy should be at least 14 digits, but currently does not increase
-accuracy with big floats.  Small integer values are returned from a table,
-values between 0.5 and 5 use rational Chebyshev approximation, and larger
-values use a series.
+Accuracy should be at least 14 digits with native numbers and 35 digits with
+bignum or a BigInt/BigFloat argument.  Small integer values are returned from
+a table.  For native-precision numbers, a rational Chebyshev approximation is
+used between 0.5 and 5, while larger values use a series.  Multiple precision
+numbers use Borwein (1991) algorithm 2 or the basic series.
 
 
 =head2 RiemannR
@@ -2295,9 +2414,8 @@ Given a positive non-zero floating point input, returns the floating
 point value of Riemann's R function.  Riemann's R function gives a very close
 approximation to the prime counting function.
 
-Accuracy should be at least 14 digits.  The current implementation isn't
-correctly storing constants as big floats, so is not giving increased accuracy
-with big numbers like it should.
+Accuracy should be at least 14 digits for native numbers and 35 digits with
+bignum or a BigInt/BigFloat argument.
 
 
 =head1 EXAMPLES

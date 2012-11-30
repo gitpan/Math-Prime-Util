@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.13';
+  $Math::Prime::Util::PP::VERSION = '0.14';
 }
 
 # The Pure Perl versions of all the Math::Prime::Util routines.
@@ -35,6 +35,13 @@ my $_half_word = (~0 == 18446744073709551615) ? 4294967296 :    # 64-bit
                  (~0 ==           4294967295) ?      65536 :    # 32-bit
                  (~0 ==                   -1) ?   1000**10 :    # bignum
                                                          0 ;    # No idea
+# With Perl 5.6.2, (114438327*114438327) % 122164969  !=  75730585
+$_half_word >>= 7 if $_uv_size == 64 && $] < 5.008;
+
+# Infinity in Perl is rather O/S specific.
+our $_Infinity = 0+'inf';
+$_Infinity = 20**20**20 if 65535 > $_Infinity;   # E.g. Windows
+our $_Neg_Infinity = -$_Infinity;
 
 my $_precalc_size = 0;
 sub prime_precalc {
@@ -170,21 +177,17 @@ sub is_prime {
 
 sub _sieve_erat_string {
   my($end) = @_;
+  $end-- if ($end & 1) == 0;
+  my $s_end = $end >> 1;
 
-  # Prefill with 3 and 5 already marked.
-  my $whole = int( ($end>>1) / 15);
+  my $whole = int( $s_end / 15);   # Prefill with 3 and 5 already marked.
   croak "Sieve too large" if $whole > 1_145_324_612;  # ~32 GB string
   my $sieve = "100010010010110" . "011010010010110" x $whole;
-  # Make exactly the number of entries requested, never more.
-  substr($sieve, ($end>>1)+1) = '';
-  my $n = 7;
-  while ( ($n*$n) <= $end ) {
-    my $s = $n*$n;
-    my $filter_s   = $s >> 1;
-    my $filter_end = $end >> 1;
-    while ($filter_s <= $filter_end) {
-      substr($sieve, $filter_s, 1) = "1";
-      $filter_s += $n;
+  substr($sieve, $s_end+1) = '';   # Ensure we don't make too many entries
+  my ($n, $limit) = ( 7, int(sqrt($end)) );
+  while ( $n <= $limit ) {
+    for (my $s = ($n*$n) >> 1; $s <= $s_end; $s += $n) {
+      substr($sieve, $s, 1) = '1';
     }
     do { $n += 2 } while substr($sieve, $n>>1, 1);
   }
@@ -386,6 +389,115 @@ sub prev_prime {
   #$d*30+$m;
 }
 
+#############################################################################
+#                       Lehmer prime count
+#
+sub _mapes {
+  my($v, $ma) = @_;
+  return $v if $ma == 0;
+  my $val = $v-int($v/2);
+  $val += -int($v/3)+int($v/6) if $ma >= 2;
+  $val += -int($v/5)+int($v/10)+int($v/15)-int($v/30) if $ma >= 3;
+  $val += -int($v/7)+int($v/14)+int($v/21)-int($v/42)+int($v/35)-int($v/70)-int($v/105)+int($v/210) if $ma >= 4;
+  $val += -int($v/11)+int($v/22)+int($v/33)-int($v/66)+int($v/55)-int($v/110)-int($v/165)+int($v/330)+int($v/77)-int($v/154)-int($v/231)+int($v/462)-int($v/385)+int($v/770)+int($v/1155)-int($v/2310) if $ma >= 5;
+  $val += -int($v/13)+int($v/26)+int($v/39)-int($v/78)+int($v/65)-int($v/130)-int($v/195)+int($v/390)+int($v/91)-int($v/182)-int($v/273)+int($v/546)-int($v/455)+int($v/910)+int($v/1365)-int($v/2730)+int($v/143)-int($v/286)-int($v/429)+int($v/858)-int($v/715)+int($v/1430)+int($v/2145)-int($v/4290)-int($v/1001)+int($v/2002)+int($v/3003)-int($v/6006)+int($v/5005)-int($v/10010)-int($v/15015)+int($v/30030) if $ma >= 6;
+  return $val;
+}
+
+sub _legendre_phi {
+  my ($x, $a, $primes) = @_;
+  return _mapes($x,$a) if $a <= 6;
+  return ($x > 0 ? 1 : 0) if $x < $primes->[$a];
+
+  my $sum = 0;
+  my %vals = ( $x => 1 );
+  while ($a > 6) {
+    my $primea = $primes->[$a-1];
+    my %newvals;
+    while (my($v,$c) = each %vals) {
+      next if $c == 0;
+      # next if $v < $primea;
+      $newvals{$v} += $c;
+      my $sval = int($v / $primea);
+      if ($sval >= $primea) {
+        $newvals{$sval} -= $c;
+      } else {
+        $sum -= $c;
+      }
+    }
+    %vals = %newvals;
+    $a--;
+  }
+  while (my($v,$c) = each %vals) {
+    next if $c == 0;
+    $sum += $c * _mapes($v, $a);
+  }
+  return $sum;
+}
+
+sub _sieve_prime_count {
+  my $high = shift;
+  return (0,0,1,2,2,3,3)[$high] if $high < 7;
+  $high-- if ($high % 2) == 0; # Make high go to odd number.
+
+  my $sieveref = _sieve_erat($high);
+  my $count = 1 + $$sieveref =~ tr/0//;
+  return $count;
+}
+
+sub _count_with_sieve {
+  my ($sref, $high) = @_;
+  return (0,0,1,2,2,3,3)[$high] if $high < 7;
+  $high-- if ($high % 2) == 0; # Make high go to odd number.
+  my $send = ($high >> 1) + 1;
+
+  if ( !defined $sref || $send > length($$sref) ) {
+    # We could take the full count of $sref, then segment sieve to high.
+    $sref = _sieve_erat($high);
+    return 1 + $$sref =~ tr/0//;
+  }
+  return 1 + substr($$sref, 0, $send) =~ tr/0//;
+}
+
+sub _lehmer_pi {
+  my $x = shift;
+  return _sieve_prime_count($x) if $x < 1_000;
+  my $z = int(sqrt($x+0.5));
+  my $a = _lehmer_pi(int(sqrt($z)+0.5));
+  my $b = _lehmer_pi($z);
+  my $c = _lehmer_pi(int($x**(1/3)+0.5));
+
+  # Generate at least b primes.
+  my $bth_prime_upper = ($b <= 10) ? 29 : int($b*(log($b) + log(log($b)))) + 1;
+  my $primes = primes( $bth_prime_upper );
+
+  my $sum = int(($b + $a - 2) * ($b - $a + 1) / 2);
+  $sum += _legendre_phi($x, $a, $primes);
+
+  # Get a big sieve for our primecounts.  The C code uses b*16 as a compromise,
+  # as that cuts out all the inner loop sieves and about half the outer loop.
+  # It also takes good advantage of segment sieving for the big outer counts.
+  # We'll just go ahead and sieve everything we need now.  This is really much
+  # more than we should use, but it saves a _huge_ amount of time given we're
+  # not using a segment sieve for the outer loop.
+  #my $sref = _sieve_erat($b * 16);
+  my $sref = _sieve_erat( int($x / $primes->[$a]) );
+
+  foreach my $i ($a+1 .. $b) {
+    my $w = int($x / $primes->[$i-1]);
+    $sum = $sum - _count_with_sieve($sref,$w);
+    if ($i <= $c) {
+      my $bi = _count_with_sieve($sref,int(sqrt($w)+0.5));
+      foreach my $j ($i .. $bi) {
+        $sum = $sum - _count_with_sieve($sref,int($w / $primes->[$j-1])) + $j - 1;
+      }
+    }
+  }
+  $sum;
+}
+#############################################################################
+
+
 sub prime_count {
   my($low,$high) = @_;
   if (!defined $high) {
@@ -405,10 +517,9 @@ sub prime_count {
   return $count if $low > $high;
 
   if (   ref($low) eq 'Math::BigInt' || ref($high) eq 'Math::BigInt'
-      || $high > 16_000_000_000
-      || ($high-$low) < int($low/1_000_000) ) {
-    # Too big to sieve.
-    my $count = 0;
+      || ($high-$low) < 10
+      || ($high-$low) < int($low/100_000_000_000) ) {
+    # Trial primes seems best.  Needs some tuning.
     my $curprime = next_prime($low-1);
     while ($curprime <= $high) {
       $count++;
@@ -417,16 +528,20 @@ sub prime_count {
     return $count;
   }
 
-  my $sieveref;
-  if ($low == 3) {
-    $sieveref = _sieve_erat($high);
-  } else {
-    $sieveref = _sieve_segment($low,$high);
+  # TODO: Needs tuning
+  if ($high > 50_000) {
+    if ( ($high / ($high-$low+1)) < 100 ) {
+      $count += _lehmer_pi($high);
+      $count -= ($low == 3) ? 1 : _lehmer_pi($low-1);
+      return $count;
+    }
   }
 
-  $count += $$sieveref =~ tr/0//;
+  return (_sieve_prime_count($high) - 1 + $count) if $low == 3;
 
-  $count;
+  my $sieveref = _sieve_segment($low,$high);
+  $count += $$sieveref =~ tr/0//;
+  return $count;
 }
 
 
@@ -446,9 +561,21 @@ sub nth_prime {
 
   my $prime = 0;
 
+  my $count = 1;
+  my $start = 3;
+
+  my $logn = log($n);
+  my $loglogn = log($logn);
+  my $nth_prime_upper = ($n <= 10) ? 29 : int($n*($logn + $loglogn)) + 1;
+  if ($nth_prime_upper > 100000) {
+    # Use fast Lehmer prime count combined with lower bound to get close.
+    my $nth_prime_lower = int($n * ($logn + $loglogn - 1.0 + (($loglogn-2.10)/$logn)));
+    $nth_prime_lower-- unless $nth_prime_lower % 2;
+    $count = _lehmer_pi($nth_prime_lower);
+    $start = $nth_prime_lower + 2;
+  }
+
   {
-    my $count = 1;
-    my $start = 3;
     # Make sure incr is an even number.
     my $incr = ($n < 1000) ? 1000 : ($n < 10000) ? 10000 : 100000;
     my $sieveref;
@@ -488,6 +615,7 @@ sub _mulmod {
   $r;
 }
 
+# Note that Perl 5.6.2 with largish 64-bit numbers will break.  As usual.
 sub _native_powmod {
   my($n, $power, $m) = @_;
   my $t = 1;
@@ -573,6 +701,11 @@ sub miller_rabin {
   return 1 if ($n == 2) || ($n == 3);
   return 0 if !($n % 2);
 
+  # Die on invalid bases
+  do { croak "Base $_ is invalid" if $_ < 2 } for (@bases);
+  # Make sure we handle big bases ok.
+  @bases = grep { $_ > 1 }  map { ($_ >= $n) ? $_ % $n : $_ }  @bases;
+
   if ( ref($n) eq 'Math::BigInt' ) {
 
     my $s = 0;
@@ -584,7 +717,6 @@ sub miller_rabin {
     }
 
     foreach my $a (@bases) {
-      croak "Base $a is invalid" if $a < 2;
       my $x = $n->copy->bzero->badd($a)->bmodpow($d,$n);
       next if ($x->is_one) || ($x->bcmp($nminus1) == 0);
       foreach my $r (1 .. $s) {
@@ -609,7 +741,6 @@ sub miller_rabin {
 
    if ($n < $_half_word) {
     foreach my $a (@bases) {
-      croak "Base $a is invalid" if $a < 2;
       my $x = _native_powmod($a, $d, $n);
       next if ($x == 1) || ($x == ($n-1));
       foreach my $r (1 .. $s) {
@@ -624,7 +755,6 @@ sub miller_rabin {
     }
    } else {
     foreach my $a (@bases) {
-      croak "Base $a is invalid" if $a < 2;
       my $x = _powmod($a, $d, $n);
       next if ($x == 1) || ($x == ($n-1));
 
@@ -749,7 +879,7 @@ sub is_strong_lucas_pseudoprime {
 
   if (ref($n) ne 'Math::BigInt') {
     require Math::BigInt;
-    $n = Math::BigInt->new($n);
+    $n = Math::BigInt->new("$n");
   }
 
   my $m = $n->copy->badd(1);
@@ -889,14 +1019,25 @@ sub _test_anr {
 
 sub is_aks_prime {
   my $n = shift;
-  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+
+  if (ref($n) ne 'Math::BigInt') {
+    if (!defined $MATH::BigInt::VERSION) {
+      eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
+      or do { croak "Cannot load Math::BigInt "; }
+    }
+    if (!defined $MATH::BigFloat::VERSION) {
+      eval { require Math::BigFloat;   Math::BigFloat->import(); 1; }
+      or do { croak "Cannot load Math::BigFloat "; }
+    }
+    $n = Math::BigInt->new("$n");
+  }
 
   return 0 if $n < 2;
   return 0 if _is_perfect_power($n);
 
   # limit = floor( log2(n) * log2(n) ).  o_r(n) must be larger than this
   my $sqrtn = int(Math::BigFloat->new($n)->bsqrt->bfloor->bstr);
-  my $log2n = Math::BigFloat->new($n)->blog(2);
+  my $log2n = Math::BigFloat->new("$n")->blog(2);
   my $log2_squared_n = $log2n * $log2n;
   my $limit = int($log2_squared_n->bfloor->bstr);
 
@@ -916,7 +1057,7 @@ sub is_aks_prime {
   return 1 if $r >= $n;
 
   # Since r is a prime, phi(r) = r-1
-  my $rlimit = int( Math::BigFloat->new($r)->bsub(1)
+  my $rlimit = int( Math::BigFloat->new("$r")->bsub(1)
                     ->bsqrt->bmul($log2n)->bfloor->bstr);
 
   $_poly_bignum = 1;
@@ -1288,17 +1429,21 @@ sub holf_factor {
   @factors;
 }
 
+
+
+
 my $_const_euler = 0.57721566490153286060651209008240243104215933593992;
 my $_const_li2 = 1.045163780117492784844588889194613136522615578151;
 
 sub ExponentialIntegral {
   my($x, $tol) = @_;
+  return $_Neg_Infinity if $x == 0;
+  return 0              if $x == $_Neg_Infinity;
+  return $_Infinity     if $x == $_Infinity;
   $tol = 1e-16 unless defined $tol;
   my $sum = 0.0;
   my($y, $t);
   my $c = 0.0;
-
-  croak "Invalid input to ExponentialIntegral:  x must be != 0" if $x == 0;
 
   $x = new Math::BigFloat "$x"  if defined $bignum::VERSION && ref($x) ne 'Math::BigFloat';
 
@@ -1349,12 +1494,12 @@ sub ExponentialIntegral {
     $val = $sum;
   } else {
     # Asymptotic divergent series
-    $val = exp($x) / $x;
-    $y = 1.0-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
-    my $term = 1.0;
-    for my $n (1 .. 200) {
+    my $invx = 1.0 / $x;
+    my $term = $invx;
+    $sum = 1.0 + $term;
+    for my $n (2 .. 200) {
       my $last_term = $term;
-      $term *= $n/$x;
+      $term *= $n * $invx;
       last if $term < $tol;
       if ($term < $last_term) {
         $y = $term-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
@@ -1363,23 +1508,67 @@ sub ExponentialIntegral {
         last;
       }
     }
-    $val *= $sum;
+    $val = exp($x) * $invx * $sum;
   }
   $val;
 }
 
 sub LogarithmicIntegral {
   my($x) = @_;
-  return 0 if $x == 0;
-  return 0+(-Infinity) if $x == 1;
+  return 0              if $x == 0;
+  return $_Neg_Infinity if $x == 1;
+  return $_Infinity     if $x == $_Infinity;
   return $_const_li2 if $x == 2;
   croak "Invalid input to LogarithmicIntegral:  x must be > 0" if $x <= 0;
-  ExponentialIntegral(log($x));
+
+  $x = new Math::BigFloat "$x" if defined $bignum::VERSION && ref($x) ne 'Math::BigFloat';
+  my $logx = log($x);
+
+  # Do divergent series here for big inputs.  Common for big pc approximations.
+  if ($x > 1e16) {
+    my $tol = 1e-20;
+    my $invx = 1.0 / $logx;
+    # n = 0  =>  0!/(logx)^0 = 1/1 = 1
+    # n = 1  =>  1!/(logx)^1 = 1/logx
+    my $term = $invx;
+    my $sum = 1.0 + $term;
+    for my $n (2 .. 200) {
+      my $last_term = $term;
+      $term *= $n * $invx;
+      last if $term < $tol;
+      if ($term < $last_term) {
+        $sum += $term;
+      } else {
+        $sum -= ($last_term/3);
+        last;
+      }
+    }
+    my $val = $x * $invx * $sum;
+    return $val;
+  }
+  # Convergent series.
+  if ($x >= 1) {
+    my $tol  = 1e-20;
+    my $fact_n = 1.0;
+    my $nfac = 1.0;
+    my $sum  = 0.0;
+    for my $n (1 .. 200) {
+      $fact_n *= $logx/$n;
+      my $term = $fact_n / $n;
+      $sum += $term;
+      last if $term < $tol;
+    }
+    my $eulerconst = (ref($x) eq 'Math::BigFloat') ? Math::BigFloat->new('0.577215664901532860606512090082402431042159335939923598805767') : $_const_euler;
+    my $val = $eulerconst + log($logx) + $sum;
+    return $val;
+  }
+
+  ExponentialIntegral($logx);
 }
 
-# Riemann Zeta function for integers, used for computing Riemann R
+# Riemann Zeta function for native integers.
 my @_Riemann_Zeta_Table = (
-  0.6449340668482264364724151666460251892,  # zeta(2)
+  0.6449340668482264364724151666460251892,  # zeta(2) - 1
   0.2020569031595942853997381615114499908,
   0.0823232337111381915160036965411679028,
   0.0369277551433699263313654864570341681,
@@ -1420,12 +1609,20 @@ my @_Riemann_Zeta_Table = (
   0.0000000000009094947840263889282533118,
 );
 
-# Compute Riemann Zeta function minus 1.
+
 sub RiemannZeta {
   my($x, $tol) = @_;
+
+  if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
+    require Math::Prime::Util::ZetaBigFloat;
+    return Math::Prime::Util::ZetaBigFloat::RiemannZeta($x, $tol);
+  }
+
+  return 0.0 + $_Riemann_Zeta_Table[int($x)-2]
+    if $x == int($x) && defined $_Riemann_Zeta_Table[int($x)-2];
   $tol = 1e-16 unless defined $tol;
-  my $sum = 0.0;
   my($y, $t);
+  my $sum = 0.0;
   my $c = 0.0;
 
   for my $k (2 .. 1000000) {
@@ -1438,36 +1635,40 @@ sub RiemannZeta {
   $t = 1.0 / (1.0 - (2 ** -$x));
   $sum *= $t;
   $sum += ($t - 1.0);
-
-  $sum;
+  return $sum;
 }
 
 # Riemann R function
 sub RiemannR {
   my($x, $tol) = @_;
+
+  croak "Invalid input to ReimannR:  x must be > 0" if $x <= 0;
+
+  if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
+    require Math::Prime::Util::ZetaBigFloat;
+    return Math::Prime::Util::ZetaBigFloat::RiemannR($x, $tol);
+  }
+
+
   $tol = 1e-16 unless defined $tol;
   my $sum = 0.0;
   my($y, $t);
   my $c = 0.0;
 
-  croak "Invalid input to ReimannR:  x must be > 0" if $x <= 0;
-
-  $x = new Math::BigFloat "$x"  if defined $bignum::VERSION && ref($x) ne 'Math::BigFloat';
-
   $y = 1.0-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
   my $flogx = log($x);
   my $part_term = 1.0;
-
   for my $k (1 .. 10000) {
     # Small k from table, larger k from function
-    my $zeta = ($k <= $#_Riemann_Zeta_Table) ? $_Riemann_Zeta_Table[$k+1-2]
-                                             : RiemannZeta($k+1);
+    my $zeta = ($k <= $#_Riemann_Zeta_Table)
+               ? $_Riemann_Zeta_Table[$k+1-2]
+               : RiemannZeta($k+1);
     $part_term *= $flogx / $k;
     my $term = $part_term / ($k + $k * $zeta);
     $y = $term-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
-    last if abs($term/$sum) < $tol;
+    last if $term < ($tol * $sum);
   }
-  $sum;
+  return $sum;
 }
 
 1;
@@ -1489,7 +1690,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.13
+Version 0.14
 
 
 =head1 SYNOPSIS

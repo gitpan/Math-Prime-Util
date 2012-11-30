@@ -7,6 +7,7 @@
 #include "factor.h"
 #include "util.h"
 #include "sieve.h"
+#include "mulmod.h"
 
 /*
  * You need to remember to use UV for unsigned and IV for signed types that
@@ -68,106 +69,6 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
   return nfactors;
 }
 
-
-#if (BITS_PER_WORD == 32) && HAVE_STD_U64
-
-  /* We have 64-bit available, but UV is 32-bit.  Do the math in 64-bit.
-   * Even if it is emulated, it should be as fast or faster than us doing it.
-   */
-  #define addmod(n,a,m)  (UV)(((uint64_t)(n)+(uint64_t)(a)) % ((uint64_t)(m)))
-  #define mulmod(a,b,m)  (UV)(((uint64_t)(a)*(uint64_t)(b)) % ((uint64_t)(m)))
-  #define sqrmod(n,m)    (UV)(((uint64_t)(n)*(uint64_t)(n)) % ((uint64_t)(m)))
-
-#elif defined(__GNUC__) && defined(__x86_64__)
-
-  /* GCC on a 64-bit Intel x86 */
-  static UV _mulmod(UV a, UV b, UV c) {
-    UV d; /* to hold the result of a*b mod c */
-    /* calculates a*b mod c, stores result in d */
-    asm ("mov %1, %%rax;"        /* put a into rax */
-         "mul %2;"               /* mul a*b -> rdx:rax */
-         "div %3;"               /* (a*b)/c -> quot in rax remainder in rdx */
-         "mov %%rdx, %0;"        /* store result in d */
-         :"=r"(d)                /* output */
-         :"r"(a), "r"(b), "r"(c) /* input */
-         :"%rax", "%rdx"         /* clobbered registers */
-        );
-    return d;
-  }
-  #define mulmod(a,b,m) _mulmod(a,b,m)
-  #define sqrmod(n,m)   _mulmod(n,n,m)
-
-#else
-
-  /* UV is the largest integral type available (that we know of). */
-
-  /* Do it by hand */
-  static UV _mulmod(UV a, UV b, UV m) {
-    UV r = 0;
-    while (b > 0) {
-      if (b & 1) {
-        if (r == 0) {
-          r = a;
-        } else {
-          r = m - r;
-          r = (a >= r)  ?  a-r  :  m-r+a;
-        }
-      }
-      a = (a > (m-a))  ?  (a-m)+a  :  a+a;
-      b >>= 1;
-    }
-    return r;
-  }
-
-  /* if n is smaller than this, you can multiply without overflow */
-  #define HALF_WORD (UVCONST(1) << (BITS_PER_WORD/2))
-  #define mulmod(a,b,m) (((a)|(b)) < HALF_WORD) ? ((a)*(b))%(m):_mulmod(a,b,m)
-  #define sqrmod(n,m)   ((n) < HALF_WORD)       ? ((n)*(n))%(m):_mulmod(n,n,m)
-
-#endif
-
-#ifndef addmod
-  #define addmod(n,a,m) ((((m)-(n)) > (a))  ?  ((n)+(a))  :  ((n)+(a)-(m)))
-#endif
-
-/* n^power mod m */
-#ifndef HALF_WORD
-  static UV powmod(UV n, UV power, UV m) {
-    UV t = 1;
-    n %= m;
-    while (power) {
-      if (power & 1) t = mulmod(t, n, m);
-      power >>= 1;
-      if (power)     n = sqrmod(n, m);
-    }
-    return t;
-  }
-#else
-  static UV powmod(UV n, UV power, UV m) {
-    UV t = 1;
-    n %= m;
-    if (m < HALF_WORD) {
-      while (power) {
-        if (power & 1) t = (t*n)%m;
-        power >>= 1;
-        if (power)     n = (n*n)%m;
-      }
-    } else {
-      while (power) {
-        if (power & 1) t = mulmod(t, n, m);
-        power >>= 1;
-        if (power)     n = sqrmod(n,m);
-      }
-    }
-    return t;
-  }
-#endif
-
-/* n^power + a mod m */
-#define powaddmod(n, p, a, m)  addmod(powmod(n,p,m),a,m)
-
-/* n^2 + a mod m */
-#define sqraddmod(n, a, m)     addmod(sqrmod(n,m),  a,m)
 
 /* Return 0 if n is not a perfect square.  Set sqrtn to int(sqrt(n)) if so.
  *
@@ -241,9 +142,9 @@ static int is_perfect_square(UV n, UV* sqrtn)
  */
 int _XS_miller_rabin(UV n, const UV *bases, int nbases)
 {
-  int b;
-  int s = 0;
+  UV const nm1 = n-1;
   UV d = n-1;
+  int b, r, s = 0;
 
   MPUassert(n > 3, "MR called with n <= 3");
 
@@ -252,15 +153,18 @@ int _XS_miller_rabin(UV n, const UV *bases, int nbases)
     d >>= 1;
   }
   for (b = 0; b < nbases; b++) {
-    int r;
-    UV a = bases[b];
-    UV x;
+    UV x, a = bases[b];
 
     if (a < 2)
       croak("Base %"UVuf" is invalid", a);
 #if 0
     if (a > (n-2))
       croak("Base %"UVuf" is invalid for input %"UVuf, a, n);
+#else
+    if (a >= n)
+      a %= n;
+    if ( (a <= 1) || (a == nm1) )
+      continue;
 #endif
 
     /* n is a strong pseudoprime to this base if either
@@ -269,19 +173,15 @@ int _XS_miller_rabin(UV n, const UV *bases, int nbases)
      */
 
     x = powmod(a, d, n);
-    if ( (x == 1) || (x == (n-1)) )  continue;
+    if ( (x == 1) || (x == nm1) )  continue;
 
     /* cover r = 1 to s-1, r=0 was just done */
     for (r = 1; r < s; r++) {
       x = sqrmod(x, n);
-      if (x == 1) {
-        return 0;
-      } else if (x == (n-1)) {
-        a = 0;
-        break;
-      }
+      if ( x == nm1 )  break;
+      if ( x == 1   )  return 0;
     }
-    if (a != 0)
+    if (r >= s)
       return 0;
   }
   return 1;
@@ -308,17 +208,14 @@ int _XS_is_prob_prime(UV n)
   }
 #else
 #if 1
-  /* Better basis from:  http://miller-rabin.appspot.com/ */
-  /* We could go up to 316_349_281 using 2 bases */
-  if (n < UVCONST(9080191)) {
-    bases[0] = 31;
-    bases[1] = 73;
+  /* Better bases from:  http://miller-rabin.appspot.com/ */
+  if (n < UVCONST(212321)) {
+    bases[0] = UVCONST(1948244569546278);
+    nbases = 1;
+  } else if (n < UVCONST(360018361)) {
+    bases[0] = UVCONST( 1143370    );
+    bases[1] = UVCONST( 2350307676 );
     nbases = 2;
-  } else if (n < UVCONST(4759123141)) {
-    bases[0] = 2;
-    bases[1] = 7;
-    bases[2] = 61;
-    nbases = 3;
   } else if (n < UVCONST(105936894253)) {
     bases[0] = 2;
     bases[1] = UVCONST( 1005905886 );
@@ -348,7 +245,7 @@ int _XS_is_prob_prime(UV n)
     nbases = 7;
   }
 #else
-  /* More standard bases */
+  /* Classic bases */
   if (n < UVCONST(9080191)) {
     bases[0] = 31; bases[1] = 73; nbases = 2;
   } else if (n < UVCONST(4759123141)) {

@@ -1,5 +1,37 @@
 Revision history for Perl extension Math::Prime::Util.
 
+0.14  29 November 2012
+
+    - Compilation and test issues:
+          Fix compilation on NetBSD
+          Try to fix compilation on Win32 + MSVC
+          Speed up some testing, helps a lot with Cygwin on slow machines
+          Speed up a lot of slow PP areas, especially used by test suite
+
+    - XS AKS extended from half-word to full-word.
+
+    - Add functions:
+           jordan_totient          generalization of Euler Totient
+           divisor_sum             run coderef for every divisor
+
+    - Allow environment variables MPU_NO_XS and MPU_NO_GMP to turn off XS and
+      GMP support respectively if they are defined and equal to 1.
+
+    - Lehmer prime count for Pure Perl code, including use in nth_prime.
+         prime count 10^9 using sieve:
+            71.9s   PP sieve
+             0.47s  XS sieve
+         prime count 10^9 using Lehmer:
+             0.70s  PP lehmer
+             0.03s  XS lehmer
+
+    - Moved bignum Zeta and R to separate file, only loaded when needed.
+      Helpful to get the big rarely-used tables out of the main loading.
+
+    - Quote arguments to Math::Big{Int,Float} in a few places it wasn't.
+      Math::Big* coerces the input to a signed value if it isn't a string,
+      which causes us all sorts of grief.
+
 0.13  19 November 2012
 
     - Fix an issue with prime count, and make prime count available as a
