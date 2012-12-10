@@ -7,7 +7,8 @@ use Test::More;
 #use Math::Random::MT::Auto qw/rand/;
 #sub rand { return 0.5; }
 use Math::Prime::Util qw/random_prime random_ndigit_prime random_nbit_prime
-                         random_maurer_prime is_prime/;
+                         random_maurer_prime is_prime
+                         prime_set_config/;
 
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
 my $extra = defined $ENV{RELEASE_TESTING} && $ENV{RELEASE_TESTING};
@@ -57,7 +58,7 @@ my %range_edge_empty = (
   "3842610774 to 3842611108" => [],
 );
 
-plan tests => 13+4+4+4
+plan tests => 13+3+3+3
               + (1 * scalar (keys %range_edge_empty))
               + (3 * scalar (keys %range_edge))
               + (2 * scalar (keys %ranges))
@@ -86,17 +87,14 @@ ok(!eval { random_prime(-$infinity); }, "random_prime(-infinity)");
 ok(!eval { random_ndigit_prime(undef); }, "random_ndigit_prime(undef)");
 ok(!eval { random_ndigit_prime(0); }, "random_ndigit_prime(0)");
 ok(!eval { random_ndigit_prime(-5); }, "random_ndigit_prime(-5)");
-ok(!eval { random_ndigit_prime(50); }, "random_ndigit_prime(50)");
 
 ok(!eval { random_nbit_prime(undef); }, "random_nbit_prime(undef)");
 ok(!eval { random_nbit_prime(0); }, "random_nbit_prime(0)");
 ok(!eval { random_nbit_prime(-5); }, "random_nbit_prime(-5)");
-ok(!eval { random_nbit_prime(130); }, "random_nbit_prime(130)");
 
 ok(!eval { random_maurer_prime(undef); }, "random_maurer_prime(undef)");
 ok(!eval { random_maurer_prime(0); }, "random_maurer_prime(0)");
 ok(!eval { random_maurer_prime(-5); }, "random_maurer_prime(-5)");
-ok(!eval { random_maurer_prime(130); }, "random_maurer_prime(130)");
 
 while (my($range, $expect) = each (%range_edge_empty)) {
   my($low,$high) = $range =~ /(\d+) to (\d+)/;
@@ -123,6 +121,10 @@ while (my($range, $expect) = each (%ranges)) {
   ok($isprime, "All returned values for $low-$high were prime" );
   ok($inrange, "All returned values for $low-$high were in the range" );
 }
+
+# We want to test the no-bigint stuff here.  This makes calls for 10-digit
+# (32-bit) and 20-digit (64-bit) random primes stay inside native range.
+prime_set_config(nobigint=>1);
 
 foreach my $high (@random_to) {
   my $isprime = 1;
