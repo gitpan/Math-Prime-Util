@@ -69,7 +69,7 @@ plan tests =>  0
              + scalar(keys %factors)
              + scalar(keys %allfactors)
              + 2   # moebius, euler_phi
-             + 12  # random primes
+             + 15  # random primes
              + 0;
 
 # Using GMP makes these tests run about 2x faster on some machines
@@ -102,6 +102,7 @@ use Math::Prime::Util qw/
   random_prime
   random_ndigit_prime
   random_nbit_prime
+  random_strong_prime
   random_maurer_prime
 /;
 # TODO:  is_strong_lucas_pseudoprime
@@ -109,11 +110,13 @@ use Math::Prime::Util qw/
 #        LogarithmicIntegral
 #        RiemannR
 
+my $bignumver = $bigint::VERSION;
+my $bigintver = $Math::BigInt::VERSION;
 my $bigintlib = Math::BigInt->config()->{lib};
 $bigintlib =~ s/^Math::BigInt:://;
 my $mpugmpver = Math::Prime::Util::prime_get_config->{gmp}
                 ? $Math::Prime::Util::GMP::VERSION : "<none>";
-diag "BigInt library: $bigintlib, MPU::GMP $mpugmpver\n";
+diag "BigInt $bignumver/$bigintver, lib: $bigintlib.  MPU::GMP $mpugmpver\n";
 
 
 ###############################################################################
@@ -206,6 +209,11 @@ cmp_ok( $randprime, '>', 2**79, "random 80-bit prime isn't too small");
 cmp_ok( $randprime, '<', 2**80, "random 80-bit prime isn't too big");
 ok( is_prime($randprime), "random 80-bit prime is prime");
 
+$randprime = random_strong_prime(256);
+cmp_ok( $randprime, '>', 2**255, "random 256-bit strong prime isn't too small");
+cmp_ok( $randprime, '<', 2**256, "random 256-bit strong prime isn't too big");
+ok( is_prime($randprime), "random 80-bit strong prime is prime");
+
 SKIP: {
   skip "Your 64-bit Perl is broken, skipping maurer prime", 3 if $broken64;
   $randprime = random_maurer_prime(80);
@@ -230,7 +238,7 @@ sub check_pcbounds {
   prime_set_config(assume_rh=>1);
   my $pclo_rh = prime_count_lower($n);
   my $pcup_rh = prime_count_upper($n);
-  prime_set_config(assume_rh=>0);
+  prime_set_config(assume_rh => undef);
 
   #diag "lower:    " . $pclo->bstr() . "  " . ($pcap-$pclo)->bstr;
   #diag "rh lower: " . $pclo_rh->bstr() . "  " . ($pcap-$pclo_rh)->bstr;

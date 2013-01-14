@@ -20,7 +20,7 @@ WriteMakefile1(
 
     BUILD_REQUIRES=>{
                       'Test::More'       => '0.45',
-                      'bignum'           => '0.22',   # Used for bigint tests
+                      'bignum'           => '0.22',   # 'use bigint' in tests
                     },
     PREREQ_PM    => {
                       'Exporter'         => '5.562',
@@ -33,9 +33,11 @@ WriteMakefile1(
                       'Math::BigFloat'   => '1.59',
                     },
     META_MERGE   => {
-                      recommends => { 'Math::Prime::Util::GMP' => 0.06, },
-                      recommends => { 'Math::BigInt::GMP' => 0, },
-                      recommends => { 'Math::MPFR' => 0, },
+                      recommends => {
+                        'Math::Prime::Util::GMP' => 0.06,
+                        'Math::BigInt::GMP'      => 0,
+                        'Math::MPFR'             => 2.03,
+                      },
                     },
 
     MIN_PERL_VERSION => 5.006002,

@@ -19,7 +19,9 @@ no_index:
     - t
     - inc
 recommends:
-  Math::MPFR: 0
+  Math::BigInt::GMP: 0
+  Math::MPFR: 2.03
+  Math::Prime::Util::GMP: 0.06
 requires:
   Carp: 0
   Config: 0
@@ -30,4 +32,4 @@ requires:
   XSLoader: 0.01
   base: 0
   perl: 5.006002
-version: 0.17
+version: 0.18
