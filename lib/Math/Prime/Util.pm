@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.18';
+  $Math::Prime::Util::VERSION = '0.19';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -84,6 +84,7 @@ BEGIN {
     *fermat_factor  = \&Math::Prime::Util::PP::fermat_factor;
     *holf_factor    = \&Math::Prime::Util::PP::holf_factor;
     *squfof_factor  = \&Math::Prime::Util::PP::squfof_factor;
+    *rsqufof_factor = \&Math::Prime::Util::PP::squfof_factor;
     *pbrent_factor  = \&Math::Prime::Util::PP::pbrent_factor;
     *prho_factor    = \&Math::Prime::Util::PP::prho_factor;
     *pminus1_factor = \&Math::Prime::Util::PP::pminus1_factor;
@@ -208,20 +209,36 @@ sub prime_set_config {
   1;
 }
 
+my $_bigint_small;
 sub _validate_positive_integer {
   my($n, $min, $max) = @_;
   croak "Parameter must be defined" if !defined $n;
-  croak "Parameter '$n' must be a positive integer" if $n =~ tr/0123456789//c;
+  if (ref($n) eq 'Math::BigInt') {
+    croak "Parameter '$n' must be a positive integer" unless $n->sign() eq '+';
+  } else {
+    croak "Parameter '$n' must be a positive integer"
+          if $n eq '' || $n =~ tr/0123456789//c;
+  }
   croak "Parameter '$n' must be >= $min" if defined $min && $n < $min;
   croak "Parameter '$n' must be <= $max" if defined $max && $n > $max;
-  # The second term is used instead of '<=' to fix strings like ~0+delta.
-  # The third works around a rare BigInt bug (e.g. 23 > 18446744073709551615 !!)
-  if ($n < $_Config{'maxparam'} || int($n) eq $_Config{'maxparam'} || "$n" < $_Config{'maxparam'}) {
-    $_[0] = $_[0]->as_number() if ref($_[0]) eq 'Math::BigFloat';
-    $_[0] = int($_[0]->bstr) if ref($_[0]) eq 'Math::BigInt';
-  } elsif (ref($n) ne 'Math::BigInt') {
-    croak "Parameter '$n' outside of integer range" if !defined $bigint::VERSION;
-    $_[0] = Math::BigInt->new("$n"); # Make $n a proper bigint object
+
+  if (ref($_[0])) {
+    $_[0] = Math::BigInt->new("$_[0]") unless ref($_[0]) eq 'Math::BigInt';
+    $_bigint_small = Math::BigInt->new("$_Config{'maxparam'}")
+                   unless defined $_bigint_small;
+    if ($_[0]->bacmp($_bigint_small) <= 0) {
+      $_[0] = int($_[0]->bstr);
+    } else {
+      $_[0]->upgrade(undef) if $_[0]->upgrade();  # Stop BigFloat upgrade
+    }
+  } else {
+    # The second term is used instead of '<=' to fix strings like ~0+delta.
+    if ( ! ($n < $_Config{'maxparam'} || int($n) eq $_Config{'maxparam'}) ) {
+      # We were handed a string representing a big number.
+      croak "Parameter '$n' outside of integer range" if !defined $bigint::VERSION;
+      $_[0] = Math::BigInt->new("$n"); # Make $n a proper bigint object
+      $_[0]->upgrade(undef) if $_[0]->upgrade();  # Stop BigFloat upgrade
+    }
   }
   # One of these will be true:
   #     1) $n <= max and $n is not a bigint
@@ -447,10 +464,10 @@ sub primes {
     my $p1 = primorial(Math::BigInt->new(2052));
     my $p2 = primorial(Math::BigInt->new(6028));
     my $p3 = primorial(Math::BigInt->new($_big_gcd_top));
-    $_big_gcd[0] = $p0 / 223092870;
-    $_big_gcd[1] = $p1 / $p0;
-    $_big_gcd[2] = $p2 / $p1;
-    $_big_gcd[3] = $p3 / $p2;
+    $_big_gcd[0] = $p0->bdiv(223092870)->bfloor->as_int;
+    $_big_gcd[1] = $p1->bdiv($p0)->bfloor->as_int;
+    $_big_gcd[2] = $p2->bdiv($p1)->bfloor->as_int;
+    $_big_gcd[3] = $p3->bdiv($p2)->bfloor->as_int;
   }
 
   # Returns a function that will get a uniform random number between 0 and
@@ -549,7 +566,7 @@ sub primes {
     }
 
     $low-- if $low == 2;  # Low of 2 becomes 1 for our program.
-    croak "Invalid _random_prime parameters" if ($low % 2) == 0 || ($high % 2) == 0;
+    confess "Invalid _random_prime parameters: $low, $high" if ($low % 2) == 0 || ($high % 2) == 0;
 
     # We're going to look at the odd numbers only.
     #my $range = $high - $low + 1;
@@ -636,9 +653,11 @@ sub primes {
       my($nbins, $rem);
       ($nbins, $rem) = $oddrange->copy->bdiv( "$rand_part_size" );
       $nbins++ if $rem > 0;
+      $nbins = $nbins->as_int();
       ($binsize,$rem) = $oddrange->copy->bdiv($nbins);
       $binsize++ if $rem > 0;
-      $nparts  = $oddrange->copy->bdiv($binsize);
+      $binsize = $binsize->as_int();
+      $nparts  = $oddrange->copy->bdiv($binsize)->as_int();
       $low = $high->copy->bzero->badd($low) if ref($low) ne 'Math::BigInt';
     } else {
       my $nbins = int($oddrange / $rand_part_size);
@@ -857,7 +876,7 @@ sub primes {
     # I've seen +0, +1, and +2 here.  Maurer uses +0.  Menezes uses +1.
     my $q = random_maurer_prime( ($r * $k)->bfloor + 1 );
     $q = Math::BigInt->new("$q") unless ref($q) eq 'Math::BigInt';
-    my $I = Math::BigInt->new(2)->bpow($k-2)->bdiv($q)->bfloor;
+    my $I = Math::BigInt->new(2)->bpow($k-2)->bdiv($q)->bfloor->as_int();
     print "B = $B  r = $r  k = $k  q = $q  I = $I\n" if $verbose && $verbose != 3;
 
     # Big GCD's are hugely fast with GMP or Pari, but super slow with Calc.
@@ -961,7 +980,8 @@ sub primes {
       $qpp = Math::BigInt->new("$qpp") unless ref($qpp) eq 'Math::BigInt';
       my ($il, $rem) = Math::BigInt->new(2)->bpow($l-1)->bsub(1)->bdiv(2*$qpp);
       $il++ if $rem > 0;
-      my $iu = Math::BigInt->new(2)->bpow($l)->bsub(2)->bdiv(2*$qpp);
+      $il = $il->as_int();
+      my $iu = Math::BigInt->new(2)->bpow($l)->bsub(2)->bdiv(2*$qpp)->as_int();
       my $istart = $il + $irandf->($iu - $il);
       for (my $i = $istart; $i <= $iu; $i++) {  # Search for q
         my $q = 2 * $i * $qpp + 1;
@@ -969,7 +989,8 @@ sub primes {
         my $pp = $qp->copy->bmodpow($q-2, $q)->bmul(2)->bmul($qp)->bsub(1);
         my ($jl, $rem) = Math::BigInt->new(2)->bpow($t-1)->bsub($pp)->bdiv(2*$q*$qp);
         $jl++ if $rem > 0;
-        my $ju = Math::BigInt->new(2)->bpow($t)->bsub(1)->bsub($pp)->bdiv(2*$q*$qp);
+        $jl = $jl->as_int();
+        my $ju = Math::BigInt->new(2)->bpow($t)->bsub(1)->bsub($pp)->bdiv(2*$q*$qp)->as_int();
         my $jstart = $jl + $irandf->($ju - $jl);
         for (my $j = $jstart; $j <= $ju; $j++) {  # Search for p
           my $p = $pp + 2 * $j * $q * $qp;
@@ -1195,7 +1216,7 @@ sub is_prime {
   return 0 if defined $n && $n < 2;
   _validate_positive_integer($n);
 
-  return _XS_is_prime($n) if $n <= $_XS_MAXVAL;
+  return _XS_is_prime($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_prime($n) if $_HAVE_GMP;
   return is_prob_prime($n);
 }
@@ -1217,7 +1238,7 @@ sub next_prime {
   _validate_positive_integer($n);
 
   # If we have XS and n is either small or bigint is unknown, then use XS.
-  return _XS_next_prime($n) if $n <= $_XS_MAXVAL
+  return _XS_next_prime($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL
              && (!defined $bigint::VERSION || $n < $_Config{'maxprime'} );
 
   # Try to stick to the plan with respect to maximum return values.
@@ -1236,7 +1257,7 @@ sub prev_prime {
   my($n) = @_;
   _validate_positive_integer($n);
 
-  return _XS_prev_prime($n) if $n <= $_XS_MAXVAL;
+  return _XS_prev_prime($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   if ($_HAVE_GMP) {
     # If $n is a bigint object, try to make the return value the same
     return (ref($n) eq 'Math::BigInt')
@@ -1293,7 +1314,7 @@ sub factor {
   my($n) = @_;
   _validate_positive_integer($n);
 
-  return _XS_factor($n) if $n <= $_XS_MAXVAL;
+  return _XS_factor($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
 
   if ($_HAVE_GMP) {
     my @factors = Math::Prime::Util::GMP::factor($n);
@@ -1310,7 +1331,7 @@ sub is_strong_pseudoprime {
   my($n) = shift;
   _validate_positive_integer($n);
   # validate bases?
-  return _XS_miller_rabin($n, @_) if $n <= $_XS_MAXVAL;
+  return _XS_miller_rabin($n, @_) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_strong_pseudoprime($n, @_) if $_HAVE_GMP;
   return Math::Prime::Util::PP::miller_rabin($n, @_);
 }
@@ -1356,7 +1377,7 @@ sub is_prob_prime {
   return 0 if defined $n && $n < 2;
   _validate_positive_integer($n);
 
-  return _XS_is_prob_prime($n) if $n <= $_XS_MAXVAL;
+  return _XS_is_prob_prime($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_prob_prime($n) if $_HAVE_GMP;
 
   return 2 if $n == 2 || $n == 3 || $n == 5 || $n == 7;
@@ -1398,7 +1419,7 @@ sub is_provable_prime {
   _validate_positive_integer($n);
 
   # Shortcut some of the calls.
-  return _XS_is_prime($n) if $n <= $_XS_MAXVAL;
+  return _XS_is_prime($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_provable_prime($n) if $_HAVE_GMP
                        && defined &Math::Prime::Util::GMP::is_provable_prime;
 
@@ -1431,7 +1452,7 @@ sub is_provable_prime {
     next if $ap->copy->bmodpow($nm1, $n) != 1;
     # 2. a^((n-1)/f) != 1 mod n for all f.
     next if (scalar grep { $_ == 1 }
-             map { $ap->copy->bmodpow($nm1/$_,$n); }
+             map { $ap->copy->bmodpow(int($nm1/$_),$n); }
              @factors) > 0;
     return 2;
   }
@@ -1785,7 +1806,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.18
+Version 0.19
 
 
 =head1 SYNOPSIS
@@ -2493,7 +2514,7 @@ strong prime I<p> to be one where
 
 =over
 
-=item * I<p> is large.   This function uses 128 as a minimum.
+=item * I<p> is large.   This function requires at least 128 bits.
 
 =item * I<p-1> has a large prime factor I<r>.
 
@@ -2892,6 +2913,14 @@ Print some primes above 64-bit range:
     perl -MMath::Prime::Util=:all -Mbigint -E 'my $start=100000000000000000000; say join "\n", @{primes($start,$start+1000)}'
     # Similar code using Pari:
     # perl -MMath::Pari=:int,PARI,nextprime -E 'my $start = PARI "100000000000000000000"; my $end = $start+1000; my $p=nextprime($start); while ($p <= $end) { say $p; $p = nextprime($p+1); }'
+
+
+Project Euler, problem 10.  Solution in under 50 milliseconds:
+
+  use Math::Prime::Util qw/primes/;
+  my $sum = 0;
+  $sum += $_ for @{primes(2_000_000)};
+  say $sum;
 
 
 =head1 LIMITATIONS

@@ -39,6 +39,8 @@ examples/bench-random-prime-bigint.pl
 examples/bench-pp-count.pl
 examples/bench-pp-isprime.pl
 examples/bench-pp-sieve.pl
+examples/bench-mp-nextprime.pl
+examples/bench-mp-psrp.pl
 examples/test-factor-yafu.pl
 examples/test-factor-mpxs.pl
 examples/test-nextprime-yafu.pl
@@ -46,6 +48,7 @@ examples/test-primes-yafu.pl
 examples/test-holf.pl
 examples/test-nthapprox.pl
 examples/test-pcapprox.pl
+examples/test-primality-small.pl
 examples/sophie_germain.pl
 examples/twin_primes.pl
 examples/find_mr_bases.pl
@@ -77,6 +80,7 @@ t/30-relations.t
 t/31-threading.t
 t/50-factoring.t
 t/51-primearray.t
+t/70-rt-bignum.t
 t/80-pp.t
 t/81-bignum.t
 t/90-release-perlcritic.t

@@ -65,7 +65,8 @@ sub _is_positive_int {
 sub _validate_positive_integer {
   my($n, $min, $max) = @_;
   croak "Parameter must be defined" if !defined $n;
-  croak "Parameter '$n' must be a positive integer" if $n =~ tr/0123456789//c;
+  croak "Parameter '$n' must be a positive integer"
+        if ref($n) ne 'Math::BigInt' && $n =~ tr/0123456789//c;
   croak "Parameter '$n' must be >= $min" if defined $min && $n < $min;
   croak "Parameter '$n' must be <= $max" if defined $max && $n > $max;
   if ($n <= ~0) {
@@ -74,6 +75,9 @@ sub _validate_positive_integer {
   } elsif (ref($n) ne 'Math::BigInt') {
     croak "Parameter '$n' outside of integer range" if !defined $bigint::VERSION;
     $_[0] = Math::BigInt->new("$n"); # Make $n a proper bigint object
+    $_[0]->upgrade(undef) if $_[0]->upgrade();  # Stop BigFloat upgrade
+  } else {
+    $_[0]->upgrade(undef) if $_[0]->upgrade();  # Stop BigFloat upgrade
   }
   # One of these will be true:
   #     1) $n <= max and $n is not a bigint
@@ -665,9 +669,13 @@ sub _gcd_ui {
 
 sub _is_perfect_power {
   my $n = shift;
-  my $log2n = _log2($n);
+  return 0 if $n <= 3 || $n != int($n);
+  return 1 if ($n & ($n-1)) == 0;                       # Power of 2
   $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
-  for my $e (@{primes($log2n)}) {
+  # Perl 5.6.2 chokes on this, so do it via as_bin
+  # my $log2n = 0; { my $num = $n; $log2n++ while $num >>= 1; }
+  my $log2n = length($n->as_bin) - 2;
+  for (my $e = 2; $e <= $log2n; $e = next_prime($e)) {
     return 1 if $n->copy()->broot($e)->bpow($e) == $n;
   }
   0;
@@ -871,7 +879,10 @@ sub is_strong_lucas_pseudoprime {
   # It's now time to perform the Lucas pseudoprimality test using $D.
 
   if (ref($n) ne 'Math::BigInt') {
-    require Math::BigInt;
+    if (!defined $MATH::BigInt::VERSION) {
+      eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
+      or do { croak "Cannot load Math::BigInt "; }
+    }
     $n = Math::BigInt->new("$n");
   }
 
@@ -1072,12 +1083,24 @@ sub _basic_factor {
   return ($_[0]) if $_[0] < 4;
 
   my @factors;
-  while ( !($_[0] % 2) ) { push @factors, 2;  $_[0] = int($_[0] / 2); }
-  while ( !($_[0] % 3) ) { push @factors, 3;  $_[0] = int($_[0] / 3); }
-  while ( !($_[0] % 5) ) { push @factors, 5;  $_[0] = int($_[0] / 5); }
-
-  # Stop using bignum if we can
-  $_[0] = int($_[0]->bstr) if ref($_[0]) eq 'Math::BigInt' && $_[0] <= ~0;
+  if (ref($_[0]) ne 'Math::BigInt') {
+    while ( !($_[0] % 2) ) { push @factors, 2;  $_[0] = int($_[0] / 2); }
+    while ( !($_[0] % 3) ) { push @factors, 3;  $_[0] = int($_[0] / 3); }
+    while ( !($_[0] % 5) ) { push @factors, 5;  $_[0] = int($_[0] / 5); }
+  } else {
+    if (Math::BigInt::bgcd($_[0], 2*3*5) != 1) {
+      while ( $_[0]->is_even)   { push @factors, 2;  $_[0]->brsft(1); }
+      foreach my $div (3, 5) {
+        my ($q, $r) = $_[0]->copy->bdiv($div);
+        while ($r->is_zero) {
+          push @factors, $div;
+          $_[0] = $q;
+          ($q, $r) = $_[0]->copy->bdiv($div);
+        }
+      }
+    }
+    $_[0] = int($_[0]->bstr) if $_[0] <= ~0;
+  }
 
   if ( ($_[0] > 1) && _is_prime7($_[0]) ) {
     push @factors, $_[0];
@@ -1210,7 +1233,7 @@ sub prho_factor {
       if ($f == $n) {
         last if $inloop++;  # We've been here before
       } elsif ($f != 1) {
-        my $f2 = $n->copy->bdiv($f);
+        my $f2 = $n->copy->bdiv($f)->as_int;
         push @factors, $f;
         push @factors, $f2;
         croak "internal error in prho" unless ($f * $f2) == $n;
@@ -1283,7 +1306,7 @@ sub pbrent_factor {
       $Xi->bmul($Xi);  $Xi->badd($a);  $Xi->bmod($n);
       my $f = Math::BigInt::bgcd( ($Xi > $Xm) ? $Xi-$Xm : $Xm-$Xi,  $n);
       if ( ($f != 1) && ($f != $n) ) {
-        my $f2 = $n->copy->bdiv($f);
+        my $f2 = $n->copy->bdiv($f)->as_int;
         push @factors, $f;
         push @factors, $f2;
         croak "internal error in pbrent" unless ($f * $f2) == $n;
@@ -1343,7 +1366,7 @@ sub pminus1_factor {
       $kf = $n if $kf == 0;
       my $f = Math::BigInt::bgcd( $kf-1, $n );
       if ( ($f != 1) && ($f != $n) ) {
-        my $f2 = $n->copy->bdiv($f);
+        my $f2 = $n->copy->bdiv($f)->as_int;
         push @factors, $f;
         push @factors, $f2;
         croak "internal error in pminus1" unless ($f * $f2) == $n;
@@ -1380,18 +1403,18 @@ sub holf_factor {
   if ( ref($n) eq 'Math::BigInt' ) {
     for my $i ($startrounds .. $rounds) {
       my $ni = $n->copy->bmul($i);
-      my $s = $ni->copy->bsqrt->bfloor;
+      my $s = $ni->copy->bsqrt->bfloor->as_int;
       $s->binc if ($s * $s) != $ni;
       my $m = $s->copy->bmul($s)->bmod($n);
       # Check for perfect square
       my $mcheck = int(($m & 127)->bstr);
       next if (($mcheck*0x8bc40d7d) & ($mcheck*0xa1e2f5d1) & 0x14020a);
       # ... 82% of non-squares were rejected by the bloom filter
-      my $f = $m->copy->bsqrt->bfloor;
+      my $f = $m->copy->bsqrt->bfloor->as_int;
       next unless ($f*$f) == $m;
       $f = Math::BigInt::bgcd( ($s > $f) ? $s-$f : $f-$s,  $n);
       last if $f == 1 || $f == $n;   # Should never happen
-      my $f2 = $n->copy->bdiv($f);
+      my $f2 = $n->copy->bdiv($f)->as_int;
       push @factors, $f;
       push @factors, $f2;
       croak "internal error in HOLF" unless ($f * $f2) == $n;
