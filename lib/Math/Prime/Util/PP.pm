@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.14';
+  $Math::Prime::Util::PP::VERSION = '0.20';
 }
 
 # The Pure Perl versions of all the Math::Prime::Util routines.
@@ -852,16 +852,15 @@ sub is_strong_lucas_pseudoprime {
 
   # Check for perfect square
   if (ref($n) eq 'Math::BigInt') {
-    my $mcheck = int(($n & 127)->bstr);
-    if (($mcheck*0x8bc40d7d) & ($mcheck*0xa1e2f5d1) & 0x14020a) {
-      # ~82% of non-squares were rejected by the bloom filter
+    my $mc = int(($n & 31)->bstr);
+    if ($mc==0||$mc==1||$mc==4||$mc==9||$mc==16||$mc==17||$mc==25) {
       my $sq = $n->copy->bsqrt->bfloor;
       $sq->bmul($sq);
       return 0 if $sq == $n;
     }
   } else {
-    my $mcheck = $n & 127;
-    if (($mcheck*0x8bc40d7d) & ($mcheck*0xa1e2f5d1) & 0x14020a) {
+    my $mc = $n & 31;
+    if ($mc==0||$mc==1||$mc==4||$mc==9||$mc==16||$mc==17||$mc==25) {
       my $sq = int(sqrt($n));
       return 0 if ($sq*$sq) == $n;
     }
@@ -985,13 +984,20 @@ sub _poly_mod_mul {
   for (my $ix = 0; $ix <= $px_degree; $ix++) {
     my $px_at_ix = $px->[$ix];
     next unless $px_at_ix;
-    foreach my $iy (@indices_y) {
-      my $py_at_iy = $py->[$iy];
-      my $rindex = ($ix + $iy) % $r;  # reduce mod X^r-1
-      if (!defined $res[$rindex]) {
-        $res[$rindex] = $_poly_bignum ? Math::BigInt->bzero : 0
+    if ($_poly_bignum) {
+      foreach my $iy (@indices_y) {
+        my $py_px = $py->[$iy] * $px_at_ix;
+        my $rindex = ($ix + $iy) % $r;  # reduce mod X^r-1
+        $res[$rindex] = Math::BigInt->bzero unless defined $res[$rindex];
+        $res[$rindex]->badd($py_px)->bmod($n);
       }
-      $res[$rindex] = ($res[$rindex] + ($py_at_iy * $px_at_ix)) % $n;
+    } else {
+      foreach my $iy (@indices_y) {
+        my $py_px = $py->[$iy] * $px_at_ix;
+        my $rindex = ($ix + $iy) % $r;  # reduce mod X^r-1
+       $res[$rindex] = 0 unless defined $res[$rindex];
+        $res[$rindex] = ($res[$rindex] + $py_px) % $n;
+      }
     }
   }
   # In case we had upper terms go to zero after modulo, reduce the degree.
@@ -1024,17 +1030,15 @@ sub _test_anr {
 sub is_aks_prime {
   my $n = shift;
 
-  if (ref($n) ne 'Math::BigInt') {
-    if (!defined $MATH::BigInt::VERSION) {
-      eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
-      or do { croak "Cannot load Math::BigInt "; }
-    }
-    if (!defined $MATH::BigFloat::VERSION) {
-      eval { require Math::BigFloat;   Math::BigFloat->import(); 1; }
-      or do { croak "Cannot load Math::BigFloat "; }
-    }
-    $n = Math::BigInt->new("$n");
+  if (!defined $MATH::BigInt::VERSION) {
+    eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
+    or do { croak "Cannot load Math::BigInt "; }
   }
+  if (!defined $MATH::BigFloat::VERSION) {
+    eval { require Math::BigFloat;   Math::BigFloat->import(); 1; }
+    or do { croak "Cannot load Math::BigFloat "; }
+  }
+  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
 
   return 0 if $n < 2;
   return 0 if _is_perfect_power($n);
@@ -1407,9 +1411,8 @@ sub holf_factor {
       $s->binc if ($s * $s) != $ni;
       my $m = $s->copy->bmul($s)->bmod($n);
       # Check for perfect square
-      my $mcheck = int(($m & 127)->bstr);
-      next if (($mcheck*0x8bc40d7d) & ($mcheck*0xa1e2f5d1) & 0x14020a);
-      # ... 82% of non-squares were rejected by the bloom filter
+      my $mc = int(($m & 31)->bstr);
+      next unless $mc==0||$mc==1||$mc==4||$mc==9||$mc==16||$mc==17||$mc==25;
       my $f = $m->copy->bsqrt->bfloor->as_int;
       next unless ($f*$f) == $m;
       $f = Math::BigInt::bgcd( ($s > $f) ? $s-$f : $f-$s,  $n);
@@ -1427,9 +1430,8 @@ sub holf_factor {
       $s++ if ($s * $s) != ($n * $i);
       my $m = ($s < $_half_word) ? ($s*$s) % $n : _mulmod($s, $s, $n);
       # Check for perfect square
-      my $mcheck = $m & 127;
-      next if (($mcheck*0x8bc40d7d) & ($mcheck*0xa1e2f5d1) & 0x14020a);
-      # ... 82% of non-squares were rejected by the bloom filter
+      my $mc = $m & 31;
+      next unless $mc==0||$mc==1||$mc==4||$mc==9||$mc==16||$mc==17||$mc==25;
       my $f = int(sqrt($m));
       next unless $f*$f == $m;
       $f = _gcd_ui( ($s > $f)  ?  $s - $f  :  $f - $s,  $n);
