@@ -219,7 +219,7 @@ _XS_factor(IN UV n)
   PPCODE:
     if (n < 4) {                        /* If n is 0-3, we're done. */
       XPUSHs(sv_2mortal(newSVuv( n )));
-    } else if (n < 2000000) {           /* For small n, just trial division */
+    } else if (n < 10000000) {          /* For small n, just trial division */
       int i;
       UV facs[32];  /* maximum number of factors is log2n */
       UV nfacs = trial_factor(n, facs, 0);
@@ -228,8 +228,8 @@ _XS_factor(IN UV n)
       }
     } else {
       int const verbose = _XS_get_verbose();
-      UV const tlim_lower = 211;  /* Trial division through this prime */
-      UV const tlim = 223;        /* This means we've checked through here */
+      UV const tlim_lower = 401;  /* Trial division through this prime */
+      UV const tlim = 409;        /* This means we've checked through here */
       UV tofac_stack[MPU_MAX_FACTORS+1];
       UV factored_stack[MPU_MAX_FACTORS+1];
       int ntofac = 0;
@@ -461,3 +461,60 @@ _XS_RiemannZeta(double x)
 
 double
 _XS_RiemannR(double x)
+
+
+SV*
+_XS_totient_range(IN UV lo, IN UV hi)
+  PREINIT:
+    UV* totients;
+    AV* av = newAV();
+    UV i, j;
+  CODE:
+    /* Calculate Euler's totient for all n: lo <= n <= hi. */
+    /* Return as array ref */
+    New(0, totients, hi+1, UV);
+    if (totients == 0)
+      croak("Could not get memory for %"UVuf" totients\n", hi);
+    for (i = 0; i <= hi; i++)
+      totients[i] = i;
+    if (lo <= 0 && hi >= 0) av_push(av,newSVuv(totients[0]));
+    if (lo <= 1 && hi >= 1) av_push(av,newSVuv(totients[1]));
+    if (lo <= 2 && hi >= 2) {
+      totients[2] = 1;
+      av_push(av,newSVuv(totients[2]));
+    }
+    for (j = 2; j <= hi/2; j++)
+      totients[2*j] /= 2;
+    for (i = 3; i <= hi; i++) {
+      if (totients[i] == i) {
+        totients[i] = i-1;
+        for (j = 2*i; j <= hi; j += i)
+          totients[j] = (totients[j]*(i-1))/i;
+      }
+      if (i >= lo)
+        av_push(av,newSVuv(totients[i]));
+    }
+    Safefree(totients);
+    RETVAL = newRV_noinc( (SV*) av );
+  OUTPUT:
+    RETVAL
+
+SV*
+_XS_moebius_range(IN UV lo, IN UV hi)
+  PREINIT:
+    IV* mu;
+    AV* av = newAV();
+    UV i;
+  CODE:
+    /* Return array ref of Moebius function for all n: lo <= n <= hi. */
+    mu = _moebius_range(lo, hi);
+    MPUassert( mu != 0, "_moebius_range returned 0" );
+    for (i = lo; i <= hi; i++)
+      av_push(av,newSViv(mu[i-lo]));
+    Safefree(mu);
+    RETVAL = newRV_noinc( (SV*) av );
+  OUTPUT:
+    RETVAL
+
+IV
+_XS_mertens(IN UV n)

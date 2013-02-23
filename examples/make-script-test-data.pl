@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use File::Spec::Functions;
 use FindBin;
-use bigint;
+use bigint try => 'GMP';
 use Data::BitStream::XS;
 use Math::Prime::Util qw/is_prime/;
 $|++;
@@ -21,13 +21,15 @@ my @test_data = (
   [ 1359, "Twin",        "twin",       0],
   [ 5385, "Safe",        "safe",       0],
   [ 5384, "SG",          "sophie",     0],
+  [68652, "Circular",    "circular",   0],
+  [27862, "Panaitopol",  "panaitopol", 0],
   [ 2407, "Cuban y+1",   "cuban1",     0],
   [ 2648, "Cuban y+2",   "cuban2",     0],
   [ 2385, "Palindromic", "palin",      32_965_656_923],
   [  668, "Mersenne",    "mersenne",   10**100],
   [ 5479, "Lucas",       "lucas",      0],
   [ 5478, "Fibonacci",   "fibonacci",  0],
-  [63980, "Pillai",      "pillai",     2000],
+  [63980, "Pillai",      "pillai",     0],
   [28388, "Good",        "good",       20000],
   [31157, "Lucky",       "lucky",      0],
   [ 5234, "Primorial+1", "pnp1",       2500],

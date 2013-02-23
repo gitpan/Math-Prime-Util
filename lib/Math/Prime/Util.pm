@@ -2,10 +2,11 @@ package Math::Prime::Util;
 use strict;
 use warnings;
 use Carp qw/croak confess carp/;
+use Bytes::Random::Secure;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.20';
+  $Math::Prime::Util::VERSION = '0.21';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -26,7 +27,7 @@ our @EXPORT_OK = qw(
                      random_strong_prime random_maurer_prime
                      primorial pn_primorial
                      factor all_factors
-                     moebius euler_phi jordan_totient
+                     moebius mertens euler_phi jordan_totient exp_mangoldt
                      divisor_sum
                      ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR
                    );
@@ -50,10 +51,11 @@ sub _import_nobigint {
   undef *is_prob_prime; *is_prob_prime   = \&_XS_is_prob_prime;
   undef *next_prime;    *next_prime      = \&_XS_next_prime;
   undef *prev_prime;    *prev_prime      = \&_XS_prev_prime;
-  #undef *prime_count;   *prime_count     = \&_XS_prime_count;
+ #undef *prime_count;   *prime_count     = \&_XS_prime_count;
   undef *nth_prime;     *nth_prime       = \&_XS_nth_prime;
   undef *is_strong_pseudoprime;  *is_strong_pseudoprime = \&_XS_miller_rabin;
   undef *miller_rabin;  *miller_rabin    = \&_XS_miller_rabin;
+  undef *mertens;       *mertens         = \&_XS_mertens;
 }
 
 BEGIN {
@@ -470,42 +472,30 @@ sub primes {
     $_big_gcd[3] = $p3->bdiv($p2)->bfloor->as_int;
   }
 
-  # Returns a function that will get a uniform random number between 0 and
-  # $max inclusive.
+  # Returns a function that will get a uniform random number
+  # between 0 and $max inclusive.  $max can be a bigint.
+  my $_BRS;
   sub _get_rand_func {
-    # We first make a function irandf that returns a 32-bit integer.  This
-    # will be a number uniformly in the range [0, 2^32-1].  This corresponds
-    # to the irand function of many CPAN modules:
+    # First define a function $irandf that returns a 32-bit integer.  This
+    # corresponds to the irand function of many CPAN modules:
     #    Math::Random::MT
     #    Math::Random::ISAAC
     #    Math::Random::Xorshift
     #    Math::Random::Secure
-    # but not:
-    #    Math::Random::MT::Auto (it will return 64-bits)
+    # (but not Math::Random::MT::Auto which will return 64-bits)
     #
-    # We try in order:
-    #   1) the function they gave us via prime_set_config(irand=> \&irand )
-    #   2) main::rand(), exportable by many modules
-    #   3) CORE::rand().  Hopefully one call will work, otherwise use many.
+    # See if they passed one in via prime_set_config(irand=> \&irand).
+    # If not, make a Bytes::Random::Secure object with non-blocking seed, and
+    # use its irand method.
+    #
+    # This gives us a good starting point to make arbitrary size random
+    # numbers.  Bytes::Random::Secure will get us excellent quality 32-bit
+    # numbers on any platform, which means we can avoid possible nightmares
+    # with bad system rand functions.
     my $irandf = $_Config{'irand'};
-    if (!defined $irandf && defined &::rand) {
-      # They have not given us an irand function, but they have their own rand.
-      $irandf = sub { int(4294967296.0 * ::rand()) };
-    }
     if (!defined $irandf) {
-      if ($_Config{'system_randbits'} >= 32) {
-        $irandf = sub { int(4294967296.0 * CORE::rand()) };
-      } else {
-        my $randbits = $_Config{'system_randbits'};
-        $irandf = sub {
-          my $rwords = int((32+$randbits-1)/$randbits);
-          my $U = 0;
-          $U = ($U << $randbits) + int((1 << $randbits) * CORE::rand())
-             for 1 .. $rwords;
-          $U &= 0xFFFFFFFF;
-          return $U;
-        };
-      }
+      $_BRS = Bytes::Random::Secure->new(NonBlocking=>1) unless defined $_BRS;
+      $irandf = sub { return $_BRS->irand(); };
     }
     # OK, now we have a function irandf.  Use it.
     my $randf = sub {
@@ -514,7 +504,7 @@ sub primes {
       my $range = $max+1;
       my $U;
       if (ref($range) eq 'Math::BigInt') {
-        my $zero = $range - $range;
+        my $zero = $range->copy->bzero;
         my $rbits = length($range->as_bin) - 2;   # bits in range
         my $rwords = int($rbits/32) + (($rbits % 32) ? 1 : 0);
         # Generate more bits so we rarely have to loop.
@@ -578,8 +568,7 @@ sub primes {
 
     # If the range is reasonably small, generate using simple Monte Carlo
     # method (aka the 'trivial' method).  Completely uniform.
-    if ($oddrange < ~0) {
-      $oddrange = int($oddrange->bstr) if ref($oddrange) eq 'Math::BigInt';
+    if ($oddrange < $_Config{'maxparam'}) {
       my $loop_limit = 2000 * 1000;  # To protect against broken rand
       if ($low > 11) {
         while ($loop_limit-- > 0) {
@@ -769,7 +758,7 @@ sub primes {
     _validate_positive_integer($digits, 1);
 
     my $bigdigits = $digits >= $_Config{'maxdigits'};
-
+    croak "Large random primes not supported on old Perl" if $] < 5.008 && $_Config{'maxbits'} > 32 && !$bigdigits && $digits > 15;
     if ($bigdigits && $_Config{'nobigint'}) {
       _validate_positive_integer($digits, 1, $_Config{'maxdigits'});
       # Special case for nobigint and threshold digits
@@ -808,7 +797,8 @@ sub primes {
     _validate_positive_integer($bits, 2);
 
     if (!defined $_random_nbit_ranges[$bits]) {
-      my $bigbits = $bits > $_Config{'maxbits'}; # || ($] < 5.8 && $bits > 49);
+      my $bigbits = $bits > $_Config{'maxbits'};
+      croak "Large random primes not supported on old Perl" if $] < 5.008 && $_Config{'maxbits'} > 32 && !$bigbits && $bits > 49;
       if ($bigbits) {
         if (!defined $Math::BigInt::VERSION) {
           eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
@@ -836,12 +826,15 @@ sub primes {
   sub random_maurer_prime {
     my($k) = @_;
     _validate_positive_integer($k, 2);
+    if ($] < 5.008 && $_Config{'maxbits'} > 32) {
+      return random_nbit_prime($k) if $k <= 49;
+      croak "Random Maurer not supported on old Perl";
+    }
 
     # Results for random_nbit_prime are proven for all native bit sizes.  We
     # could go even higher if we used is_provable_prime or looked for is_prime
     # returning 2.  This should be reasonably fast to ~128 bits with MPU::GMP.
     my $p0 = $_Config{'maxbits'};
-    $p0 = 32 if $] < 5.8 && $p0 > 32;
 
     return random_nbit_prime($k) if $k <= $p0;
 
@@ -963,6 +956,7 @@ sub primes {
   sub random_strong_prime {
     my($t) = @_;
     _validate_positive_integer($t, 128);
+    croak "Random strong primes must be >= 173 bits on old Perl" if $] < 5.008 && $_Config{'maxbits'} > 32 && $t < 173;
 
     if (!defined $Math::BigInt::VERSION) {
       eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
@@ -1039,26 +1033,28 @@ sub pn_primorial {
 
 sub all_factors {
   my $n = shift;
+  my $use_bigint = defined $bigint::VERSION
+             || !($n < $_Config{'maxparam'} || int($n) eq $_Config{'maxparam'});
   my @factors = factor($n);
   my %all_factors;
-  foreach my $f1 (@factors) {
-    next if $f1 >= $n;
-    # We're adding to %all_factors in the loop, so grab the keys now.
-    my @all = keys %all_factors;;
-    if (!defined $bigint::VERSION) {
-      foreach my $f2 (@all) {
-        $all_factors{$f1*$f2} = 1 if ($f1*$f2) < $n;
-      }
-    } else {
-      # Many of the factors will be numified after coming back, so we need
-      # to make sure we're using bigints when we calculate the product.
-      foreach my $f2 (@all) {
-        my $product = Math::BigInt->new("$f1") * Math::BigInt->new("$f2");
-        $product = int($product->bstr) if $product <= ~0;
-        $all_factors{$product} = 1 if $product < $n;
-      }
+  if ($use_bigint) {
+    foreach my $f1 (@factors) {
+      next if $f1 >= $n;
+      my $big_f1 = Math::BigInt->new("$f1");
+      my @to_add = map { ($_ <= ~0) ? int($_->bstr) : $_ }
+                   grep { $_ < $n }
+                   map { $big_f1 * $_ }
+                   keys %all_factors;
+      undef @all_factors{ $f1, @to_add };
     }
-    $all_factors{$f1} = 1;
+  } else {
+    foreach my $f1 (@factors) {
+      next if $f1 >= $n;
+      my @to_add = grep { $_ < $n }
+                   map { int($f1 * $_) }
+                   keys %all_factors;
+      undef @all_factors{ $f1, @to_add };
+    }
   }
   @factors = sort {$a<=>$b} keys %all_factors;
   return @factors;
@@ -1067,15 +1063,32 @@ sub all_factors {
 
 # A008683 Moebius function mu(n)
 # A030059, A013929, A030229, A002321, A005117, A013929 all relate.
-
-# One can argue for the Omega function (A001221), Euler Phi (A000010), and
-# Merten's functions also.
-
 sub moebius {
-  my($n) = @_;
+  my($n, $nend) = @_;
   _validate_positive_integer($n, 1);
-  return 1 if $n == 1;
 
+  # Moebius over a range.
+  if (defined $nend) {
+    _validate_positive_integer($nend);
+    return () if $nend < $n;
+    return @{ _XS_moebius_range($n, $nend) } if $nend <= $_XS_MAXVAL;
+    my @mu = map { 1 } 0 .. $nend;
+    foreach my $j (2 .. $nend) {
+      next unless $mu[$j] == 1;
+      for (my $i = $j; $i <= $nend; $i += $j) {
+        $mu[$i] = ($mu[$i] == 1) ? -$j : -$mu[$i];
+      }
+    }
+    for (my $j = 2; $j*$j <= $nend; $j++) {
+      next unless $mu[$j] == -$j;
+      for (my $i = $j*$j; $i <= $nend; $i += $j*$j) {
+        $mu[$i] = 0;
+      }
+    }
+    return map { ($_>0) - ($_<0) } @mu[ $n .. $nend ];
+  }
+
+  return 1 if $n == 1;
   # Quick check for small replicated factors
   return 0 if ($n >= 25) && (!($n % 4) || !($n % 9) || !($n % 25));
 
@@ -1087,48 +1100,99 @@ sub moebius {
   return (((scalar @factors) % 2) == 0) ? 1 : -1;
 }
 
-
-# Euler Phi, aka Euler Totient.  A000010
-
-sub euler_phi {
+# A002321 Mertens' function.  mertens(n) = sum(moebius(1,n))
+sub mertens {
   my($n) = @_;
-  # SAGE defines this to be 0 for all n <= 0.  Others choose differently.
-  return 0 if defined $n && $n <= 0;  # Following SAGE's logic here.
   _validate_positive_integer($n);
-  return 1 if $n <= 1;
+  return _XS_mertens($n) if $n <= $_XS_MAXVAL;
+  # This is the most basic Deléglise and Rivat algorithm.  u = n^1/2
+  # and no segmenting is done.  Their algorithm uses u = n^1/3, breaks
+  # the summation into two parts, and calculates those in segments.  Their
+  # computation time growth is half of this code.
+  return $n if $n <= 1;
+  my $u = int(sqrt($n));
+  my @mu = (0, moebius(1, $u));          # Hold values of mu for 0-u
+  my $musum = 0;
+  my @M = map { $musum += $_; } @mu;     # Hold values of M for 0-u
+  my $sum = $M[$u];
+  foreach my $m (1 .. $u) {
+    next if $mu[$m] == 0;
+    my $inner_sum = 0;
+    my $lower = int($u/$m) + 1;
+    my $last_nmk = int($n/($m*$lower));
+    my ($this_k, $next_k) = (0, int($n/($m*1)));
+    for my $nmk (1 .. $last_nmk) {
+      $this_k = $next_k;
+      $next_k = int($n/($m*($nmk+1)));
+      $inner_sum += $M[$nmk] * ($this_k - $next_k);
+    }
+    $sum -= $mu[$m] * $inner_sum;
+  }
+  return $sum;
+}
 
-  my %factor_mult;
-  my @factors = grep { !$factor_mult{$_}++ }
-                ($n <= $_XS_MAXVAL) ? _XS_factor($n) : factor($n);
 
-  # Direct from Euler's product formula.  Note division will be exact.
-  #my $totient = $n;
-  #foreach my $factor (@factors) {
-  #  $totient = int($totient/$factor) * ($factor-1);
-  #}
+# A000010 Euler Phi, aka Euler Totient
+sub euler_phi {
+  my($n, $nend) = @_;
+  # SAGE defines this to be 0 for all n <= 0.  Others choose differently.
+  # I am following SAGE's decision for n <= 0.
+  return 0 if defined $n && $n < 0;
+  _validate_positive_integer($n);
 
-  # Alternate way doing multiplications only.
-  if (ref($n) ne 'Math::BigInt') {
-    my $totient = 1;  # $n - $n + 1 will make this a bigint if needed
-    foreach my $factor (@factors) {
-      $totient *= ($factor - 1);
-      $totient *= $factor for (2 .. $factor_mult{$factor});
+  # Totient over a range.  Could be improved, as this can use huge memory.
+  if (defined $nend && $nend != $n) {
+    _validate_positive_integer($nend);
+    return () if $nend < $n;
+    # Use XS code if at all possible.  Better memory use.
+    return @{ _XS_totient_range($n, $nend) } if $nend <= $_XS_MAXVAL;
+    my @totients = map { $_ } 0 .. $nend;
+    foreach my $i (2 .. $nend) {
+      next unless $totients[$i] == $i;
+      $totients[$i] = $i-1;
+      foreach my $j (2 .. int($nend / $i)) {
+        $totients[$i*$j] = ($totients[$i*$j]*($i-1))/$i;
+      }
+    }
+    splice(@totients, 0, $n) if $n > 0;
+    return @totients;
+  }
+
+  return (0,1)[$n] if $n <= 1;
+
+  if ($n <= $_XS_MAXVAL) {
+    my $last_f = 0;
+    my $totient = 1;
+    foreach my $f ( _XS_factor($n) ) {
+      if ($f == $last_f) {  $totient *= $f;                   }
+      else               {  $totient *= $f-1;  $last_f = $f;  }
     }
     return $totient;
   }
 
-  # Some real wackiness to solve issues with Math::BigInt::GMP (not seen with
-  # Pari or Calc).  Results of the multiply will go negative if we don't do
-  # this.  Standalone bug:
-  #      perl -E 'my $a = 2931542417; use bigint lib=>'GMP'; my $n = 49754396241690624; my $x = $n*$a; say $x;'
-  # This may be related to RT 71548 of Math::BigInt::GMP.
-  my $totient = $n->copy->bone;
-  foreach my $factor (@factors) {
-    my $f = $n->copy->bzero->badd("$factor");
-    $totient->bmul($f->copy->bsub(1));
-    $totient->bmul($f)  for (2 .. $factor_mult{$factor});
+  my %factor_mult;
+  my @factors = grep { !$factor_mult{$_}++ } factor($n);
+  my $totient = 1;
+
+  if (ref($n) ne 'Math::BigInt') {
+    foreach my $factor (@factors) {
+      $totient *= ($factor - 1);
+      $totient *= $factor for (2 .. $factor_mult{$factor});
+    }
+  } else {
+    # Some real wackiness to solve issues with Math::BigInt::GMP (not seen with
+    # Pari or Calc).  Results of the multiply will go negative if we don't do
+    # this.  To see if you hit the standalone bug:
+    #      perl -E 'my $a = 2931542417; use bigint lib=>'GMP'; my $n = 49754396241690624; my $x = $n*$a; say $x;'
+    # This may be related to RT 71548 of Math::BigInt::GMP.
+    $totient = $n->copy->bone;
+    foreach my $factor (@factors) {
+      my $f = $n->copy->bzero->badd("$factor");
+      $totient->bmul($f->copy->bsub(1));
+      $totient->bmul($f)  for (2 .. $factor_mult{$factor});
+    }
   }
-  $totient;
+  return $totient;
 }
 
 # Jordan's totient -- a generalization of Euler's totient.
@@ -1154,8 +1218,9 @@ sub jordan_totient {
       $totient *= $fmult for (2 .. $factor_mult{$factor});
     }
   } else {
+    my $zero = $n->copy->bzero;
     foreach my $factor (@factors) {
-      my $fmult = $n->copy->bzero->badd("$factor")->bpow($k);
+      my $fmult = $zero->copy->badd("$factor")->bpow($k);
       $totient->bmul($fmult->copy->bsub(1));
       $totient->bmul($fmult) for (2 .. $factor_mult{$factor});
     }
@@ -1166,15 +1231,23 @@ sub jordan_totient {
 # Mathematica and Pari both have functions like this.
 sub divisor_sum {
   my($n, $sub) = @_;
-  croak "Second argument must be a code ref" unless ref($sub) eq 'CODE';
   return 0 if defined $n && $n < 1;
   _validate_positive_integer($n);
-  return ($n-$n+$sub->(1)) if $n == 1;
 
-  my @afactors = all_factors($n);
+  if (!defined $sub) {
+    return $n if $n == 1;
+    my $sum = 1 + $n;
+    foreach my $f ( all_factors($n) ) {
+      $sum += $f;
+    }
+    return $sum;
+  }
 
-  my $sum = $n - $n;  # zero as an object of type $n.
-  foreach my $f (1, all_factors($n), $n) {
+  croak "Second argument must be a code ref" unless ref($sub) eq 'CODE';
+  my $sum = $n - $n;
+  return ($sum+$sub->(1)) if $n == 1;
+
+  foreach my $f (1, all_factors($n), $n ) {
     $sum += $sub->($f);
   }
   return $sum;
@@ -1188,6 +1261,24 @@ sub _omega {
   my %factor_mult;
   my @factors = grep { !$factor_mult{$_}++ } factor($n);
   return scalar @factors;
+}
+
+# Exponential of Mangoldt function (A014963).
+# Return p if n = p^m [p prime, m >= 1], 1 otherwise.
+sub exp_mangoldt {
+  my($n) = @_;
+  return 1 if defined $n && $n <= 1;
+  _validate_positive_integer($n);
+
+  #my $is_prime = ($n<=$_XS_MAXVAL) ? _XS_is_prob_prime($n) : is_prob_prime($n);
+  #return $n if $is_prime;
+
+  my %factor_mult;
+  my @factors = grep { !$factor_mult{$_}++ }
+                ($n <= $_XS_MAXVAL) ? _XS_factor($n) : factor($n);
+
+  return 1 unless scalar @factors == 1;
+  return $factors[0];
 }
 
 
@@ -1806,7 +1897,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.20
+Version 0.21
 
 
 =head1 SYNOPSIS
@@ -1879,9 +1970,15 @@ Version 0.20
 
   # Moebius function used to calculate Mertens
   $sum += moebius($_) for (1..200); say "Mertens(200) = $sum";
+  # Mertens function directly (more efficient for large values)
+  say mertens(10_000_000);
+
+  # Exponential of Mangoldt function
+  say "lamba(49) = ", log(exp_mangoldt(49));
 
   # divisor sum
-  $sigma = divisor_sum( $n, sub { $_[0] } );
+  $sigma  = divisor_sum( $n );
+  $sigma2 = divisor_sum( $n, sub { $_[0]*$_[0] } );
 
   # The primorial n# (product of all primes <= n)
   say "15# (2*3*5*7*11*13) is ", primorial(15);
@@ -2083,7 +2180,7 @@ and C<13,16> return 1, and C<14,16> returns 0).
 
 The current implementation decides based on the ranges whether to use a
 segmented sieve with a fast bit count, or Lehmer's algorithm.  The former
-is prefered for small sizes as well as small ranges.  The latter is much
+is preferred for small sizes as well as small ranges.  The latter is much
 faster for large ranges.
 
 The segmented sieve is very memory efficient and is quite fast even with
@@ -2309,6 +2406,37 @@ C<n = 1>, 0 if C<n> is not square free (i.e. C<n> has a repeated factor),
 and C<-1^t> if C<n> is a product of C<t> distinct primes.  This is an
 important function in prime number theory.
 
+If called with two arguments, they define a range C<low> to C<high>, and the
+function returns an array with the value of the Möbius function for every n
+from low to high inclusive.  Large values of high will result in a lot of
+memory use.  The algorithm used is Deléglise and Rivat (1996) algorithm 4.1,
+which is a segmented version of Lioen and van de Lune (1994) algorithm 3.2.
+
+
+=head2 mertens
+
+  say "Mertens(10M) = ", mertens(10_000_000);   # = 1037
+
+Returns the Mertens function of the positive non-zero integer input.  This
+function is defined as C<sum(moebius(1..n))>.  This is a much more efficient
+solution for larger inputs.  For example, computing Mertens(100M) takes:
+
+   time    approx mem
+     0.36s     0.1MB   mertens(100_000_000)
+    74.8s   7000MB     List::Util::sum(moebius(1,100_000_000))
+   325.7s      0MB     $sum += moebius($_) for 1..100_000_000
+
+The summation of individual terms via factoring is quite expensive in time,
+though uses O(1) space.  Computing the summation via a moebius sieve to C<n>
+is much faster, though a segmented sieve must be used for large C<n> to
+control the memory taken.  Benito and Varona (2008) show a simple C<n/3>
+summation which is much faster and uses less memory.  Better yet is a
+simple C<n^1/2> version of Deléglise and Rivat (1996), which is what the
+current implementation uses.  Deléglise and Rivat's full segmented C<n^1/3>
+algorithm is faster.  Kuznetsov (2011) gives an alternate method that he
+indicates is even faster.  In theory using one of the advanced prime count
+algorithms can lead to a faster solution.
+
 
 =head2 euler_phi
 
@@ -2320,6 +2448,10 @@ of positive integers less than or equal to C<n> that are relatively prime to
 C<n>.  Given the definition used, C<euler_phi> will return 0 for all
 C<n E<lt> 1>.  This follows the logic used by SAGE.  Mathematic/WolframAlpha
 also returns 0 for input 0, but returns C<euler_phi(-n)> for C<n E<lt> 0>.
+
+If called with two arguments, they define a range C<low> to C<high>, and the
+function returns an array with the totient of every n from low to high
+inclusive.  Large values of high will result in a lot of memory use.
 
 
 =head2 jordan_totient
@@ -2335,26 +2467,52 @@ This function can be used to generate some other useful functions, such as
 the Dedikind psi function, where C<psi(n) = J(2,n) / J(1,n)>.
 
 
+=head2 exp_mangoldt
+
+  say "exp(lambda($_)) = ", exp_mangoldt($_) for 1 .. 100;
+
+The Mangoldt function Λ(n) (also known as von Mangoldt's function) is equal
+to log p if n is prime or a power of a prime, and 0 otherwise.  We return
+the exponential so all results are integers.  Hence the return value
+for C<exp_mangoldt> is:
+   C<p> if C<n = p^m> for some prime C<p> and integer C<m E<gt>= 1>
+   1 otherwise.
+
+
 =head2 divisor_sum
 
-  say "Sum of divisors of $n:", divisor_sum( $n, sub { $_[0] } );
+  say "Sum of divisors of $n:", divisor_sum( $n );
 
-This function takes a positive integer as input, along with a code reference.
-For each positive divisor of the input, including 1 and itself, the coderef
-is called with the divisor as the only argument, and the return values summed.
-There are a number of utilities this can be used for, though it may not be the
-most efficient way to calculate them.  Example:
+This function takes a positive integer as input and returns the sum of all
+the divisors of the input, including 1 and itself.  This is known as the
+sigma function (see Hardy and Wright section 16.7, or OEIS A000203).
 
-  divisor_sum( $n, sub { my $d=shift; $d**5 * moebius($n/$d); } );
+The more general form takes a code reference as a second parameter, which
+is applied to each divisor before the summation.  This allows computation
+of numerous functions such as OEIS A000005 [d(n), sigma_0(n), tau(n)]:
 
-calculates the 5th Jordan totient (OEIS 59378).  In this example we have a
-specific function C<jordan_totient> that can compute this more efficiently.
+  divisor_sum( $n, sub { 1 } );
+
+OEIS A001157 [sigma_2(n)]:
+
+  divisor_sum( $n, sub { $_[0]*$_[0] } )
+
+the general sigma_k (OEIS A00005, A000203, A001157, A001158, etc.):
 
   divisor_sum( $n, sub { $_[0] ** $k } );
 
-calculates sigma_k (OEIS A000005, A000203, A001157, A001158 for k=0..3).  The
-simple sigma shown as the first example can be used to find aliquot sums,
-abundant numbers, perfect numbers, and more.
+the 5th Jordan totient (OEIS A059378):
+
+  divisor_sum( $n, sub { my $d=shift; $d**5 * moebius($n/$d); } );
+
+though in the last case we have a function L</"jordan_totient"> to compute
+it more efficiently.
+
+This function is useful for calculating things like aliquot sums, abundant
+numbers, perfect numbers, etc.
+
+The summation is done as a bigint if the input was a bigint object.  You may
+need to ensure the result of the subroutine does not overflow a native int.
 
 
 =head2 primorial
@@ -2404,7 +2562,7 @@ bit size.
 Returns a psuedo-randomly selected prime that will be greater than or equal
 to the lower limit and less than or equal to the upper limit.  If no lower
 limit is given, 2 is implied.  Returns undef if no primes exist within the
-range.  The L<rand> function is called one or more times for selection.
+range.
 
 The goal is to return a uniform distribution of the primes in the range,
 meaning for each prime in the range, the chances are equally likely that it
@@ -2422,23 +2580,19 @@ uniformity but results in many fewer bits of randomness being consumed as
 well as being much faster.
 
 If an C<irand> function has been set via L</"prime_set_config">, it will be
-used.  The function should return a uniformly random 32-bit integer, which
-is how the irand functions exported by L<Math::Random::Secure>,
-L<Math::Random::MT>, L<Math::Random::ISAAC> and some other modules behave.
+used to construct any ranged random numbers needed.  The function should
+return a uniformly random 32-bit integer, which is how the irand functions
+exported by L<Math::Random::Secure>, L<Math::Random::MT>,
+L<Math::Random::ISAAC> and most other modules behave.
 
-If no C<irand> function was set, then we check if the sub C<main::rand>
-exists and use it if so.  It will be called with no arguments and should
-return a floating point value in the interval [0,1) with 32 bits of entropy.
-This allows the C<rand> function from most CPAN modules to be used.
-
-Lastly, if no C<irand> function was set and no sub <main::rand> exists, then
-the system rand will be used.  System rand functions are notoriously poor,
-and a later version of this module may implement something like TinyMT to
-cover the default case.
+If no C<irand> function was set, then L<Bytes::Random::Secure> is used with
+a non-blocking seed.  This will create good quality random numbers, so there
+should be little reason to change unless one is generating long-term keys,
+where using the blocking random source may be preferred.
 
 Examples of irand functions:
 
-  # Math::Random::Secure.  Uses ISAAC and strong seed methods.  Recommended.
+  # Math::Random::Secure.  Uses ISAAC and strong seed methods.
   use Math::Random::Secure;
   prime_set_config(irand => \&Math::Random::Secure::irand);
 
@@ -2454,24 +2608,6 @@ Examples of irand functions:
   use Math::Random::MT::Auto;
   prime_set_config(irand=>sub {Math::Random::MT::Auto::irand() & 0xFFFFFFFF});
 
-Examples of main::rand, where this is done in your script:
-
-  use Math::Random::Secure qw/rand/;
-
-  use Bytes::Random::Secure qw/random_bytes/;
-  sub rand { ($_[0]||1) * (unpack("L", random_bytes(4))/4294967296.0)}
-
-  use Math::Random::MT::Auto qw/rand/;
-
-  sub rand { ... do your own cool stuff here ... }
-
-For cryptographically secure primes, you need to use something better than the
-default for both seeding and random number generation.  I would recommend
-using L<Math::Random::Secure> and also installing L<Math::Random::ISAAC::XS>
-if possible.  It is reasonably fast and does everything needed by default.
-For more information, I recommend reading the documentation for
-L<Math::Random::Secure> and L<Bytes::Random::Secure>.
-
 
 =head2 random_ndigit_prime
 
@@ -2481,7 +2617,7 @@ Selects a random n-digit prime, where the input is an integer number of
 digits between 1 and the maximum native type (10 for 32-bit, 20 for 64-bit,
 10000 if bigint is active).  One of the primes within that range
 (e.g. 1000 - 9999 for 4-digits) will be uniformly selected using the
-L<rand> function as described above.
+C<irand> function as described above.
 
 If the number of digits is greater than or equal to the maximum native type,
 then the result will be returned as a BigInt.  However, if the '-nobigint'
@@ -2497,7 +2633,7 @@ Selects a random n-bit prime, where the input is an integer number of bits
 between 2 and the maximum representable bits (32, 64, or 100000 for native
 32-bit, native 64-bit, and bigint respectively).  A prime with the nth bit
 set will be uniformly selected, with randomness supplied via calls to the
-L<rand> function as described above.
+C<irand> function as described above.
 
 Since this uses the random_prime function, all uniformity properties of that
 function apply to this.  The n-bit range is partitioned into nearly equal
@@ -2549,9 +2685,6 @@ Ueli Maurer (1995).  This is the same algorithm used by L<Crypt::Primes>.
 Similar to L</"random_nbit_prime">, the result will be a BigInt if the
 number of bits is greater than the native bit size.
 
-For cryptographic purposes you need to ensure you're using a good RNG that
-is well seeded.  See the notes for L</"random_prime">.
-
 The differences between this function and that in L<Crypt::Primes> include
 
 =over
@@ -2589,9 +2722,10 @@ Crypt::Primes has some useful options for cryptography.
 
 =item *
 
-Crypt::Primes is hardcoded to use L<Crypt::Random>, while M::P::U allows
-plugging in the random function.  This is more flexible but also prone to
-misuse.  You ought to use something like L<Math::Random::Secure>.
+Crypt::Primes is hardcoded to use L<Crypt::Random>, while M::P::U uses
+L<Bytes::Random::Secure>, and also allows plugging in a random function.
+This is more flexible, faster, has fewer dependencies, and uses a CSPRNG
+for security.
 
 =back
 
@@ -2676,8 +2810,7 @@ Allows setting of some parameters.  Currently the only parameters are:
 
   irand           Takes a code ref to an irand function returning a uniform
                   number between 0 and 2**32-1.  This will be used for all
-                  random number generation, and is the preferred way to use
-                  cryptographic RNGs.
+                  random number generation in the module.
 
 
 =head1 FACTORING FUNCTIONS
@@ -2837,7 +2970,7 @@ This is often known as C<li(x)>.  A related function is the offset logarithmic
 integral, sometimes known as C<Li(x)> which avoids the singularity at 1.  It
 may be defined as C<Li(x) = li(x) - li(2)>.  Crandall and Pomerance use the
 term C<li0> for this function, and define C<li(x) = Li0(x) - li0(2)>.  Due to
-this terminilogy confusion, it is important to check which exact definition is
+this terminology confusion, it is important to check which exact definition is
 being used.
 
 If the bignum module has been loaded, all inputs will be treated as if they
@@ -2942,9 +3075,9 @@ Project Euler, problem 10 (summation of primes):
 Project Euler, problem 21 (Amicable numbers):
 
   use Math::Prime::Util qw/divisor_sum/;
-  sub dsum { my $n = shift; divisor_sum($n, sub {$_[0]}) - $n; }
+  sub dsum { my $n = shift; divisor_sum($n) - $n; }
   my $sum = 0;
-  foreach my $a (1..10000) { 
+  foreach my $a (1..10000) {
     my $b = dsum($a);
     $sum += $a + $b if $b > $a && dsum($b) == $a;
   }
@@ -2956,7 +3089,7 @@ Project Euler, problem 41 (Pandigital prime), brute force command line:
 
 Project Euler, problem 47 (Distinct primes factors):
 
-  use Math::Prime::Util qw/factor/;
+  use Math::Prime::Util qw/pn_primorial factor/;
   use List::MoreUtils qw/distinct/;
   sub nfactors { scalar distinct factor(shift); }
   my $n = pn_primorial(4);  # Start with the first 4-factor number
@@ -2968,7 +3101,7 @@ Project Euler, problem 69, stupid brute force solution (about 5 seconds):
   use Math::Prime::Util qw/euler_phi/;
   my ($n, $max) = (0,0);
   do {
-    my $ndivphi = $_/euler_phi($_);
+    my $ndivphi = $_ / euler_phi($_);
     ($n, $max) = ($_, $ndivphi) if $ndivphi > $max;
   } for 1..1000000;
   say "$n  $max";
@@ -2979,6 +3112,23 @@ Here's the right way to do PE problem 69 (under 0.03s):
   my $n = 0;
   $n++ while pn_primorial($n+1) < 1000000;
   say pn_primorial($n);'
+
+Project Euler, problem 187, stupid brute force solution:
+
+  use Math::Prime::Util qw/factor -nobigint/;
+  my $nsemis = 0;
+  do { my @f = factor($_); $nsemis++ if scalar @f == 2; }
+     for 1 .. int(10**8)-1;
+  say $nsemis;
+
+Here's the best way for PE187.  Under 30 milliseconds from the command line:
+
+  use Math::Prime::Util qw/primes prime_count -nobigint/;
+  use List::Util qw/sum/;
+  my $limit = shift || int(10**8);
+  my @primes = @{primes(int(sqrt($limit)))};
+  say sum( map { prime_count(int(($limit-1)/$primes[$_-1])) - $_ + 1 }
+               1 .. scalar @primes );
 
 
 =head1 LIMITATIONS
@@ -3066,7 +3216,7 @@ C<is_prime>: my impressions for various sized inputs:
    (1) trial division only.  Very fast if every factor is tiny.
    (2) Too much memory to hold the sieve (11dig = 6GB, 12dig = ~50GB)
    (3) If L<Math::Prime::Util::GMP> is installed, then all three of the
-       BigInt capable modules run at reasonble similar speeds, capable of
+       BigInt capable modules run at reasonably similar speeds, capable of
        performing the BPSW test on a 3000 digit input in ~ 1 second.  Without
        that module all computations are done in Perl, so this module using
        GMP bigints runs 2-3x slower, using Pari bigints about 10x slower,
@@ -3173,10 +3323,12 @@ used in my wheel sieve.
 Tomás Oliveira e Silva has released the source for a very fast segmented sieve.
 The current implementation does not use these ideas.  Future versions might.
 
-The SQUFOF implementation being used is my modifications to Ben Buhrow's
-modifications to Bob Silverman's code.  I may experiment with some other
-implementations (Ben Buhrows and Jason Papadopoulos both have published
-excellent versions in the public domain).
+The SQUFOF implementation being used is a slight modification to the public
+domain racing version written by Ben Buhrow.  Enhancements with ideas from
+Ben's later code as well as Jason Papadopoulos's public domain implementations
+are planned for a later version.  The old SQUFOF implementation, still included
+in the code, is my modifications to Ben Buhrow's modifications to Bob
+Silverman's code.
 
 
 =head1 REFERENCES
@@ -3193,15 +3345,15 @@ Pierre Dusart, "Autour de la fonction qui compte le nombre de nombres premiers",
 
 =item *
 
-Gabriel Mincu, "An Asymptotic Expansion", Journal of Inequalities in Pure and Applied Mathematics, v4, n2, 2003.  A very readable account of Cipolla's 1902 nth prime approximation.  L<http://www.emis.de/journals/JIPAM/images/153_02_JIPAM/153_02.pdf>
+Gabriel Mincu, "An Asymptotic Expansion", <Journal of Inequalities in Pure and Applied Mathematics>, v4, n2, 2003.  A very readable account of Cipolla's 1902 nth prime approximation.  L<http://www.emis.de/journals/JIPAM/images/153_02_JIPAM/153_02.pdf>
 
 =item *
 
-David M. Smith, "Multiple-Precision Exponential Integral and Related Functions".
+David M. Smith, "Multiple-Precision Exponential Integral and Related Functions", I<ACM Transactions on Mathematical Software>, v37, n4, 2011.  L<http://myweb.lmu.edu/dmsmith/toms2011.pdf>
 
 =item *
 
-Vincent Pegoraro and Philipp Slusallek, "On the Evaluation of the Complex-Valued Exponential Integral".
+Vincent Pegoraro and Philipp Slusallek, "On the Evaluation of the Complex-Valued Exponential Integral", I<Journal of Graphics, GPU, and Game Tools>, v15, n3, pp 183-198, 2011.  L<http://www.cs.utah.edu/~vpegorar/research/2011_JGT/paper.pdf>
 
 =item *
 
@@ -3209,11 +3361,15 @@ William H. Press et al., "Numerical Recipes", 3rd edition.
 
 =item *
 
-W. J. Cody and Henry C. Thacher, Jr., "Rational Chevyshev Approximations for the Exponential Integral E_1(x)".
+W. J. Cody and Henry C. Thacher, Jr., "Chebyshev approximations for the exponential integral Ei(x)", I<Mathematics of Computation>, v23, pp 289-303, 1969.  L<http://www.ams.org/journals/mcom/1969-23-106/S0025-5718-1969-0242349-2/>
 
 =item *
 
-W. J. Cody, K. E. Hillstrom, and Henry C. Thacher Jr., "Chebyshev Approximations for the Riemann Zeta Function", Mathematics of Computation, v25, n115, pp 537-547, July 1971.
+W. J. Cody and Henry C. Thacher, Jr., "Rational Chebyshev Approximations for the Exponential Integral E_1(x)", I<Mathematics of Computation>, v22, pp 641-649, 1968.
+
+=item *
+
+W. J. Cody, K. E. Hillstrom, and Henry C. Thacher Jr., "Chebyshev Approximations for the Riemann Zeta Function", L<Mathematics of Computation>, v25, n115, pp 537-547, July 1971.
 
 =item *
 
@@ -3221,15 +3377,27 @@ Ueli M. Maurer, "Fast Generation of Prime Numbers and Secure Public-Key Cryptogr
 
 =item *
 
-Pierre-Alain Fouque and Mehdi Tibouchi, "Close to Uniform Prime Number Generation With Fewer Random Bits", 2011.  L<http://eprint.iacr.org/2011/481>
+Pierre-Alain Fouque and Mehdi Tibouchi, "Close to Uniform Prime Number Generation With Fewer Random Bits", pre-print, 2011.  L<http://eprint.iacr.org/2011/481>
 
 =item *
 
-Douglas A. Stoll and Patrick Demichel , "The impact of ζ(s) complex zeros on π(x) for x E<lt> 10^{10^{13}}", Mathematics of Computation, v80, n276, pp 2381-2394, October 2011.  L<http://www.ams.org/journals/mcom/2011-80-276/S0025-5718-2011-02477-4/home.html>
+Douglas A. Stoll and Patrick Demichel , "The impact of ζ(s) complex zeros on π(x) for x E<lt> 10^{10^{13}}", L<Mathematics of Computation>, v80, n276, pp 2381-2394, October 2011.  L<http://www.ams.org/journals/mcom/2011-80-276/S0025-5718-2011-02477-4/home.html>
 
 =item *
 
 L<OEIS: Primorial|http://oeis.org/wiki/Primorial>.
+
+=item *
+
+Walter M. Lioen and Jan van de Lune, "Systematic Computations on Mertens' Conjecture and Dirichlet's Divisor Problem by Vectorized Sieving", in I<From Universal Morphisms to Megabytes>, Centrum voor Wiskunde en Informatica, pp. 421-432, 1994.  Describes a nice way to compute a range of Möbius values.  L<http://walter.lioen.com/papers/LL94.pdf>
+
+=item *
+
+Marc Deléglise and Joöl Rivat, "Computing the summation of the Möbius function", I<Experimental Mathematics>, v5, n4, pp 291-295, 1996.  Enhances the Möbius computation in Lioen/van de Lune, and gives a very efficient way to compute the Mertens function.  L<http://projecteuclid.org/euclid.em/1047565447>
+
+=item *
+
+Manuel Benito and Juan L. Varona, "Recursive formulas related to the summation of the Möbius function", I<The Open Mathematics Journal>, v1, pp 25-34, 2007.  Presents a nice algorithm to compute the Mertens functions with only n/3 Möbius values.  L<http://www.unirioja.es/cu/jvarona/downloads/Benito-Varona-TOMATJ-Mertens.pdf>
 
 =back
 

@@ -87,6 +87,7 @@ t/81-bignum.t
 t/90-release-perlcritic.t
 t/91-release-pod-syntax.t
 t/92-release-pod-coverage.t
+xt/moebius-mertens.pl
 .travis.yml
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)
