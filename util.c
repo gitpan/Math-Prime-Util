@@ -14,7 +14,7 @@
 /* These math functions are a clusterfrack.  They're defined by C99, but
  * NetBSD doesn't have them.  You need them in both the headers and libraries,
  * but there is no standard way to find out if the libraries have them.  The
- * best way (I belive) to deal with this is having the make system do test
+ * best way (I believe) to deal with this is having the make system do test
  * compiles.  Barring that, we make limited guesses, and just give up
  * precision on any system we don't recognize.
  */
@@ -149,39 +149,6 @@ int _XS_is_prime(UV n)
   release_prime_cache(sieve);
 
   return (isprime >= 0)  ?  isprime  :  _is_prime7(n);
-}
-
-/* Shortcut, asking for a very quick response of 1 = prime, 0 = dunno.
- * No trial divisions will be done, making this useful for factoring.
- */
-int is_definitely_prime(UV n)
-{
-  UV d, m;
-  unsigned char mtab;
-  const unsigned char* sieve;
-  int isprime;
-
-  if ( n < (NPRIME_IS_SMALL*8))
-    return ((prime_is_small[n/8] >> (n%8)) & 1);
-
-  d = n/30;
-  m = n - d*30;
-  mtab = masktab30[m];  /* Bitmask in mod30 wheel */
-
-  /* Return 0 if a multiple of 2, 3, or 5 */
-  if (mtab == 0)
-    return 0;
-
-  isprime = (n <= get_prime_cache(0, &sieve))
-            ?  ((sieve[d] & mtab) == 0)
-            :  -1;
-  release_prime_cache(sieve);
-  if (isprime >= 0)  return isprime;
-
-  if (n > MPU_PROB_PRIME_BEST)
-    return (_XS_is_prob_prime(n) == 2);
-
-  return 0;
 }
 
 
@@ -635,17 +602,16 @@ UV _XS_nth_prime(UV n)
 IV* _moebius_range(UV lo, UV hi)
 {
   IV* mu;
-  UV i, p, sqrtn, range;
+  UV i, p, sqrtn;
 
   /* This implementation follows that of Deléglise & Rivat (1996), which is
    * a segmented version of Lioen & van de Lune (1994).
    */
-  range = hi-lo+1;
   sqrtn = (UV) (sqrt(hi) + 0.5);
 
-  New(0, mu, range, IV);
+  New(0, mu, hi-lo+1, IV);
   if (mu == 0)
-    croak("Could not get memory for %"UVuf" moebius results\n", range);
+    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
   for (i = lo; i <= hi; i++)
     mu[i-lo] = 1;
   if (lo == 0)  mu[0] = 0;
@@ -668,8 +634,10 @@ IV* _moebius_range(UV lo, UV hi)
   }
   for (i = lo; i <= hi; i++) {
     IV m = mu[i-lo];
-    if (m != i && m != -i)  m *= -1;
-    mu[i-lo] = (m>0) - (m<0);
+    if (m != 0) {
+      if (m != i && -m != i)  m *= -1;
+      mu[i-lo] = (m>0) - (m<0);
+    }
   }
   return mu;
 }
@@ -910,14 +878,13 @@ static const long double riemann_zeta_table[] = {
 long double ld_riemann_zeta(long double x) {
   long double const tol = 1e-17;
   long double term;
-  int k;
   KAHAN_INIT(sum);
 
   if (x < 0.5) croak("Invalid input to RiemannZeta:  x must be >= 0.5");
 
   if (x == (unsigned int)x) {
-    k = x - 2;
-    if ((k >= 0) && (k < NPRECALC_ZETA))
+    int k = x - 2;
+    if ((k >= 0) && (k < (int)NPRECALC_ZETA))
       return riemann_zeta_table[k];
   }
 
@@ -965,6 +932,7 @@ long double ld_riemann_zeta(long double x) {
      * values using double precision, it's awful.
      * Back to the defining equation.
      */
+    int k;
     for (k = 5; k <= 1000000; k++) {
       term = powl(k, -x);
       KAHAN_SUM(sum, term);
