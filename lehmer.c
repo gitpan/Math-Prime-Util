@@ -3,13 +3,19 @@
 #include <string.h>
 #include <math.h>
 
-#define SIEVE_LIMIT  1000000    /* Just sieve if smaller than this */
+/* Below this size, just sieve. */
+#define SIEVE_LIMIT  1000000
+/* We need a set of small primes for stage 4.  If we get more than strictly
+ * necessary, we can spend less time sieving.  This has a direct impact on
+ * the memory used in stage 4.  About 10-12 seems to balance with the amount
+ * taken by the phi algorithm. */
+#define SIEVE_MULT   12
 
 /*****************************************************************************
  *
  * Lehmer prime counting utility.  Calculates pi(x), count of primes <= x.
  *
- * Copyright (c) 2012 Dana Jacobsen (dana@acm.org).
+ * Copyright (c) 2012-2013 Dana Jacobsen (dana@acm.org).
  * This is free software; you can redistribute it and/or modify it under
  * the same terms as the Perl 5 programming language system itself.
  *
@@ -22,38 +28,42 @@
  *
  *    g++ -O3 -DPRIMESIEVE_STANDALONE -DPRIMESIEVE_PARALLEL lehmer.c -o prime_count -lprimesieve -lgomp
  *
- * The phi(x,a) calculation is unique, to the best of my knowledge.  It keeps
- * a heap of all x values + signed counts for the given 'a' value, and walks
+ * The phi(x,a) calculation is unique, to the best of my knowledge.  It uses
+ * two lists of all x values + signed counts for the given 'a' value, and walks
  * 'a' down until it is small enough to calculate directly (either with Mapes
  * or using a calculated table using the primorial/totient method).  This
  * is relatively fast and low memory compared to many other solutions.  As with
  * all Lehmer-Meissel-Legendre algorithms, memory use will be a constraint
  * with large values of x.
  *
- * Calculating pi(10^11) is done in under 1 second on my computer.  pi(10^14)
- * takes under 1 minute, pi(10^16) in a half hour.  Compared with Thomas
- * R. Nicely's pix4 program, this one is 3-5x faster and uses 2-3x less memory.
- * When compiled with parallel primesieve it is another 2x or more faster:
- * pix4(10^16) takes 124 minutes, this takes 6 minutes.
+ * Using my sieve code with everything running in serial, calculating pi(10^12)
+ * is done under 1 second on my computer.  pi(10^14) takes under 30 seconds,
+ * pi(10^16) in under 20 minutes.  Compared with Thomas R. Nicely's pix4
+ * program, this one is 5x faster and uses 10x less memory.  When compiled
+ * with parallel primesieve it is over 10x faster.
+ *   pix4(10^16) takes 124 minutes, this code + primesieve takes < 4 minutes.
  *
- *    n     phi(x,a) mem/time  |  stage 4 mem/time  | total time
- *   10^17   4953MB    871.14   |   2988MB  9911.9    | 179m 37.5s
- *   10^16   1436MB    168.02   |   901MB   1195.7    |  22m 45.6s
- *   10^15    432MB     31.34   |   394MB    165.6    |   3m 17.5s
- *   10^14    203MB      5.509  |   223MB     25.96   |    31.69s
- *   10^13               0.949  |   165MB      4.284  |     5.336s
- *   10^12               0.174  |              0.755  |     0.990s
- *   10^11               0.034  |              0.138  |     0.213s
- *   10^10               0.007  |              0.025  |     0.064s
+ * Timings with Perl + MPU with all-serial computation.  Using the standalone
+ * program with parallel primesieve speeds up stage 4 a lot for large values.
+ * The last column is the standalone time with parallel primesieve
  *
- * These timings are using Perl + MPU.  The standalone version using primesieve
- * speeds up stage 4 a lot for large values.
+ *    n     phi(x,a) mem/time  |  stage 4 mem/time  | total time | pps time
+ *   10^18   5648MB    532.33  |                    |            | 88m  7s
+ *   10^17   1737MB    122.06  | 1708MB   9684.1    | 163m 36  s | 17m 53s
+ *   10^16    534MB     28.14  |  573MB   1118.4    |  19m  9  s |  3m 48s
+ *   10^15    163MB      6.55  |  193MB    151.3    |   2m 39  s |   49.12 s
+ *   10^14     49MB      1.51  |   66MB     23.81   |    25.20 s |   10.86 s
+ *   10^13     14MB      0.348 |   22MB      4.008  |     4.44 s |    2.44 s
+ *   10^12      4MB      0.079 |    8MB      0.703  |     0.85 s |    0.547s
+ *   10^11      1MB      0.017 |             0.130  |     0.143s |    0.128s
+ *   10^10               0.004 |             0.025  |     0.028s |    0.036s
  *
  * Reference: Hans Riesel, "Prime Numbers and Computer Methods for
  * Factorization", 2nd edition, 1994.
  */
 
 static int const verbose = 0;
+/* #define STAGE_TIMING 1 */
 
 #ifdef STAGE_TIMING
  #include <sys/time.h>
@@ -94,6 +104,16 @@ typedef   signed long IV;
 #define _XS_prime_count(a, b)     ps.countPrimes(a, b)
 #define croak(fmt,...)            { printf(fmt,##__VA_ARGS__); exit(1); }
 #define prime_precalc(n)          /* */
+
+static UV isqrt(UV n)
+{
+  if (sizeof(UV) == 8 && n >= 18446744065119617025UL)  return 4294967295UL;
+  if (sizeof(UV) == 4 && n >= 4294836225UL)            return 65535UL;
+  UV root = (UV) sqrt((double)n);
+  while (root*root > n)  root--;
+  while ((root+1)*(root+1) <= n)  root++;
+  return root;
+}
 
 /* There has _got_ to be a better way to get an array of small primes using
  * primesieve.  This is ridiculous. */
@@ -161,6 +181,45 @@ static UV* generate_small_primes(UV n)
 
 #endif
 
+static UV icbrt(UV n)
+{
+#if 0
+  /* The integer cube root code is about 30% faster for me */
+#if BITS_PER_WORD == 32
+  if (n >= UVCONST(4291015625)) return UVCONST(1625);
+#else
+  if (n >= UVCONST(18446724184312856125)) return UVCONST(2642245);
+#endif
+  UV root = (UV) pow(n, 1.0/3.0);
+  if (root*root*root > n) {
+    root--;
+    while (root*root*root > n)  root--;
+  } else {
+    while ((root+1)*(root+1)*(root+1) <= n)  root++;
+  }
+  return root;
+#else
+  int s;
+  UV y = 0;
+  /* Alternately: s = (sizeof(UV)*8)-(sizeof(UV)*8)%3 */
+#if BITS_PER_WORD == 32
+  for (s = 30; s >= 0; s -= 3) {
+#else
+  for (s = 63; s >= 0; s -= 3) {
+#endif
+    UV b;
+    y += y;
+    b = 3*y*(y+1)+1;
+    if ((n >> s) >= b) {
+      n -= b << s;
+      y++;
+    }
+  }
+  return y;
+#endif
+}
+
+
 /* Given an array of primes[1..lastprime], return Pi(n) where n <= lastprime.
  * This is actually quite fast, and definitely faster than sieving.  By using
  * this we can avoid caching prime counts and also skip most calls to the
@@ -226,33 +285,8 @@ static UV mapes7(UV x) {    /* A tiny bit faster setup for a=7 */
 }
 
 /******************************************************************************/
-/*   Modified heap for manipulating our UV value / IV count pairs             */
+/*   In-order lists for manipulating our UV value / IV count pairs            */
 /******************************************************************************/
-
-/*
- * This is a heap augmented with a small array.  We store values and signed
- * counts, where all counts for the same value are summed.  An easy way to
- * do this in Perl/Python is a hash.  In plain C, I don't believe this is the
- * best solution.  A heap can be implemented both easily and very efficiently
- * (using a linear array), and as we pull items off the heap we can combine
- * all similar values.
- *
- * Below some threshold value ('small_limit') the items become dense.  That is,
- * not only are the values small but we have many items in that range.  Hence
- * the small array augmentation.  All values below the threshold are just put
- * directly into an array.  This not only handles them a little faster but
- * helps reduce the heap size a bit, as we don't put any repeated values in
- * the heap for the small items.  Since they're dense in this range, we can
- * do a linear scan to find the next non-zero count.
- *
- * An ideal data structure for our purpose would coalesce values on insertion,
- * and would allow operating in place (so we could retrieve all our items and
- * add new items as we go, without them appearing on this scan).  The former
- * is possible using an ordered list or a balanced tree.  I don't know how we
- * would achieve the latter.  The point being that we're pulling items off of
- * h1 and adding it (plus possibly a new item) to h2, so ideally we'd manage
- * to use that space freed up by h1.
- */
 
 typedef struct {
   UV v;
@@ -260,139 +294,143 @@ typedef struct {
 } vc_t;
 
 typedef struct {
-  UV    small_limit;    /* small count array: size */
-  UV    small_N;        /* small count array: number of non-zero elements */
-  int   small_ptr;      /* small count array: index of largest non-zero value */
-  UV    array_size;     /* heap: allocated size in elements */
-  UV    N;              /* heap: number of elements */
-  IV*   small_array;    /* small count array data */
-  vc_t* array;          /* heap data */
-} heap_t;
-
-static void heap_insert(heap_t* h, UV val, IV count)
-{
-  UV n;
   vc_t* a;
-  if (val < h->small_limit) {
-    IV* saptr = h->small_array + val;
-    if (*saptr == 0)
-      ++(h->small_N);
-    *saptr += count;
-    if (*saptr == 0)
-      --(h->small_N);
-    else if (h->small_ptr < (int)val)
-      h->small_ptr = (int) val;
+  UV size;
+  UV n;
+} vcarray_t;
+
+static vcarray_t vcarray_create(void)
+{
+  vcarray_t l;
+  l.a = 0;
+  l.size = 0;
+  l.n = 0;
+  return l;
+}
+static void vcarray_destroy(vcarray_t* l)
+{
+  if (l->a != 0) {
+    if (verbose > 2) printf("FREE list %p\n", l->a);
+    Safefree(l->a);
+  }
+  l->size = 0;
+  l->n = 0;
+}
+/* Insert a value/count pair.  We do this indirection because about 80% of
+ * the calls result in a merge with the previous entry. */
+#define vcarray_insert(arr, val, count) \
+  if (arr.n > 0 && arr.a[arr.n-1].v == val) \
+    arr.a[arr.n-1].c += count; \
+  else \
+    vcarray_insert_func(&arr, val, count);
+static void vcarray_insert_func(vcarray_t* l, UV val, IV count)
+{
+  UV n = l->n;
+  if (n > 0 && l->a[n-1].v <= val) {
+    if (l->a[n-1].v < val)
+      croak("Previous value was %lu, inserting %lu out of order\n", l->a[n-1].v, val);
+    l->a[n-1].c += count;
     return;
   }
-  n = ++(h->N);
-  a = h->array;
-  if (n >= h->array_size) {
+  if (n >= l->size) {
     UV new_size;
-    if (h->array_size == 0) {
-      new_size = (h->small_limit <= (20000/2)) ? 20000 : 2*h->small_limit;
-      if (verbose>2) printf("ALLOCing heap, size %lu\n", new_size);
-      New(0, h->array, new_size, vc_t);
+    if (l->size == 0) {
+      new_size = 20000;
+      if (verbose>2) printf("ALLOCing list, size %lu\n", new_size);
+      New(0, l->a, new_size, vc_t);
     } else {
-      new_size = (UV) (1.5 * h->array_size);
-      if (verbose>2) printf("REALLOCing heap %p, new size %lu\n", h->array, new_size);
-      Renew( h->array, new_size, vc_t );
+      new_size = (UV) (1.5 * l->size);
+      if (verbose>2) printf("REALLOCing list %p, new size %lu\n",l->a,new_size);
+      Renew( l->a, new_size, vc_t );
     }
-    if (h->array == 0) croak("could not allocate heap\n");
-    a = h->array;
-    h->array_size = new_size-1;
-    a[0].v = UV_MAX;  a[0].c = 0;
+    if (l->a == 0) croak("could not allocate list\n");
+    l->size = new_size;
   }
-  while (a[n/2].v <= val) {  /* upheap */
-    a[n] = a[n/2];
-    n /= 2;
-  }
-  a[n].v = val;
-  a[n].c = count;
+  /* printf(" inserting %lu %ld\n", val, count); */
+  l->a[n].v = val;
+  l->a[n].c = count;
+  l->n++;
 }
-static void heap_remove(heap_t* h, UV* val, IV* count)
+
+/* Merge the two sorted lists A and B into A.  Each list has no duplicates,
+ * but they may have duplications between the two.  We're quite interested
+ * in saving memory, so first remove all the duplicates, then do an in-place
+ * merge. */
+static void vcarray_merge(vcarray_t* a, vcarray_t* b)
 {
-  if (h->N == 0) {
-    /* Search small_array for a non-zero count from small_ptr down */
-    IV* saptr = h->small_array + h->small_ptr;
-    if (h->small_N == 0) croak("remove from empty heap\n");
-    while (!*saptr)
-      saptr--;
-    if (saptr < h->small_array) croak("walked off small array\n");
-    *val = (saptr - h->small_array);
-    *count = *saptr;
-    *saptr = 0;
-    h->small_ptr = *val-1;
-    --(h->small_N);
+  long ai, bi, bj, k, kn;
+  UV an = a->n;
+  UV bn = b->n;
+  vc_t* aa = a->a;
+  vc_t* ba = b->a;
+
+  /* Merge anything in B that appears in A. */
+  for (ai = 0, bi = 0, bj = 0; bi < bn; bi++) {
+    /* Skip forward in A until empty or aa[ai].v <= ba[bi].v */
+    UV bval = ba[bi].v;
+    while (ai < an && aa[ai].v > bval)
+      ai++;
+    /* if A empty then copy the remaining elements */
+    if (ai >= an) {
+      if (bi == bj)
+        bj = bn;
+      else
+        while (bi < bn)
+          ba[bj++] = ba[bi++];
+      break;
+    }
+    if (aa[ai].v == bval)
+      aa[ai].c += ba[bi].c;
+    else
+      ba[bj++] = ba[bi];
+  }
+  if (verbose>2) printf("  removed %lu duplicates from b\n", bn - bj);
+  bn = bj;
+
+  if (bn == 0) {  /* In case they were all duplicates */
+    b->n = 0;
     return;
-  } else {
-    vc_t* a = h->array;
-    UV ival, k, n = h->N;
-    *val = a[1].v;
-    *count = 0;
-    do {
-      *count += a[1].c;
-      /* remove top element */
-      ival = a[n--].v;
-      k = 1;
-      while (k <= n/2) {
-        UV j = k+k;
-        if (j < n && a[j].v < a[j+1].v)  j++;
-        if (ival >= a[j].v) break;
-        a[k] = a[j];
-        k = j;
-      }
-      a[k] = a[n+1];
-    } while (n > 0 && a[1].v == *val);
-    h->N = n;
   }
-}
-static heap_t heap_create(UV small_size)
-{
-  heap_t h;
-  h.array = 0;
-  h.array_size = 0;
-  h.small_limit = small_size;
-  h.small_array = 0;
-  if (small_size > 0) {
-    if (verbose>1)printf("creating small array of size %lu\n", small_size);
-    Newz(0, h.small_array, small_size, IV);
-  }
-  h.N = 0;
-  h.small_N = 0;
-  h.small_ptr = -1;
-  return h;
-}
-static void heap_destroy(heap_t* h)
-{
-  if (h->array != 0) {
-    if (verbose > 2) printf("FREE heap %p\n", h->array);
-    Safefree(h->array);
-  }
-  h->array = 0;
-  h->array_size = 0;
-  h->N = 0;
-  if (h->small_array != 0)
-    Safefree(h->small_array);
-  h->small_array = 0;
-  h->small_N = 0;
-  h->small_ptr = -1;
-}
-#define heap_not_empty(h)  ((h).N > 0 || (h).small_N > 0)
 
-/******************************************************************************/
+  /* kn = the final merged size.  All duplicates are gone, so this is exact. */
+  kn = an+bn;
+  if (a->size < kn) {  /* Make A big enough to hold kn elements */
+    UV new_size = (UV) (1.2 * kn);
+    if (verbose>2) printf("REALLOCing list %p, new size %lu\n", a->a, new_size);
+    Renew( a->a, new_size, vc_t );
+    aa = a->a;  /* this could have been changed by the realloc */
+    a->size = new_size;
+  }
 
+  /* merge A and B.  Very simple using reverse merge. */
+  ai = an-1;
+  bi = bn-1;
+  for (k = kn-1; k >= 0; k--) {
+    if (ai < 0) { /* A is exhausted, just filling in B */
+      if (bi < 0) croak("ran out of data during merge");
+      aa[k] = ba[bi--];
+    } else if (bi < 0) { /* We've caught up with A */
+      break;
+    } else if (aa[ai].v < ba[bi].v) {
+      aa[k] = aa[ai--];
+    } else {
+      if (aa[ai].v == ba[bi].v) croak("deduplication error");
+      aa[k] = ba[bi--];
+    }
+  }
+  a->n = kn;    /* A now has this many items */
+  b->n = 0;     /* B is marked empty */
+}
 
 
 /*
- * The main phi(x,a) algorithm.  In this implementation, it takes about 15%
- * of the total time for the Lehmer algorithm, but it is by far the most
- * memory consuming part.
+ * The main phi(x,a) algorithm.  In this implementation, it takes under 10%
+ * of the total time for the Lehmer algorithm, but is a big memory consumer.
  */
 
 static UV phi(UV x, UV a)
 {
-  heap_t h1, h2;
-  UV val, smallv;
+  UV i, val, sval;
   UV sum = 0;
   IV count;
   const UV* primes;
@@ -405,46 +443,43 @@ static UV phi(UV x, UV a)
     croak("Could not generate primes for phi(%lu,%lu)\n", x, a);
   if (x < primes[a+1])  { Safefree(primes); return (x > 0) ? 1 : 0; }
 
-  /* This is a hack, trying to guess at a value where the array gets dense */
-  smallv = a * 1000;
-  if (smallv > x / primes[a] / 5)
-    smallv = x / primes[a] / 5;
-
-  h1 = heap_create(smallv);
-  h2 = heap_create(smallv);
-  heap_insert(&h1, x, 1);
+  vcarray_t a1 = vcarray_create();
+  vcarray_t a2 = vcarray_create();
+  vcarray_insert(a1, x, 1);
 
   while (a > 7) {
     UV primea = primes[a];
-    if (heap_not_empty(h2)) croak("h2 heap isn't empty.");
-    while ( heap_not_empty(h1) ) {
-      UV sval;
-      heap_remove(&h1, &val, &count);
+    for (i = 0; i < a1.n; i++) {
+      val   = a1.a[i].v;
+      count = a1.a[i].c;
       if (count == 0)
         continue;
-      heap_insert(&h2, val, count);
       sval = val / primea;
       if (sval >= primea) {
-        heap_insert(&h2, sval, -count);
+        vcarray_insert(a2, sval, -count);
       } else {
         sum -= count;
       }
     }
-    { heap_t t = h1; h1 = h2; h2 = t; }
-    /* printf("a = %lu  heap %lu/%lu + %lu\n", a, h1.small_N, h1.small_limit, h1.N); */
+    /* Merge a1 and a2 into a1.  a2 will be emptied. */
+    vcarray_merge(&a1, &a2);
     a--;
   }
-  heap_destroy(&h2);
+  vcarray_destroy(&a2);
   if (a != 7) croak("final loop is set for a=7, a = %lu\n", a);
-  while ( heap_not_empty(h1) ) {
-    heap_remove(&h1, &val, &count);
+  for (i = 0; i < a1.n; i++) {
+    val   = a1.a[i].v;
+    count = a1.a[i].c;
     if (count != 0)
       sum += count * mapes7(val);
   }
-  heap_destroy(&h1);
+  vcarray_destroy(&a1);
   Safefree(primes);
   return (UV) sum;
 }
+
+
+
 
 
 /* Legendre's method.  Interesting and a good test for phi(x,a), but Lehmer's
@@ -455,7 +490,7 @@ UV _XS_legendre_pi(UV n)
   if (n < SIEVE_LIMIT)
     return _XS_prime_count(2, n);
 
-  a = _XS_legendre_pi( (UV) (sqrt(n)+0.5) );
+  a = _XS_legendre_pi(isqrt(n));
 
   return phi(n, a) + a - 1;
 }
@@ -472,9 +507,9 @@ UV _XS_meissel_pi(UV n)
 
   if (verbose > 0) printf("meissel %lu stage 1: calculate a,b,c \n", n);
   TIMING_START;
-  a = _XS_meissel_pi(pow(n, 1.0/3.0)+0.5);     /* a = floor(n^1/3) */
-  b = _XS_meissel_pi(sqrt(n)+0.5);             /* b = floor(n^1/2) */
-  c = a;                                       /* c = a            */
+  a = _XS_meissel_pi(icbrt(n));        /* a = floor(n^1/3) */
+  b = _XS_meissel_pi(isqrt(n));        /* b = floor(n^1/2) */
+  c = a;                               /* c = a            */
   TIMING_END_PRINT("stage 1")
 
   if (verbose > 0) printf("meissel %lu stage 2: phi(x,a) (a=%lu b=%lu c=%lu)\n", n, a, b, c);
@@ -483,7 +518,7 @@ UV _XS_meissel_pi(UV n)
   if (verbose > 0) printf("phi(%lu,%lu) = %lu.  sum = %lu\n", n, a, sum - ((b+a-2) * (b-a+1) / 2), sum);
   TIMING_END_PRINT("phi(x,a)")
 
-  lastprime = b*16;
+  lastprime = b*SIEVE_MULT;
   if (verbose > 0) printf("meissel %lu stage 3: %lu small primes\n", n, lastprime);
   TIMING_START;
   primes = generate_small_primes(lastprime);
@@ -491,7 +526,7 @@ UV _XS_meissel_pi(UV n)
   lastpc = primes[lastprime];
   TIMING_END_PRINT("small primes")
 
-  prime_precalc( sqrt( n / primes[a+1] ) );
+  prime_precalc(isqrt(n / primes[a+1]));
 
   if (verbose > 0) printf("meissel %lu stage 4: loop %lu to %lu, pc to %lu\n", n, a+1, b, n/primes[a+1]);
   TIMING_START;
@@ -509,7 +544,6 @@ UV _XS_meissel_pi(UV n)
   Safefree(primes);
   return sum;
 }
-
 
 /* Lehmer's method.  This is basically Riesel's Lehmer function (page 22),
  * with some additional code to help optimize it.  */
@@ -532,12 +566,11 @@ UV _XS_lehmer_pi(UV n)
 
   if (verbose > 0) printf("lehmer %lu stage 1: calculate a,b,c \n", n);
   TIMING_START;
-  z = (UV) sqrt((double)n+0.5);
-  a = _XS_lehmer_pi(sqrt((double)z)+0.5);          /* a = floor(n^1/4) */
-  b = _XS_lehmer_pi(z);                            /* b = floor(n^1/2) */
-  c = _XS_lehmer_pi(pow((double)n, 1.0/3.0)+0.5);  /* c = floor(n^1/3) */
+  z = isqrt(n);
+  a = _XS_lehmer_pi(isqrt(z));         /* a = floor(n^1/4) */
+  b = _XS_lehmer_pi(z);                /* b = floor(n^1/2) */
+  c = _XS_lehmer_pi(icbrt(n));         /* c = floor(n^1/3) */
   TIMING_END_PRINT("stage 1")
-
 
   if (verbose > 0) printf("lehmer %lu stage 2: phi(x,a) (z=%lu a=%lu b=%lu c=%lu)\n", n, z, a, b, c);
   TIMING_START;
@@ -549,7 +582,7 @@ UV _XS_lehmer_pi(UV n)
    * fast prime counts.  Using a higher value here will mean more memory but
    * faster operation.  A lower value saves memory at the expense of more
    * segment sieving.*/
-  lastprime = b*16;
+  lastprime = b*SIEVE_MULT;
   if (verbose > 0) printf("lehmer %lu stage 3: %lu small primes\n", n, lastprime);
   TIMING_START;
   primes = generate_small_primes(lastprime);
@@ -560,7 +593,7 @@ UV _XS_lehmer_pi(UV n)
 
   /* Ensure we have the base sieve for big prime_count ( n/primes[i] ). */
   /* This is about 75k for n=10^13, 421k for n=10^15, 2.4M for n=10^17 */
-  prime_precalc( sqrt( n / primes[a+1] ) );
+  prime_precalc(isqrt(n / primes[a+1]));
 
   if (verbose > 0) printf("lehmer %lu stage 4: loop %lu to %lu, pc to %lu\n", n, a+1, b, n/primes[a+1]);
   TIMING_START;
@@ -574,7 +607,7 @@ UV _XS_lehmer_pi(UV n)
     lastw = w;
     sum = sum - lastwpc;
     if (i <= c) {
-      UV bi = bs_prime_count( (UV) (sqrt(w) + 0.5), primes, lastprime );
+      UV bi = bs_prime_count( isqrt(w), primes, lastprime );
       for (j = i; j <= bi; j++) {
         sum = sum - bs_prime_count(w / primes[j], primes, lastprime) + j - 1;
       }
@@ -582,6 +615,100 @@ UV _XS_lehmer_pi(UV n)
   }
   TIMING_END_PRINT("stage 4")
   Safefree(primes);
+  return sum;
+}
+
+
+UV _XS_LMO_pi(UV n)
+{
+  UV a, b, sum, i, lastprime, lastpc, lastw, lastwpc;
+  UV n13, n12, n23;
+  IV S1;
+  UV S2, P2;
+  const UV* primes = 0;  /* small prime cache */
+  char* mu = 0;          /* moebius to n^1/3 */
+  UV*   lpf = 0;         /* least prime factor to n^1/3 */
+  DECLARE_TIMING_VARIABLES;
+  if (n < SIEVE_LIMIT)
+    return _XS_prime_count(2, n);
+
+  if (verbose > 0) printf("LMO %lu stage 1: calculate pi(n^1/3) \n", n);
+  TIMING_START;
+  n13 = icbrt(n);
+  n12 = isqrt(n);
+  n23 = (UV) (pow(n, 2.0/3.0)+0.01);
+  a = _XS_lehmer_pi(n13);
+  b = _XS_lehmer_pi(n12);
+  TIMING_END_PRINT("stage 1")
+
+  lastprime = b*SIEVE_MULT;
+  if (verbose > 0) printf("LMO %lu stage 2: %lu small primes\n", n, lastprime);
+  TIMING_START;
+  primes = generate_small_primes(lastprime);
+  if (primes == 0) croak("Error generating primes.\n");
+  lastpc = primes[lastprime];
+  TIMING_END_PRINT("small primes")
+
+  if (verbose > 0) printf("LMO %lu stage 3: calculate mu/lpf to %lu\n", n, a);
+  TIMING_START;
+  /* We could call MPU's:
+   *    mu = _moebius_range(0, n13+1)
+   * but (1) it's a bit slower (something to be addressed), and (2) we will
+   * do the least prime factor calculation at the same time.
+   */
+  New(0, mu, n13+1, char);
+  memset(mu, 1, sizeof(char) * (n13+1));
+  New(0, lpf, n13+1, UV);
+  memset(lpf, 0, sizeof(UV) * (n13+1));
+  mu[0] = 0;
+  for (i = 1; i <= a; i++) {
+    UV primei = primes[i];
+    UV j;
+    for (j = primei; j <= n13; j += primei) {
+      mu[j] = -mu[j];
+      if (lpf[j] == 0) lpf[j] = primei;
+    }
+    UV isquared = primei * primei;
+    for (j = isquared; j <= n13; j += isquared)
+      mu[j] = 0;
+  }
+  /* for (i = 0; i <= n13; i++) { printf("mu %lu %ld\n", i, (IV)mu[i]); } */
+  TIMING_END_PRINT("mu")
+
+  if (verbose > 0) printf("LMO %lu stage 4: calculate S1 (%lu)\n", n, n13);
+  TIMING_START;
+  S1 = 0;
+  for (i = 1; i <= n13; i++)
+    if (mu[i] != 0)
+      S1 += mu[i] * (IV) (n/i);
+  TIMING_END_PRINT("S1")
+  if (verbose > 0) printf("LMO %lu stage 4: S1 = %ld\n", n, S1);
+
+  S2 = 0;
+  /* TODO... */
+
+  Safefree(mu);
+  Safefree(lpf);
+
+  prime_precalc(isqrt(n / primes[a+1]));
+  if (verbose > 0) printf("LMO %lu stage 5: P2 loop %lu to %lu, pc to %lu\n", n, a+1, b, n/primes[a+1]);
+  TIMING_START;
+  P2 = 0;
+  /* Reverse the i loop so w increases.  Count w in segments. */
+  lastw = 0;
+  lastwpc = 0;
+  for (i = b; i > a; i--) {
+    UV w = n / primes[i];
+    lastwpc = (w <= lastpc) ? bs_prime_count(w, primes, lastprime)
+                            : lastwpc + _XS_prime_count(lastw+1, w);
+    lastw = w;
+    P2 += lastwpc;
+  }
+  P2 -= ((b+a-2) * (b-a+1) / 2) - a + 1;
+  TIMING_END_PRINT("P2")
+  if (verbose > 0) printf("LMO %lu stage 5: P2 = %lu\n", n, P2);
+  Safefree(primes);
+  sum = P2 + S1 + S2;
   return sum;
 }
 
@@ -607,9 +734,10 @@ int main(int argc, char *argv[])
   if      (!strcasecmp(method, "lehmer"))   { pi = _XS_lehmer_pi(n);      }
   else if (!strcasecmp(method, "meissel"))  { pi = _XS_meissel_pi(n);     }
   else if (!strcasecmp(method, "legendre")) { pi = _XS_legendre_pi(n);    }
+  else if (!strcasecmp(method, "lmo"))      { pi = _XS_LMO_pi(n);    }
   else if (!strcasecmp(method, "sieve"))    { pi = _XS_prime_count(2, n); }
   else {
-    printf("method must be one of: lehmer, meissel, legendre, or sieve\n");
+    printf("method must be one of: lehmer, meissel, legendre, lmo, or sieve\n");
     return(2);
   }
   gettimeofday(&t1, 0);

@@ -28,16 +28,32 @@
   extern long double expl(long double);
   extern long double logl(long double);
   extern long double fabsl(long double);
+  extern long double floorl(long double);
 #else
   #define powl(x, y)  (long double) pow( (double) (x), (double) (y) )
   #define expl(x)     (long double) exp( (double) (x) )
   #define logl(x)     (long double) log( (double) (x) )
   #define fabsl(x)    (long double) fabs( (double) (x) )
+  #define floorl(x)   (long double) floor( (double) (x) )
 #endif
 
 #ifndef INFINITY
   #define INFINITY (DBL_MAX + DBL_MAX)
 #endif
+
+#define KAHAN_INIT(s) \
+  long double s ## _y, s ## _t; \
+  long double s ## _c = 0.0; \
+  long double s = 0.0;
+
+#define KAHAN_SUM(s, term) \
+  do { \
+    s ## _y = (term) - s ## _c; \
+    s ## _t = s + s ## _y; \
+    s ## _c = (s ## _t - s) - s ## _y; \
+    s = s ## _t; \
+  } while (0)
+
 
 #include "ptypes.h"
 #include "util.h"
@@ -73,7 +89,7 @@ static UV count_zero_bits(const unsigned char* m, UV nbytes)
 static int _is_trial_prime7(UV n)
 {
   UV limit, i;
-  limit = sqrt(n);
+  limit = isqrt(n);
   i = 7;
   while (1) {   /* trial division, skipping multiples of 2/3/5 */
     if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
@@ -96,7 +112,7 @@ static int _is_prime7(UV n)
   if (n > MPU_PROB_PRIME_BEST)
     return _XS_is_prob_prime(n);  /* We know this works for all 64-bit n */
 
-  limit = sqrt(n);
+  limit = isqrt(n);
   i = 7;
   while (1) {   /* trial division, skipping multiples of 2/3/5 */
     if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
@@ -422,7 +438,7 @@ UV _XS_prime_count(UV low, UV high)
     /* Expand sieve to sqrt(n) */
     UV endp = (high_d >= (UV_MAX/30))  ?  UV_MAX-2  :  30*high_d+29;
     release_prime_cache(cache_sieve);
-    segment_size = get_prime_cache( sqrt(endp) + 1 , &cache_sieve) / 30;
+    segment_size = get_prime_cache( isqrt(endp) + 1 , &cache_sieve) / 30;
   }
 
   if ( (segment_size > 0) && (low_d <= segment_size) ) {
@@ -557,13 +573,49 @@ UV _XS_nth_prime(UV n)
     double flogn = log(fn);
     double flog2n = log(flogn);   /* Dusart 2010, page 2, n >= 3 */
     UV lower_limit = fn * (flogn + flog2n - 1.0 + ((flog2n-2.10)/flogn));
-    segment_size = lower_limit / 30;
-    lower_limit = 30 * segment_size - 1;
-    count = _XS_lehmer_pi(lower_limit) - 3;
-    MPUassert(count <= target, "Pi(nth_prime_lower(n))) > n");
+#if BITS_PER_WORD == 32
+    if (1) {
+#else
+    if (n <= UVCONST(20000000000)) {
+#endif
+      /* Calculate lower limit, get count, sieve to that */
+      segment_size = lower_limit / 30;
+      lower_limit = 30 * segment_size - 1;
+      count = _XS_lehmer_pi(lower_limit) - 3;
+      MPUassert(count <= target, "Pi(nth_prime_lower(n))) > n");
+    } else {
+      /* Compute approximate nth prime via binary search on R(n) */
+      UV lo = lower_limit;
+      UV hi = upper_limit;
+      double lor = _XS_RiemannR(lo);
+      double hir = _XS_RiemannR(hi);
+      while (lor < hir) {
+        UV mid = (UV)  ((lo + hi) / 2);
+        double midr = _XS_RiemannR(mid);
+        if (midr <= n) { lo = mid+1;  lor = _XS_RiemannR(lo); }
+        else           { hi = mid; hir = midr; }
+      }
+      /* Bias toward lower, because we want to sieve up if possible */
+      lower_limit = (UV) (double)(0.9999999*(lo-1));
+      segment_size = lower_limit / 30;
+      lower_limit = 30 * segment_size - 1;
+      count = _XS_lehmer_pi(lower_limit);
+      /*
+        printf("We've estimated %lu too %s.\n", (count>n)?count-n:n-count, (count>n)?"FAR":"little");
+        printf("Our limit %lu %s a prime\n", lower_limit, _XS_is_prime(lower_limit) ? "is" : "is not");
+      */
+
+      if (count > n) { /* Too far.  Walk backwards */
+        if (_XS_is_prime(lower_limit)) count--;
+        for (p = 0; p <= (count-n); p++)
+          lower_limit = _XS_prev_prime(lower_limit);
+        return lower_limit;
+      }
+      count -= 3;
+    }
 
     /* Make sure the segment siever won't have to keep resieving. */
-    prime_precalc(sqrt(upper_limit));
+    prime_precalc(isqrt(upper_limit));
   }
 
   if (count == target)
@@ -599,47 +651,129 @@ UV _XS_nth_prime(UV n)
 
 /* Return an IV array with lo-hi+1 elements.  mu[k-lo] = µ(k) for k = lo .. hi.
  * It is the callers responsibility to call Safefree on the result. */
-IV* _moebius_range(UV lo, UV hi)
+#define PGTLO(p,lo)  ((p) >= lo) ? (p) : ((p)*(lo/(p)) + ((lo%(p))?(p):0))
+char* _moebius_range(UV lo, UV hi)
 {
-  IV* mu;
-  UV i, p, sqrtn;
+  char* mu;
+  UV i, p;
+  UV sqrtn = isqrt(hi);
+#if 1
+  IV* A;
 
   /* This implementation follows that of Deléglise & Rivat (1996), which is
-   * a segmented version of Lioen & van de Lune (1994).
+   * a segmented version of Lioen & van de Lune (1994).  Downside is that it
+   * uses an array of IV's, so too much memory.  Pawleicz (2011) shows a small
+   * variation but seems to just be a rearrangement -- there is no time or
+   * space difference on my machines. (TODO: but maybe for hi > 2^63?)
    */
-  sqrtn = (UV) (sqrt(hi) + 0.5);
 
-  New(0, mu, hi-lo+1, IV);
-  if (mu == 0)
+  New(0, A, hi-lo+1, IV);
+  if (A == 0)
     croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
   for (i = lo; i <= hi; i++)
-    mu[i-lo] = 1;
-  if (lo == 0)  mu[0] = 0;
+    A[i-lo] = 1;
   prime_precalc(sqrtn);
   for (p = 2; p <= sqrtn; p = _XS_next_prime(p)) {
-    i = p*p;
-    if (i < lo)
-      i = i*(lo/i) + ( (lo%i) ? i : 0 );
-    while (i <= hi) {
-      mu[i-lo] = 0;
-      i += p*p;
-    }
-    i = p;
-    if (i < lo)
-      i = i*(lo/i) + ( (lo%i) ? i : 0 );
-    while (i <= hi) {
-      mu[i-lo] *= -p;
-      i += p;
-    }
+    UV p2 = p*p;
+    for (i = PGTLO(p2, lo); i <= hi; i += p2)
+      A[i-lo] = 0;
+    for (i = PGTLO(p, lo); i <= hi; i += p)
+      A[i-lo] *= -(IV)p;
   }
+  New(0, mu, hi-lo+1, char);
+  if (mu == 0)
+    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
+  memset(mu, 0, hi-lo+1);
   for (i = lo; i <= hi; i++) {
-    IV m = mu[i-lo];
-    if (m != 0) {
-      if (m != i && -m != i)  m *= -1;
-      mu[i-lo] = (m>0) - (m<0);
-    }
+    IV a = A[i-lo];
+    if (a != 0)
+      mu[i-lo] = (a != i && -a != i)  ?  (a<0) - (a>0)
+                                      :  (a>0) - (a<0);
   }
+  Safefree(A);
+#endif
+#if 0
+  /* Simple char method, Needs way too many primes */
+  New(0, mu, hi-lo+1, char);
+  if (mu == 0)
+    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
+  memset(mu, 1, hi-lo+1);
+  if (lo == 0)  mu[0] = 0;
+  prime_precalc( _XS_nth_prime_upper(hi) );
+  for (p = 2; p <= hi; p = _XS_next_prime(p)) {
+    UV p2 = p*p;
+    for (i = PGTLO(p2, lo); i <= hi; i += p2)
+      mu[i-lo] = 0;
+    for (i = PGTLO(p, lo); i <= hi; i += p)
+      mu[i-lo] = -mu[i-lo];
+  }
+#endif
+#if 0
+  /* Kuznetsov's transform of Deléglise & Rivat (1996) into logs.
+   * (1) I'm using the log function, which should be fixed (easy).
+   * (2) it doesn't work.  try 64-101 vs. 64 vs. 100.
+   */
+  unsigned char* A;
+  New(0, A, hi-lo+1, unsigned char);
+  if (A == 0)
+    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
+  memset(A, 0, hi-lo+1);
+  if (sqrtn*sqrtn != hi) sqrtn++;  /* ceil sqrtn */
+  prime_precalc(sqrtn);
+  for (p = 2; p <= sqrtn; p = _XS_next_prime(p)) {
+    UV p2 = p*p;
+    unsigned char l = 1 | (unsigned char) ( log(p)/log(2) );
+    for (i = PGTLO(p, lo); i <= hi; i += p)
+      A[i-lo] += l;
+    for (i = PGTLO(p2, lo); i <= hi; i += p2)
+      A[i-lo] |= 0x80;
+  }
+
+  New(0, mu, hi-lo+1, char);
+  if (mu == 0)
+    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
+  for (i = lo; i <= hi; i++) {
+    unsigned char a = A[i-lo];
+    unsigned char log2i = (unsigned char) ( log(i)/log(2) );
+    //printf("i = %lu  a = %lu  log2i = %lu\n", i, a, log2i);
+    if (a & 0x80) { mu[i-lo] = 0; }
+    else if (a >= log2i) { mu[i-lo] =  1 - 2*(a&1); }
+    else                 { mu[i-lo] = -1 + 2*(a&1); }
+  }
+  if (lo == 0)  mu[0] = 0;
+  Safefree(A);
+#endif
   return mu;
+}
+
+UV* _totient_range(UV lo, UV hi) {
+  UV* totients;
+  const unsigned char* sieve;
+  UV i, sievehi;
+  if (hi < lo) croak("_totient_range error hi %lu < lo %lu\n", hi, lo);
+  New(0, totients, hi-lo+1, UV);
+  if (totients == 0)
+    croak("Could not get memory for %"UVuf" totients\n", hi);
+  for (i = lo; i <= hi; i++)
+    totients[i-lo] = i;
+  for (i = PGTLO(2*2, lo); i <= hi; i += 2) totients[i-lo] -= totients[i-lo]/2;
+  for (i = PGTLO(2*3, lo); i <= hi; i += 3) totients[i-lo] -= totients[i-lo]/3;
+  for (i = PGTLO(2*5, lo); i <= hi; i += 5) totients[i-lo] -= totients[i-lo]/5;
+  sievehi = hi/2;
+  if (get_prime_cache(sievehi, &sieve) < sievehi) {
+    release_prime_cache(sieve);
+    croak("Could not generate sieve for %"UVuf, sievehi);
+  } else {
+    START_DO_FOR_EACH_SIEVE_PRIME( sieve, 7, sievehi ) {
+      for (i = PGTLO(2*p, lo); i <= hi; i += p)
+        totients[i-lo] -= totients[i-lo]/p;
+    } END_DO_FOR_EACH_SIEVE_PRIME
+    release_prime_cache(sieve);
+  }
+  for (i = lo; i <= hi; i++)
+    if (totients[i-lo] == i)
+      totients[i-lo] = i-1;
+  return totients;
 }
 
 IV _XS_mertens(UV n) {
@@ -668,12 +802,12 @@ IV _XS_mertens(UV n) {
   /* Deléglise and Rivat (1996) using u = n^1/2 and unsegmented. */
   /* Very simple, but they use u = n^1/3 and segment */
   UV u, i, m, nmk;
-  IV* mu;
+  char* mu;
   IV* M;
   IV sum;
 
   if (n <= 1)  return n;
-  u = (UV) sqrt(n);
+  u = isqrt(n);
   mu = _moebius_range(0, u);
   New(0, M, u+1, IV);
   M[0] = 0;
@@ -701,6 +835,54 @@ IV _XS_mertens(UV n) {
 #endif
 }
 
+double _XS_chebyshev_theta(UV n)
+{
+  const unsigned char* sieve;
+  KAHAN_INIT(sum);
+
+  if (n >= 2) KAHAN_SUM(sum, 0.6931471805599453094172321214581765680755L);
+  if (n >= 3) KAHAN_SUM(sum, 1.0986122886681096913952452369225257046475L);
+  if (n >= 5) KAHAN_SUM(sum, 1.6094379124341003746007593332261876395256L);
+  if (n < 7) return (double) sum;
+
+  if (get_prime_cache(n, &sieve) < n) {
+    release_prime_cache(sieve);
+    croak("Could not generate sieve for %"UVuf, n);
+  }
+  START_DO_FOR_EACH_SIEVE_PRIME(sieve, 7, n) {
+    KAHAN_SUM(sum, logl(p));
+  } END_DO_FOR_EACH_SIEVE_PRIME
+  release_prime_cache(sieve);
+  return (double) sum;
+}
+double _XS_chebyshev_psi(UV n)
+{
+  const unsigned char* sieve;
+  UV prime, mults_are_one;
+  long double logn, logp;
+  KAHAN_INIT(sum);
+
+  logn = logl(n);
+  for (prime = 2; prime <= 5 && prime <= n; prime += prime-1) {
+    logp = logl(prime);
+    KAHAN_SUM(sum, logp * floorl(logn/logp + 1e-15));
+  }
+  if (n < 7) return (double) sum;
+
+  if (get_prime_cache(n, &sieve) < n) {
+    release_prime_cache(sieve);
+    croak("Could not generate sieve for %"UVuf, n);
+  }
+  mults_are_one = 0;
+  START_DO_FOR_EACH_SIEVE_PRIME(sieve, 7, n) {
+    logp = logl(p);
+    if (!mults_are_one && p > (n/p))   mults_are_one = 1;
+    KAHAN_SUM(sum, (mults_are_one) ? logp : logp * floorl(logn/logp + 1e-15));
+  } END_DO_FOR_EACH_SIEVE_PRIME
+  release_prime_cache(sieve);
+  return (double) sum;
+}
+
 
 
 /*
@@ -725,17 +907,6 @@ IV _XS_mertens(UV n) {
 
 static long double const euler_mascheroni = 0.57721566490153286060651209008240243104215933593992L;
 static long double const li2 = 1.045163780117492784844588889194613136522615578151L;
-
-#define KAHAN_INIT(s) \
-  long double s ## _y, s ## _t; \
-  long double s ## _c = 0.0; \
-  long double s = 0.0;
-
-#define KAHAN_SUM(s, term) \
-  s ## _y = term - s ## _c; \
-  s ## _t = s + s ## _y; \
-  s ## _c = (s ## _t - s) - s ## _y; \
-  s = s ## _t;
 
 double _XS_ExponentialIntegral(double x) {
   long double const tol = 1e-16;
@@ -874,13 +1045,27 @@ static const long double riemann_zeta_table[] = {
 };
 #define NPRECALC_ZETA (sizeof(riemann_zeta_table)/sizeof(riemann_zeta_table[0]))
 
-/* Riemann Zeta on the real line.  Compare to Math::Cephes::zetac */
+/* Riemann Zeta on the real line, with 1 subtracted.
+ * Compare to Math::Cephes zetac.  Also zeta with q=1 and subtracting 1.
+ *
+ * The Cephes zeta function uses a series (2k)!/B_2k which converges rapidly
+ * and has a very wide range of values.  We use it here for some values.
+ *
+ * Note: Calculations here are done on long doubles and we try to generate ~17
+ *       digits of accuracy.  When these are returned to Perl they get put in
+ *       a standard 64-bit double, so don't expect more than 15 digits.
+ *
+ * For values 0.5 to 5, this code uses the rational Chebyshev approximation
+ * from Cody and Thacher.  This method is extraordinarily fast and very
+ * accurate over its range (slightly better than Cephes for most values).  If
+ * we had quad floats, we could use the 9-term polynomial.
+ */
 long double ld_riemann_zeta(long double x) {
   long double const tol = 1e-17;
-  long double term;
-  KAHAN_INIT(sum);
+  int i;
 
-  if (x < 0.5) croak("Invalid input to RiemannZeta:  x must be >= 0.5");
+  if (x < 0)  croak("Invalid input to RiemannZeta:  x must be >= 0");
+  if (x == 1) return INFINITY;
 
   if (x == (unsigned int)x) {
     int k = x - 2;
@@ -888,63 +1073,99 @@ long double ld_riemann_zeta(long double x) {
       return riemann_zeta_table[k];
   }
 
-  /* Use Cody et al. rational Chebyshev approx for small values.  This is the
-   * range where the series methods take a long time and are inaccurate.  This
-   * method is fast and quite accurate over the range 0.5 - 5. */
-  if (x <= 5.0) {
-
+  /* Cody / Thacher rational Chebyshev approximation for small values */
+  if (x >= 0.5 && x <= 5.0) {
     static const long double C8p[9] = { 1.287168121482446392809e10L,
-                                   1.375396932037025111825e10L,
-                                   5.106655918364406103683e09L,
-                                   8.561471002433314862469e08L,
-                                   7.483618124380232984824e07L,
-                                   4.860106585461882511535e06L,
-                                   2.739574990221406087728e05L,
-                                   4.631710843183427123061e03L,
-                                   5.787581004096660659109e01L };
+                                        1.375396932037025111825e10L,
+                                        5.106655918364406103683e09L,
+                                        8.561471002433314862469e08L,
+                                        7.483618124380232984824e07L,
+                                        4.860106585461882511535e06L,
+                                        2.739574990221406087728e05L,
+                                        4.631710843183427123061e03L,
+                                        5.787581004096660659109e01L };
     static const long double C8q[9] = { 2.574336242964846244667e10L,
-                                   5.938165648679590160003e09L,
-                                   9.006330373261233439089e08L,
-                                   8.042536634283289888587e07L,
-                                   5.609711759541920062814e06L,
-                                   2.247431202899137523543e05L,
-                                   7.574578909341537560115e03L,
-                                  -2.373835781373772623086e01L,
-                                   1.000000000000000000000L    };
+                                        5.938165648679590160003e09L,
+                                        9.006330373261233439089e08L,
+                                        8.042536634283289888587e07L,
+                                        5.609711759541920062814e06L,
+                                        2.247431202899137523543e05L,
+                                        7.574578909341537560115e03L,
+                                       -2.373835781373772623086e01L,
+                                        1.000000000000000000000L    };
     long double sumn = C8p[0]+x*(C8p[1]+x*(C8p[2]+x*(C8p[3]+x*(C8p[4]+x*(C8p[5]+x*(C8p[6]+x*(C8p[7]+x*C8p[8])))))));
     long double sumd = C8q[0]+x*(C8q[1]+x*(C8q[2]+x*(C8q[3]+x*(C8q[4]+x*(C8q[5]+x*(C8q[6]+x*(C8q[7]+x*C8q[8])))))));
-    sum = (sumn - (x-1)*sumd) / ((x-1)*sumd);
+    long double sum = (sumn - (x-1)*sumd) / ((x-1)*sumd);
+    return sum;
+  }
 
-  } else if (x > 2000.0) {
-
+  if (x > 2000.0) {
     /* 1) zeta(2000)-1 is about 8.7E-603, which is far less than a IEEE-754
      *    64-bit double can represent.  A 128-bit quad could go to ~16000.
-     * 2) pow / powl start getting obnoxiously slow with values like -7500.
-     */
+     * 2) pow / powl start getting obnoxiously slow with values like -7500. */
     return 0.0;
+  }
 
-  } else {
-
-    /* I was using this series:
-     *   functions.wolfram.com/ZetaFunctionsandPolylogarithms/Zeta/06/04/0003
-     * which for integer values is great -- it needs half the number of terms
-     * and gives slightly better numerical results.  However, for non-integer
-     * values using double precision, it's awful.
-     * Back to the defining equation.
-     */
-    int k;
-    for (k = 5; k <= 1000000; k++) {
-      term = powl(k, -x);
+#if 0
+  {
+    KAHAN_INIT(sum);
+    /* Simple defining series, works well. */
+    for (i = 5; i <= 1000000; i++) {
+      long double term = powl(i, -x);
       KAHAN_SUM(sum, term);
       if (term < tol*sum) break;
     }
     KAHAN_SUM(sum, powl(4, -x) );
     KAHAN_SUM(sum, powl(3, -x) );
     KAHAN_SUM(sum, powl(2, -x) );
-
+    return sum;
   }
+#endif
 
-  return sum;
+  /* The 2n!/B_2k series used by the Cephes library. */
+  {
+    /* gp/pari: factorial(2n)/bernfrac(2n) */
+    static const long double A[] = {
+      12.0L,
+     -720.0L,
+      30240.0L,
+     -1209600.0L,
+      47900160.0L,
+     -1892437580.3183791606367583212735166426L,
+      74724249600.0L,
+     -2950130727918.1642244954382084600497650L,
+      116467828143500.67248729113000661089202L,
+     -4597978722407472.6105457273596737891657L,
+      181521054019435467.73425331153534235290L,
+     -7166165256175667011.3346447367083352776L,
+      282908877253042996618.18640556532523927L,
+    };
+    long double a, b, s, t;
+    const long double w = 10.0;
+    s = 0.0;
+    b = 0.0;
+    for (i = 2; i < 11; i++) {
+      b = powl( i, -x );
+      s += b;
+      if (fabsl(b/s) < tol)
+         return s;
+    }
+    s = s + b*w/(x-1.0) - 0.5 * b;
+    a = 1.0;
+    for (i = 0; i < 13; i++) {
+      long double k = 2*i;
+      a *= x + k;
+      b /= w;
+      t = a*b/A[i];
+      s = s + t;
+      t = fabsl(t/s);
+      if (t < tol)
+        break;
+      a *= x + k + 1.0;
+      b /= w;
+    }
+    return s;
+  }
 }
 
 double _XS_RiemannR(double x) {

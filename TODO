@@ -37,8 +37,17 @@
 
 - More efficient Mertens.  The current version has poor growth.
 
-- Add first and second Chebyshev functions.  See Planat and Solé (2011).
-
 - Keep speeding up factoring for very large values.
 
 - More efficient totient segment.  Do we really need primes to n/2?
+
+- Add a more complex system for allowing something like:
+      FOREACH_PRIME(low, high) {
+        ....
+      } END_FOREACH_PRIME
+  that (1) handles any low / high, and (2) segments.  Take segment_primes
+  from XS.xs to do this.
+
+- Implement S2 calculation for LMO prime count.
+
+- Balance memory used in phi with memory for binary search pc in lehmer.

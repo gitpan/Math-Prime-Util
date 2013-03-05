@@ -55,7 +55,7 @@ static int is_perfect_power(UV n) {
   if ( n < (UV) pow(10, DBL_DIG) ) {
 #endif
     /* Simple floating point method.  Fast, but need enough mantissa. */
-    b = sqrt(n)+0.5; if (b*b == n)  return 1; /* perfect square */
+    b = isqrt(n); if (b*b == n)  return 1; /* perfect square */
     for (b = 3; b < last; b = _XS_next_prime(b)) {
       UV root = pow(n, 1.0 / (double)b) + 0.5;
       if ( ((UV)(pow(root, b)+0.5)) == n)  return 1;
@@ -131,16 +131,28 @@ static void poly_mod_mul(UV* px, UV* py, UV* res, UV r, UV mod)
 }
 static void poly_mod_sqr(UV* px, UV* res, UV r, UV mod)
 {
-  UV d, s, sum, rindex;
+  UV c, d, s, sum, rindex, maxpx;
   UV degree = r-1;
 
   memset(res, 0, r * sizeof(UV)); /* zero out sums */
+  /* Discover index of last non-zero value in px */
+  for (s = degree; s > 0; s--)
+    if (px[s] != 0)
+      break;
+  maxpx = s;
+  /* 1D convolution */
   for (d = 0; d <= 2*degree; d++) {
+    UV s_beg = (d <= degree) ? 0 : d-degree;
+    UV s_end = ((d/2) <= maxpx) ? d/2 : maxpx;
+    if (s_end < s_beg) continue;
     sum = 0;
-    for (s = (d <= degree) ? 0 : d-degree; s <= (d/2); s++) {
-      UV c = px[s];
-      sum += (s*2 == d) ? c*c : 2*c * px[d-s];
+    for (s = s_beg; s < s_end; s++) {
+      c = px[s];
+      sum += 2*c * px[d-s];
     }
+    /* Special treatment for last point */
+    c = px[s_end];
+    sum += (s_end*2 == d)  ?  c*c  :  2*c*px[d-s_end];
     rindex = (d < r) ? d : d-r;  /* d % r */
     res[rindex] = (res[rindex] + sum) % mod;
   }
@@ -151,7 +163,7 @@ static UV* poly_mod_pow(UV* pn, UV power, UV r, UV mod)
 {
   UV* res;
   UV* temp;
-  int use_sqr = (mod > sqrt(UV_MAX/r)) ? 0 : 1;
+  int use_sqr = (mod > isqrt(UV_MAX/r)) ? 0 : 1;
 
   Newz(0, res, r, UV);
   New(0, temp, r, UV);
@@ -211,7 +223,7 @@ int _XS_is_aks_prime(UV n)
   if (is_perfect_power(n))
     return 0;
 
-  sqrtn = sqrt(n);
+  sqrtn = isqrt(n);
   log2n = log(n) / log(2);   /* C99 has a log2() function */
   limit = (UV) floor(log2n * log2n);
 

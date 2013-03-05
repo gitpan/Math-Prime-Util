@@ -712,7 +712,7 @@ sub miller_rabin {
   return 0 if !($n % 2);
 
   # Die on invalid bases
-  do { croak "Base $_ is invalid" if $_ < 2 } for (@bases);
+  foreach my $base (@bases) { croak "Base $base is invalid" if $base < 2 }
   # Make sure we handle big bases ok.
   @bases = grep { $_ > 1 }  map { ($_ >= $n) ? $_ % $n : $_ }  @bases;
 
@@ -948,14 +948,12 @@ sub is_strong_lucas_pseudoprime {
 
 my $_poly_bignum;
 sub _poly_new {
-  my @poly;
+  my @poly = @_;
+  push @poly, 0 unless scalar @poly;
   if ($_poly_bignum) {
-    foreach my $c (@_) {
-      push @poly, (ref $c eq 'Math::BigInt') ? $c->copy : Math::BigInt->new("$c");
-    }
-  } else {
-    push @poly, $_ for (@_);
-    push @poly, 0 unless scalar @poly;
+    @poly = map { (ref $_ eq 'Math::BigInt')
+                  ?  $_->copy
+                  :  Math::BigInt->new("$_"); } @poly;
   }
   return \@poly;
 }
@@ -1744,22 +1742,47 @@ sub RiemannZeta {
   # No MPFR, no BigFloat.
   return 0.0 + $_Riemann_Zeta_Table[int($x)-2]
     if $x == int($x) && defined $_Riemann_Zeta_Table[int($x)-2];
-  my $tol = 1e-16;
-  my($y, $t);
-  my $sum = 0.0;
-  my $c = 0.0;
+  my $tol = 1.11e-16;
 
-  for my $k (2 .. 1000000) {
-    my $term = (2*$k+1) ** -$x;
-    $y = $term-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
-    last if $term < abs($tol*$sum);
+  # Series based on (2n)! / B_2n.
+  # This is a simplication of the Cephes zeta function.
+  my @A = (
+      12.0,
+     -720.0,
+      30240.0,
+     -1209600.0,
+      47900160.0,
+     -1892437580.3183791606367583212735166426,
+      74724249600.0,
+     -2950130727918.1642244954382084600497650,
+      116467828143500.67248729113000661089202,
+     -4597978722407472.6105457273596737891657,
+      181521054019435467.73425331153534235290,
+     -7166165256175667011.3346447367083352776,
+      282908877253042996618.18640556532523927,
+  );
+  my $s = 0.0;
+  my $b = 0.0;
+  foreach my $i (2 .. 10) {
+    $b = $i ** -$x;
+    $s += $b;
+    return $s if abs($b/$s) < $tol;
   }
-  my $term = 3 ** -$x;
-  $y = $term-$c; $t = $sum+$y; $c = ($t-$sum)-$y; $sum = $t;
-  $t = 1.0 / (1.0 - (2 ** -$x));
-  $sum *= $t;
-  $sum += ($t - 1.0);
-  return $sum;
+  my $w = 10.0;
+  $s = $s  +  $b*$w/($x-1.0)  -  0.5*$b;
+  my $a = 1.0;
+  foreach my $i (0 .. 12) {
+    my $k = 2*$i;
+    $a *= $x + $k;
+    $b /= $w;
+    my $t = $a*$b/$A[$i];
+    $s += $t;
+    $t = abs($t/$s);
+    last if $t < $tol;
+    $a *= $x + $k + 1.0;
+    $b /= $w;
+  }
+  return $s;
 }
 
 # Riemann R function

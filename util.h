@@ -14,8 +14,11 @@ extern UV  _XS_prev_prime(UV x);
 extern UV  _XS_prime_count(UV low, UV high);
 extern UV  _XS_nth_prime(UV x);
 
-extern IV* _moebius_range(UV low, UV high);
-extern IV  _XS_mertens(UV n);
+extern char*  _moebius_range(UV low, UV high);
+extern UV*    _totient_range(UV low, UV high);
+extern IV     _XS_mertens(UV n);
+extern double _XS_chebyshev_theta(UV n);
+extern double _XS_chebyshev_psi(UV n);
 
 extern double _XS_ExponentialIntegral(double x);
 extern double _XS_LogarithmicIntegral(double x);
@@ -29,5 +32,17 @@ extern double _XS_RiemannR(double x);
 #else
   #define MPU_PROB_PRIME_BEST  UVCONST(100000000)
 #endif
+
+static UV isqrt(UV n) {
+#if BITS_PER_WORD == 32
+  if (n >= UVCONST(4294836225)) return UVCONST(65535);
+#else
+  if (n >= UVCONST(18446744065119617025)) return UVCONST(4294967295);
+#endif
+  UV root = (UV) sqrt((double)n);
+  while (root*root > n)  root--;
+  while ((root+1)*(root+1) <= n)  root++;
+  return root;
+}
 
 #endif

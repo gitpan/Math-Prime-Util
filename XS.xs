@@ -3,6 +3,10 @@
 #include "perl.h"
 #include "XSUB.h"
 /* We're not using anything for which we need ppport.h */
+#ifndef XSRETURN_UV   /* Er, almost.  Fix 21086 from Sep 2003 */
+  #define XST_mUV(i,v)  (ST(i) = sv_2mortal(newSVuv(v))  )
+  #define XSRETURN_UV(v) STMT_START { XST_mUV(0,v);  XSRETURN(1); } STMT_END
+#endif
 #include "ptypes.h"
 #include "cache.h"
 #include "sieve.h"
@@ -56,6 +60,9 @@ _XS_meissel_pi(IN UV n)
 
 UV
 _XS_lehmer_pi(IN UV n)
+
+UV
+_XS_LMO_pi(IN UV n)
 
 UV
 _XS_nth_prime(IN UV n)
@@ -154,7 +161,7 @@ segment_primes(IN UV low, IN UV high);
 
       {  /* Avoid recalculations of this */
         UV endp = (high_d >= (UV_MAX/30))  ?  UV_MAX-2  :  30*high_d+29;
-        prime_precalc( sqrt(endp) + 0.1 + 1 );
+        prime_precalc(isqrt(endp) + 1 );
       }
 
       while ( low_d <= high_d ) {
@@ -352,46 +359,31 @@ _XS_RiemannR(double x)
 
 void
 _XS_totient(IN UV lo, IN UV hi = 0)
+  PREINIT:
+    UV i;
   PPCODE:
-    if (hi != lo && hi != 0) {
-      /* Totients in a range, returns array */
+    if (hi != lo && hi != 0) { /* Totients in a range, returns array */
       UV* totients;
-      UV i, p;
-
       if (hi < lo) XSRETURN_EMPTY;
       if (lo < 2) {
         if (lo <= 0           ) XPUSHs(sv_2mortal(newSVuv(0)));
         if (lo <= 1 && hi >= 1) XPUSHs(sv_2mortal(newSVuv(1)));
         lo = 2;
       }
-      New(0, totients, hi-lo+1, UV);
-      if (totients == 0)
-        croak("Could not get memory for %"UVuf" totients\n", hi);
-      for (i = lo; i <= hi; i++)
-        totients[i-lo] = i;
-      prime_precalc( hi/2 );
-      for (p = 2; p <= hi/2; p = _XS_next_prime(p)) {
-        i = 2*p;
-        if (i < lo)  i = p*(lo/p) + ( (lo%p) ? p : 0 );
-        for ( ; i <= hi; i += p)
-          totients[i-lo] -= totients[i-lo]/p;
+      if (hi >= lo) {
+        totients = _totient_range(lo, hi);
+        /* Extend the stack to handle how many items we'll return */
+        EXTEND(SP, hi-lo+1);
+        for (i = lo; i <= hi; i++)
+          PUSHs(sv_2mortal(newSVuv(totients[i-lo])));
+        Safefree(totients);
       }
-      /* Extend the stack to handle how many items we'll return */
-      EXTEND(SP, hi-lo+1);
-      for (i = lo; i <= hi; i++) {
-        UV t = totients[i-lo];
-        if (t == i)
-          t = i-1;
-        PUSHs(sv_2mortal(newSVuv(t)));
-      }
-      Safefree(totients);
-
     } else {
       UV facs[MPU_MAX_FACTORS+1];  /* maximum number of factors is log2n */
-      UV i, nfacs, totient, lastf;
+      UV nfacs, totient, lastf;
       UV n = lo;
       if (n <= 1) XSRETURN_UV(n);
-      nfacs = trial_factor(n, facs, 0);
+      nfacs = factor(n, facs);
       totient = 1;
       lastf = 0;
       for (i = 0; i < nfacs; i++) {
@@ -408,7 +400,7 @@ _XS_moebius(IN UV lo, IN UV hi = 0)
     UV i;
   PPCODE:
     if (hi != lo && hi != 0) {   /* mobius in a range */
-      IV* mu = _moebius_range(lo, hi);
+      char* mu = _moebius_range(lo, hi);
       MPUassert( mu != 0, "_moebius_range returned 0" );
       EXTEND(SP, hi-lo+1);
       for (i = lo; i <= hi; i++)
@@ -436,3 +428,37 @@ _XS_moebius(IN UV lo, IN UV hi = 0)
 
 IV
 _XS_mertens(IN UV n)
+
+UV
+_XS_exp_mangoldt(IN UV n)
+  CODE:
+    if (n <= 1)
+      RETVAL = 1;
+    else if ((n & (n-1)) == 0)  /* Power of 2 */
+      RETVAL = 2;
+    else if ((n & 1) == 0)      /* Even number */
+      RETVAL = 1;
+    /* else if (_XS_is_prime(n))  RETVAL = n; */
+    else {
+      UV factors[MPU_MAX_FACTORS+1];
+      UV nfactors, i;
+      /* We could try a partial factor, e.g. looking for two small factors */
+      /* We could also check powers of primes searching for n */
+      nfactors = factor(n, factors);
+      for (i = 1; i < nfactors; i++) {
+        if (factors[i] != factors[0])
+          XSRETURN_UV(1);
+      }
+      RETVAL = factors[0];
+    }
+  OUTPUT:
+    RETVAL
+
+double
+_XS_chebyshev_theta(IN UV n)
+
+double
+_XS_chebyshev_psi(IN UV n)
+
+UV
+_XS_divisor_sum(IN UV n)

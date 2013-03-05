@@ -3,7 +3,9 @@ use strict;
 use warnings;
 
 use Test::More;
-use Math::Prime::Util qw/moebius mertens euler_phi jordan_totient divisor_sum/;
+use Math::Prime::Util
+   qw/moebius mertens euler_phi jordan_totient divisor_sum exp_mangoldt
+      chebyshev_theta chebyshev_psi/;
 
 my $extra = defined $ENV{RELEASE_TESTING} && $ENV{RELEASE_TESTING};
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
@@ -109,18 +111,65 @@ my %sigmak = (
   3 => [1, 9, 28, 73, 126, 252, 344, 585, 757, 1134, 1332, 2044, 2198, 3096, 3528, 4681, 4914, 6813, 6860, 9198, 9632, 11988, 12168, 16380, 15751, 19782, 20440, 25112, 24390, 31752, 29792, 37449, 37296, 44226, 43344, 55261, 50654, 61740, 61544],
 );
 
+my %mangoldt = (
+  0 => 1,
+  1 => 1,
+  2 => 2,
+  3 => 3,
+  4 => 2,
+  5 => 5,
+  6 => 1,
+  7 => 7,
+  8 => 2,
+  9 => 3,
+ 10 => 1,
+ 11 => 11,
+ 25 => 5,
+ 27 => 3,
+ 399981 => 1,
+ 399982 => 1,
+ 399983 => 399983,
+ 823543 => 7,
+ 83521 => 17,
+ 130321 => 19,
+);
+
+my %chebyshev1 = (
+       0 =>       0,
+       1 =>       0,
+       2 =>       0.693147180559945,
+       3 =>       1.79175946922805,
+       4 =>       1.79175946922805,
+       5 =>       3.40119738166216,
+     243 =>     226.593507136467,
+ 1234567 => 1233272.80087825,
+);
+my %chebyshev2 = (
+       0 =>       0,
+       1 =>       0,
+       2 =>       0.693147180559945,
+       3 =>       1.79175946922805,
+       4 =>       2.484906649788,
+       5 =>       4.0943445622221,
+     243 =>     245.274469978683,
+ 1234567 => 1234515.17962833,
+);
+
 
 plan tests => 0 + 1
                 + 1 # Small Moebius
                 + 3*scalar(keys %mertens)
                 + 1*scalar(keys %big_mertens)
                 + 2 # Small Phi
-                + scalar(keys %totients)
+                + 6 + scalar(keys %totients)
                 + scalar(keys %jordan_totients)
                 + 2  # Dedekind psi calculated two ways
                 + 1  # Calculate J5 two different ways
                 + 2 * $use64 # Jordan totient example
-                + scalar(keys %sigmak);
+                + 1 + scalar(keys %sigmak)
+                + scalar(keys %mangoldt)
+                + scalar(keys %chebyshev1)
+                + scalar(keys %chebyshev2);
 
 ok(!eval { moebius(0); }, "moebius(0)");
 
@@ -155,6 +204,12 @@ while (my($n, $mertens) = each (%big_mertens)) {
 while (my($n, $phi) = each (%totients)) {
   is( euler_phi($n), $phi, "euler_phi($n) == $phi" );
 }
+is_deeply( [euler_phi(0,0)], [0],     "euler_phi(0,0)" );
+is_deeply( [euler_phi(1,0)], [],      "euler_phi with end < start" );
+is_deeply( [euler_phi(0,1)], [0,1],   "euler_phi 0-1" );
+is_deeply( [euler_phi(1,2)], [1,1],   "euler_phi 1-2" );
+is_deeply( [euler_phi(1,3)], [1,1,2], "euler_phi 1-3" );
+is_deeply( [euler_phi(2,3)], [1,2],   "euler_phi 2-3" );
 
 ###### Jordan Totient
 while (my($k, $tref) = each (%jordan_totients)) {
@@ -198,4 +253,32 @@ while (my($k, $sigmaref) = each (%sigmak)) {
     push @slist, divisor_sum( $n, sub { int($_[0] ** $k) } );
   }
   is_deeply( \@slist, $sigmaref, "Sum of divisors to the ${k}th power: Sigma_$k" );
+}
+# k=1 standard sum -- much faster
+{
+  my @slist = map { divisor_sum($_) } 1 .. scalar @{$sigmak{1}};
+  is_deeply(\@slist, $sigmak{1}, "divisor_sum(n)");
+}
+
+###### Exponential of von Mangoldt
+while (my($n, $em) = each (%mangoldt)) {
+  is( exp_mangoldt($n), $em, "exp_mangoldt($n) == $em" );
+}
+
+###### first Chebyshev function
+while (my($n, $c1) = each (%chebyshev1)) {
+  cmp_closeto( chebyshev_theta($n), $c1, 1e-9*abs($n), "chebyshev_theta($n)" );
+}
+###### second Chebyshev function
+while (my($n, $c2) = each (%chebyshev2)) {
+  cmp_closeto( chebyshev_psi($n), $c2, 1e-9*abs($n), "chebyshev_psi($n)" );
+}
+
+
+sub cmp_closeto {
+  my $got = shift;
+  my $expect = shift;
+  my $tolerance = shift;
+  my $message = shift;
+  cmp_ok( abs($got - $expect), '<=', $tolerance, $message );
 }
