@@ -1,5 +1,19 @@
 Revision history for Perl extension Math::Prime::Util.
 
+0.24 10 March 2013
+
+    - Fix compilation with old pre-C99 strict compilers (decl after statement).
+
+    - euler_phi on a range wasn't working right with some ranges.
+
+    - More XS prime count improvements to speed and space.  Add some tables
+      to the sieve count so it runs a bit faster.  Transition from sieve later.
+
+    - PP prime count for 10^9 and larger is ~2x faster and uses much less
+      memory.  Similar impact for nth_prime 10^8 or larger.
+
+    - Let factor.pl accept expressions just like primes.pl.
+
 0.23  5 March 2013
 
     - Replace XS Zeta for x > 5 with series from Cephes.  It is 1 eps more

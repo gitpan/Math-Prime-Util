@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.20';
+  $Math::Prime::Util::PP::VERSION = '0.24';
 }
 
 # The Pure Perl versions of all the Math::Prime::Util routines.
@@ -197,7 +197,7 @@ sub _sieve_erat_string {
     }
     do { $n += 2 } while substr($sieve, $n>>1, 1);
   }
-  \$sieve;
+  return \$sieve;
 }
 
 # TODO: this should be plugged into precalc, memfree, etc. just like the C code
@@ -215,7 +215,7 @@ sub _sieve_erat_string {
       $primary_sieve_ref = _sieve_erat_string($primary_sieve_size);
     }
     my $sieve = substr($$primary_sieve_ref, 0, ($end+1)>>1);
-    \$sieve;
+    return \$sieve;
   }
 }
 
@@ -421,21 +421,21 @@ sub _legendre_phi {
     my $primea = $primes->[$a-1];
     my %newvals;
     while (my($v,$c) = each %vals) {
-      next if $c == 0;
-      # next if $v < $primea;
-      $newvals{$v} += $c;
       my $sval = int($v / $primea);
-      if ($sval >= $primea) {
-        $newvals{$sval} -= $c;
-      } else {
+      if ($sval < $primea) {
         $sum -= $c;
+      } else {
+        $newvals{$sval} -= $c;
       }
     }
-    %vals = %newvals;
+    # merge newvals into vals
+    while (my($v,$c) = each %newvals) {
+      $vals{$v} += $c;
+      delete $vals{$v} if $vals{$v} == 0;
+    }
     $a--;
   }
   while (my($v,$c) = each %vals) {
-    next if $c == 0;
     $sum += $c * _mapes($v, $a);
   }
   return $sum;
@@ -444,25 +444,27 @@ sub _legendre_phi {
 sub _sieve_prime_count {
   my $high = shift;
   return (0,0,1,2,2,3,3)[$high] if $high < 7;
-  $high-- if ($high % 2) == 0; # Make high go to odd number.
-
-  my $sieveref = _sieve_erat($high);
-  my $count = 1 + $$sieveref =~ tr/0//;
-  return $count;
+  $high-- unless ($high & 1);
+  return 1 + ${_sieve_erat($high)} =~ tr/0//;
 }
 
 sub _count_with_sieve {
-  my ($sref, $high) = @_;
-  return (0,0,1,2,2,3,3)[$high] if $high < 7;
-  $high-- if ($high % 2) == 0; # Make high go to odd number.
-  my $send = ($high >> 1) + 1;
+  my ($sref, $low, $high) = @_;
+  ($low, $high) = (2, $low) if !defined $high;
+  my $count = 0;
+  if   ($low < 3) { $low = 3; $count++; }
+  else            { $low |= 1; }
+  $high-- unless ($high & 1);
+  return $count if $low > $high;
+  my $sbeg = $low >> 1;
+  my $send = $high >> 1;
 
-  if ( !defined $sref || $send > length($$sref) ) {
-    # We could take the full count of $sref, then segment sieve to high.
-    $sref = _sieve_erat($high);
-    return 1 + $$sref =~ tr/0//;
+  if ( !defined $sref || $send >= length($$sref) ) {
+    # outside our range, so call the segment siever.
+    my $seg_ref = _sieve_segment($low, $high);
+    return $count + $$seg_ref =~ tr/0//;
   }
-  return 1 + substr($$sref, 0, $send) =~ tr/0//;
+  return $count + substr($$sref, $sbeg, $send-$sbeg+1) =~ tr/0//;
 }
 
 sub _lehmer_pi {
@@ -480,18 +482,20 @@ sub _lehmer_pi {
   my $sum = int(($b + $a - 2) * ($b - $a + 1) / 2);
   $sum += _legendre_phi($x, $a, $primes);
 
-  # Get a big sieve for our primecounts.  The C code uses b*16 as a compromise,
-  # as that cuts out all the inner loop sieves and about half the outer loop.
-  # It also takes good advantage of segment sieving for the big outer counts.
-  # We'll just go ahead and sieve everything we need now.  This is really much
-  # more than we should use, but it saves a _huge_ amount of time given we're
-  # not using a segment sieve for the outer loop.
-  #my $sref = _sieve_erat($b * 16);
-  my $sref = _sieve_erat( int($x / $primes->[$a]) );
+  # Get a big sieve for our primecounts.  The C code compromises with either
+  # b*10 or x^3/5, as that cuts out all the inner loop sieves and about half
+  # of the big outer loop counts.
+  # Our sieve count isn't nearly as optimized here, so error on the side of
+  # more primes.  This uses a lot more memory but saves a lot of time.
+  my $sref = _sieve_erat( int($x / $primes->[$a] / 5) );
 
-  foreach my $i ($a+1 .. $b) {
+  my ($lastw, $lastwpc) = (0,0);
+  foreach my $i (reverse $a+1 .. $b) {
     my $w = int($x / $primes->[$i-1]);
-    $sum = $sum - _count_with_sieve($sref,$w);
+    $lastwpc += _count_with_sieve($sref,$lastw+1, $w);
+    $lastw = $w;
+    $sum -= $lastwpc;
+    #$sum -= _count_with_sieve($sref,$w);
     if ($i <= $c) {
       my $bi = _count_with_sieve($sref,int(sqrt($w)+0.5));
       foreach my $j ($i .. $bi) {

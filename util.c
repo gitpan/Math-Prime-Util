@@ -128,17 +128,36 @@ static int _is_prime7(UV n)
 }
 
 
-/* Marked bits for each n, indicating if the number is prime */
-static const unsigned char prime_is_small[] =
-  {0xac,0x28,0x8a,0xa0,0x20,0x8a,0x20,0x28,0x88,0x82,0x08,0x02,0xa2,0x28,0x02,
-   0x80,0x08,0x0a,0xa0,0x20,0x88,0x20,0x28,0x80,0xa2,0x00,0x08,0x80,0x28,0x82,
-   0x02,0x08,0x82,0xa0,0x20,0x0a,0x20,0x00,0x88,0x22,0x00,0x08,0x02,0x28,0x82,
-   0x80,0x20,0x88,0x20,0x20,0x02,0x02,0x28,0x80,0x82,0x08,0x02,0xa2,0x08,0x80,
-   0x80,0x08,0x88,0x20,0x00,0x0a,0x00,0x20,0x08,0x20,0x08,0x0a,0x02,0x08,0x82,
-   0x82,0x20,0x0a,0x80,0x00,0x8a,0x20,0x28,0x00,0x22,0x08,0x08,0x20,0x20,0x80,
-   0x80,0x20,0x88,0x80,0x20,0x02,0x22,0x00,0x08,0x20,0x00,0x0a,0xa0,0x28,0x80,
-   0x00,0x20,0x8a,0x00,0x20,0x8a,0x00,0x00,0x88,0x80,0x00,0x02,0x22,0x08,0x02};
-#define NPRIME_IS_SMALL (sizeof(prime_is_small)/sizeof(prime_is_small[0]))
+/* We'll use this little static sieve to quickly answer small values of
+ *   is_prime, next_prime, prev_prime, prime_count
+ * for non-threaded Perl it's basically the same as getting the primary
+ * cache.  It guarantees we'll have an answer with no waiting on any version.
+ */
+static const unsigned char prime_sieve30[] =
+  {0x01,0x20,0x10,0x81,0x49,0x24,0xc2,0x06,0x2a,0xb0,0xe1,0x0c,0x15,0x59,0x12,
+   0x61,0x19,0xf3,0x2c,0x2c,0xc4,0x22,0xa6,0x5a,0x95,0x98,0x6d,0x42,0x87,0xe1,
+   0x59,0xa9,0xa9,0x1c,0x52,0xd2,0x21,0xd5,0xb3,0xaa,0x26,0x5c,0x0f,0x60,0xfc,
+   0xab,0x5e,0x07,0xd1,0x02,0xbb,0x16,0x99,0x09,0xec,0xc5,0x47,0xb3,0xd4,0xc5,
+   0xba,0xee,0x40,0xab,0x73,0x3e,0x85,0x4c,0x37,0x43,0x73,0xb0,0xde,0xa7,0x8e,
+   0x8e,0x64,0x3e,0xe8,0x10,0xab,0x69,0xe5,0xf7,0x1a,0x7c,0x73,0xb9,0x8d,0x04,
+   0x51,0x9a,0x6d,0x70,0xa7,0x78,0x2d,0x6d,0x27,0x7e,0x9a,0xd9,0x1c,0x5f,0xee,
+   0xc7,0x38,0xd9,0xc3,0x7e,0x14,0x66,0x72,0xae,0x77,0xc1,0xdb,0x0c,0xcc,0xb2,
+   0xa5,0x74,0xe3,0x58,0xd5,0x4b,0xa7,0xb3,0xb1,0xd9,0x09,0xe6,0x7d,0x23,0x7c,
+   0x3c,0xd3,0x0e,0xc7,0xfd,0x4a,0x32,0x32,0xfd,0x4d,0xb5,0x6b,0xf3,0xa8,0xb3,
+   0x85,0xcf,0xbc,0xf4,0x0e,0x34,0xbb,0x93,0xdb,0x07,0xe6,0xfe,0x6a,0x57,0xa3,
+   0x8c,0x15,0x72,0xdb,0x69,0xd4,0xaf,0x59,0xdd,0xe1,0x3b,0x2e,0xb7,0xf9,0x2b,
+   0xc5,0xd0,0x8b,0x63,0xf8,0x95,0xfa,0x77,0x40,0x97,0xea,0xd1,0x9f,0xaa,0x1c,
+   0x48,0xae,0x67,0xf7,0xeb,0x79,0xa5,0x55,0xba,0xb2,0xb6,0x8f,0xd8,0x2d,0x6c,
+   0x2a,0x35,0x54,0xfd,0x7c,0x9e,0xfa,0xdb,0x31,0x78,0xdd,0x3d,0x56,0x52,0xe7,
+   0x73,0xb2,0x87,0x2e,0x76,0xe9,0x4f,0xa8,0x38,0x9d,0x5d,0x3f,0xcb,0xdb,0xad,
+   0x51,0xa5,0xbf,0xcd,0x72,0xde,0xf7,0xbc,0xcb,0x49,0x2d,0x49,0x26,0xe6,0x1e,
+   0x9f,0x98,0xe5,0xc6,0x9f,0x2f,0xbb,0x85,0x6b,0x65,0xf6,0x77,0x7c,0x57,0x8b,
+   0xaa,0xef,0xd8,0x5e,0xa2,0x97,0xe1,0xdc,0x37,0xcd,0x1f,0xe6,0xfc,0xbb,0x8c,
+   0xb7,0x4e,0xc7,0x3c,0x19,0xd5,0xa8,0x9e,0x67,0x4a,0xe3,0xf5,0x97,0x3a,0x7e,
+   0x70,0x53,0xfd,0xd6,0xe5,0xb8,0x1c,0x6b,0xee,0xb1,0x9b,0xd1,0xeb,0x34,0xc2,
+   0x23,0xeb,0x3a,0xf9,0xef,0x16,0xd6,0x4e,0x7d,0x16,0xcf,0xb8,0x1c,0xcb,0xe6,
+   0x3c,0xda,0xf5,0xcf};
+#define NPRIME_SIEVE30 (sizeof(prime_sieve30)/sizeof(prime_sieve30[0]))
 
 /* Return of 2 if n is prime, 0 if not.  Do it fast. */
 int _XS_is_prime(UV n)
@@ -148,9 +167,13 @@ int _XS_is_prime(UV n)
   const unsigned char* sieve;
   int isprime;
 
-  if ( n < (NPRIME_IS_SMALL*8))
-    return ((prime_is_small[n/8] >> (n%8)) & 1) ? 2 : 0;
-
+  if (n <= 10) {
+    switch (n) {
+      case 2: case 3: case 5: case 7:   return 2;  break;
+      default:                          break;
+    }
+    return 0;
+  }
   d = n/30;
   m = n - d*30;
   mtab = masktab30[m];  /* Bitmask in mod30 wheel */
@@ -158,6 +181,9 @@ int _XS_is_prime(UV n)
   /* Return 0 if a multiple of 2, 3, or 5 */
   if (mtab == 0)
     return 0;
+
+  if (d < NPRIME_SIEVE30)
+    return (prime_sieve30[d] & mtab) ? 0 : 2;
 
   isprime = (n <= get_prime_cache(0, &sieve))
             ?  2*((sieve[d] & mtab) == 0)
@@ -168,18 +194,12 @@ int _XS_is_prime(UV n)
 }
 
 
-static const unsigned char prime_next_small[] =
-  {2,2,3,5,5,7,7,11,11,11,11,13,13,17,17,17,17,19,19,23,23,23,23,
-   29,29,29,29,29,29,31,31,37,37,37,37,37,37,41,41,41,41,43,43,47,
-   47,47,47,53,53,53,53,53,53,59,59,59,59,59,59,61,61,67,67,67,67,67,67,71};
-#define NPRIME_NEXT_SMALL (sizeof(prime_next_small)/sizeof(prime_next_small[0]))
-
 UV next_trial_prime(UV n)
 {
   UV d,m;
 
-  if (n < NPRIME_NEXT_SMALL)
-    return prime_next_small[n];
+  if (n < 7)
+    return (n < 2) ? 2 : (n < 3) ? 3 : (n < 5) ? 5 : 7;
 
   d = n/30;
   m = n - d*30;
@@ -198,8 +218,20 @@ UV _XS_next_prime(UV n)
   const unsigned char* sieve;
   UV sieve_size;
 
-  if (n < NPRIME_NEXT_SMALL)
-    return prime_next_small[n];
+  if (n <= 10) {
+    switch (n) {
+      case 0: case 1:  return  2; break;
+      case 2:          return  3; break;
+      case 3: case 4:  return  5; break;
+      case 5: case 6:  return  7; break;
+      default:         return 11; break;
+    }
+  }
+  if (n < 30*NPRIME_SIEVE30) {
+    START_DO_FOR_EACH_SIEVE_PRIME(prime_sieve30, n+1, 30*NPRIME_SIEVE30)
+      return p;
+    END_DO_FOR_EACH_SIEVE_PRIME;
+  }
 
   /* Overflow */
 #if BITS_PER_WORD == 32
@@ -236,12 +268,19 @@ UV _XS_prev_prime(UV n)
   const unsigned char* sieve;
   UV sieve_size;
 
-  /* TODO: small prev prime */
   if (n <= 7)
     return (n <= 2) ? 0 : (n <= 3) ? 2 : (n <= 5) ? 3 : 5;
 
   d = n/30;
   m = n - d*30;
+
+  if (n < 30*NPRIME_SIEVE30) {
+    do {
+      m = prevwheel30[m];
+      if (m==29) { MPUassert(d>0, "d 0 in prev_prime");  d--; }
+    } while (prime_sieve30[d] & masktab30[m]);
+    return(d*30+m);
+  }
 
   sieve_size = get_prime_cache(0, &sieve);
   if (n < sieve_size) {
@@ -406,11 +445,58 @@ static UV count_segment_ranged(const unsigned char* sieve, UV nbytes, UV lowp, U
  *
  */
 
-static const unsigned char prime_count_small[] =
-  {0,0,1,2,2,3,3,4,4,4,4,5,5,6,6,6,6,7,7,8,8,8,8,9,9,9,9,9,9,10,10,
-   11,11,11,11,11,11,12,12,12,12,13,13,14,14,14,14,15,15,15,15,15,15,
-   16,16,16,16,16,16,17,17,18,18,18,18,18,18,19};
-#define NPRIME_COUNT_SMALL  (sizeof(prime_count_small)/sizeof(prime_count_small[0]))
+#define USE_PC_TABLES 1
+#if USE_PC_TABLES
+/* These tables let us have fast answers up to 3000M for the cost of ~1.4k of
+ * static data/code.  We can get a 4 to 100x speedup here.  We don't want to
+ * push this idea too far because Lehmer's method should be faster. */
+/* mpu '$step=30_000; $pc=prime_count(5); print "$pc\n", join(",", map { $spc=$pc; $pc=prime_count($_*$step); $pc-$spc; } 1..200), "\n"' */
+static const unsigned short step_counts_30k[] =  /* starts at 7 */
+  {3242,2812,2656,2588,2547,2494,2465,2414,2421,2355,2407,2353,2310,2323,2316,
+   2299,2286,2281,2247,2279,2243,2223,2251,2214,2209,2230,2215,2207,2205,2179,
+   2200,2144,2159,2193,2164,2136,2180,2152,2162,2174,2113,2131,2150,2101,2111,
+   2146,2115,2123,2119,2108,2124,2097,2075,2089,2094,2119,2084,2065,2069,2101,
+   2094,2083,2089,2076,2088,2027,2109,2073,2061,2033,2079,2078,2036,2025,2058,
+   2083,2037,2005,2048,2048,2024,2045,2027,2025,2039,2049,2022,2034,2046,2032,
+   2019,2000,2014,2069,2042,1980,2021,2014,1995,2017,1992,1985,2045,2007,1990,
+   2008,2052,2033,1988,1984,2010,1943,2024,2005,2027,1937,1955,1956,1993,1976};
+#define NSTEP_COUNTS_30K  (sizeof(step_counts_30k)/sizeof(step_counts_30k[0]))
+
+/* mpu '$step=300_000; $pc=prime_count(10*$step); print "$pc\n", join(",", map { $spc=$pc; $pc=prime_count($_*$step); $pc-$spc; } 11..100), "\n"' */
+static const unsigned short step_counts_300k[] =  /* starts at 3M */
+  {20084,19826,19885,19703,19634,19491,19532,19391,19244,19243,19224,19086,
+   19124,19036,18942,18893,18870,18853,18837,18775,18688,18674,18594,18525,
+   18639,18545,18553,18424,18508,18421,18375,18366,18391,18209,18239,18298,
+   18209,18294,18125,18138,18147,18115,18126,18021,18085,18068,18094,17963,
+   18041,18003,17900,17881,17917,17888,17880,17852,17892,17779,17823,17764,
+   17806,17762,17780,17716,17633,17758,17746,17678,17687,17613,17709,17628,
+   17634,17556,17528,17598,17604,17532,17606,17548,17493,17576,17456,17468,
+   17555,17452,17407,17472,17415,17500,17508,17418,17463,17240,17345,17351,
+   17380,17394,17379,17330,17322,17335,17354,17113,17210,17231,17238,17305,
+   17268,17219,17281,17235,17119,17292,17161,17212,17166,17277,17137,17260,
+   17228,17197,17154,17097,17195,17136,17067,17058,17041,17045,17187,17034,
+   17029,17037,17090,16985,17054,17017,17106,17001,17095,17125,17027,16948,
+   16969,17031,16916,17031,16905,16937,16881,16952,16919,16938,17028,16963,
+   16902,16922,16944,16901,16847,16969,16900,16876,16841,16874,16894,16861,
+   16761,16886,16778,16820,16727,16921,16817,16845,16847,16824,16844,16809,
+   16859,16783,16713,16752,16762,16857,16760,16626,16784,16784,16718,16745,
+   16871,16635,16714,16630,16779,16709,16660,16730,16715,16724};
+#define NSTEP_COUNTS_300K (sizeof(step_counts_300k)/sizeof(step_counts_300k[0]))
+
+static const unsigned int step_counts_30m[] =  /* starts at 30M */
+  {1704256,1654839,1624694,1602748,1585989,1571241,1559918,1549840,1540941,
+   1533150,1525813,1519922,1513269,1508559,1503386,1497828,1494129,1489905,
+   1486417,1482526,1478941,1475577,1472301,1469133,1466295,1464711,1461223,
+   1458478,1455327,1454218,1451883,1449393,1447612,1445029,1443285,1442268,
+   1438511,1437688,1435603,1433623,1432638,1431158,1429158,1427934,1426191,
+   1424449,1423146,1421898,1421628,1419519,1417646,1416274,1414828,1414474,
+   1412536,1412147,1410149,1409474,1408847,1406619,1405863,1404699,1403820,
+   1402802,1402215,1401459,1399972,1398687,1397968,1397392,1396025,1395311,
+   1394081,1393614,1393702,1391745,1390950,1389856,1389245,1388381,1387557,
+   1387087,1386285,1386089,1385355,1383659,1383030,1382174,1382128,1380556,
+   1379940,1379988,1379181,1378300,1378033,1376974,1376282,1375646,1374445};
+#define NSTEP_COUNTS_30M  (sizeof(step_counts_30m)/sizeof(step_counts_30m[0]))
+#endif
 
 UV _XS_prime_count(UV low, UV high)
 {
@@ -419,15 +505,41 @@ UV _XS_prime_count(UV low, UV high)
   UV segment_size, low_d, high_d;
   UV count = 0;
 
-  if ( (low <= 2) && (high < NPRIME_COUNT_SMALL) )
-    return prime_count_small[high];
-
   if ((low <= 2) && (high >= 2)) count++;
   if ((low <= 3) && (high >= 3)) count++;
   if ((low <= 5) && (high >= 5)) count++;
   if (low < 7)  low = 7;
 
   if (low > high)  return count;
+
+  if (low == 7 && high <= 30*NPRIME_SIEVE30) {
+    count += count_segment_ranged(prime_sieve30, NPRIME_SIEVE30, low, high);
+    return count;
+  }
+
+#if USE_PC_TABLES
+  if (low == 7 && high >= 30000) {
+    UV i = 0;
+    if (high < (NSTEP_COUNTS_30K+1) * UVCONST(30000)) {
+      while (i < NSTEP_COUNTS_30K && high >= (i+1) * 30000) {
+        count += step_counts_30k[i++];
+      }
+      low = i * 30000;
+    } else if (high < (NSTEP_COUNTS_300K+1) * UVCONST(300000)) {
+      count = 216816;
+      while (i < NSTEP_COUNTS_300K && high >= (i+11) * UVCONST(300000)) {
+        count += step_counts_300k[i++];
+      }
+      low = (i+10) * 300000;
+    } else {
+      count = 1857859;
+      while (i < NSTEP_COUNTS_30M && high >= (i+2) * UVCONST(30000000)) {
+        count += step_counts_30m[i++];
+      }
+      low = (UV)(i+1) * UVCONST(30000000);
+    }
+  }
+#endif
 
   low_d = low/30;
   high_d = high/30;
@@ -652,6 +764,8 @@ UV _XS_nth_prime(UV n)
 /* Return an IV array with lo-hi+1 elements.  mu[k-lo] = µ(k) for k = lo .. hi.
  * It is the callers responsibility to call Safefree on the result. */
 #define PGTLO(p,lo)  ((p) >= lo) ? (p) : ((p)*(lo/(p)) + ((lo%(p))?(p):0))
+#define P2GTLO(pinit, p, lo) \
+   ((pinit) >= lo) ? (pinit) : ((p)*(lo/(p)) + ((lo%(p))?(p):0))
 char* _moebius_range(UV lo, UV hi)
 {
   char* mu;
@@ -756,16 +870,16 @@ UV* _totient_range(UV lo, UV hi) {
     croak("Could not get memory for %"UVuf" totients\n", hi);
   for (i = lo; i <= hi; i++)
     totients[i-lo] = i;
-  for (i = PGTLO(2*2, lo); i <= hi; i += 2) totients[i-lo] -= totients[i-lo]/2;
-  for (i = PGTLO(2*3, lo); i <= hi; i += 3) totients[i-lo] -= totients[i-lo]/3;
-  for (i = PGTLO(2*5, lo); i <= hi; i += 5) totients[i-lo] -= totients[i-lo]/5;
   sievehi = hi/2;
+  for (i=P2GTLO(2*2,2,lo); i <= hi; i += 2) totients[i-lo] -= totients[i-lo]/2;
+  for (i=P2GTLO(2*3,3,lo); i <= hi; i += 3) totients[i-lo] -= totients[i-lo]/3;
+  for (i=P2GTLO(2*5,5,lo); i <= hi; i += 5) totients[i-lo] -= totients[i-lo]/5;
   if (get_prime_cache(sievehi, &sieve) < sievehi) {
     release_prime_cache(sieve);
     croak("Could not generate sieve for %"UVuf, sievehi);
   } else {
     START_DO_FOR_EACH_SIEVE_PRIME( sieve, 7, sievehi ) {
-      for (i = PGTLO(2*p, lo); i <= hi; i += p)
+      for (i = P2GTLO(2*p,p,lo); i <= hi; i += p)
         totients[i-lo] -= totients[i-lo]/p;
     } END_DO_FOR_EACH_SIEVE_PRIME
     release_prime_cache(sieve);

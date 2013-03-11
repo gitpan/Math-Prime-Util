@@ -53,7 +53,6 @@ examples/twin_primes.pl
 examples/find_mr_bases.pl
 examples/parallel_fibprime.pl
 examples/test-bpsw.pl
-examples/test-euler-pari.pl
 examples/test-factor-gnufactor.pl
 examples/test-primes-script.pl
 examples/test-primes-script2.pl
@@ -86,10 +85,15 @@ t/90-release-perlcritic.t
 t/91-release-pod-syntax.t
 t/92-release-pod-coverage.t
 xt/moebius-mertens.pl
+xt/totient-range.pl
 xt/primality-small.pl
 xt/primality-aks.pl
+xt/small-is-next-prev.pl
 xt/factor-holf.pl
 xt/make-script-test-data.pl
+xt/pari-totient-moebius.pl
+xt/rwh_primecount.py
+xt/rwh_primecount_numpy.py
 .travis.yml
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)
