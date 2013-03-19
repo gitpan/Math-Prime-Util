@@ -15,6 +15,11 @@
 #include "lehmer.h"
 #include "aks.h"
 
+static int pbrent_factor_a1(UV n, UV *factors, UV maxrounds) {
+  return pbrent_factor(n, factors, maxrounds, 1);
+}
+
+
 MODULE = Math::Prime::Util	PACKAGE = Math::Prime::Util
 
 PROTOTYPES: ENABLE
@@ -102,19 +107,9 @@ sieve_primes(IN UV low, IN UV high)
     AV* av = newAV();
   CODE:
     if (low <= high) {
-      if (get_prime_cache(high, &sieve) < high) {
-        release_prime_cache(sieve);
-        croak("Could not generate sieve for %"UVuf, high);
-      } else {
-        if ((low <= 2) && (high >= 2)) { av_push(av, newSVuv( 2 )); }
-        if ((low <= 3) && (high >= 3)) { av_push(av, newSVuv( 3 )); }
-        if ((low <= 5) && (high >= 5)) { av_push(av, newSVuv( 5 )); }
-        if (low < 7) { low = 7; }
-        START_DO_FOR_EACH_SIEVE_PRIME( sieve, low, high ) {
-           av_push(av,newSVuv(p));
-        } END_DO_FOR_EACH_SIEVE_PRIME
-        release_prime_cache(sieve);
-      }
+      START_DO_FOR_EACH_PRIME(low, high) {
+        av_push(av,newSVuv(p));
+      } END_DO_FOR_EACH_PRIME
     }
     RETVAL = newRV_noinc( (SV*) av );
   OUTPUT:
@@ -280,7 +275,7 @@ rsqufof_factor(IN UV n, IN UV maxrounds = 4*1024*1024)
 void
 pbrent_factor(IN UV n, IN UV maxrounds = 4*1024*1024)
   PPCODE:
-    SIMPLE_FACTOR(pbrent_factor, n, maxrounds);
+    SIMPLE_FACTOR(pbrent_factor_a1, n, maxrounds);
 
 void
 prho_factor(IN UV n, IN UV maxrounds = 4*1024*1024)

@@ -46,35 +46,32 @@ int factor(UV n, UV *factors)
     while ( (n >= (tlim*tlim)) && (!_XS_is_prime(n)) ) {
       int split_success = 0;
       /* Adjust the number of rounds based on the number size */
-      UV br_rounds = ((n>>29) < 100000) ?  1500 :  1500;
-      UV sq_rounds = 80000; /* 20k 91%, 40k 98%, 80k 99.9%, 120k 99.99% */
+      UV const br_rounds = ((n>>29) < 100000) ?  1500 :  1500;
+      UV const sq_rounds = 80000; /* 20k 91%, 40k 98%, 80k 99.9%, 120k 99.99% */
 
-      /* About 94% of random inputs are factored with this pbrent call */
+      /* 99.7% of 32-bit, 94% of 64-bit random inputs factored here */
       if (!split_success) {
-        split_success = pbrent_factor(n, tofac_stack+ntofac, br_rounds)-1;
+        split_success = pbrent_factor(n, tofac_stack+ntofac, br_rounds, 3)-1;
         if (verbose) { if (split_success) printf("pbrent 1:  %"UVuf" %"UVuf"\n", tofac_stack[ntofac], tofac_stack[ntofac+1]); else printf("pbrent 0\n"); }
       }
-      /* SQUFOF with these parameters gets 95% of what's left. */
-      if (!split_success && n < (UV_MAX>>3)) {
+      /* SQUFOF with these parameters gets 99.9% of everything left */
+      if (!split_success && n < (UV_MAX>>2)) {
         split_success = racing_squfof_factor(n,tofac_stack+ntofac, sq_rounds)-1;
-        if (verbose) printf("squfof %d\n", split_success);
+        if (verbose) printf("rsqufof %d\n", split_success);
       }
-      /* Perhaps prho using different parameters will find it */
-      if (!split_success) {
-        split_success = prho_factor(n, tofac_stack+ntofac, 800)-1;
-        if (verbose) printf("prho %d\n", split_success);
-      }
+      /* At this point we should only have 16+ digit semiprimes. */
       /* This p-1 gets about 2/3 of what makes it through the above */
       if (!split_success) {
-        split_success = pminus1_factor(n, tofac_stack+ntofac, 4000, 40000)-1;
+        split_success = pminus1_factor(n, tofac_stack+ntofac, 5000, 80000)-1;
         if (verbose) printf("pminus1 %d\n", split_success);
       }
-      /* Some rounds of HOLF, good for close to perfect squares */
+      /* Some rounds of HOLF, good for close to perfect squares which are
+       * the worst case for the next step */
       if (!split_success) {
         split_success = holf_factor(n, tofac_stack+ntofac, 2000)-1;
         if (verbose) printf("holf %d\n", split_success);
       }
-      /* Less than 0.1% of random inputs make it here */
+      /* The catch-all.  Should factor anything. */
       if (!split_success) {
         split_success = prho_factor(n, tofac_stack+ntofac, 256*1024)-1;
         if (verbose) printf("long prho %d\n", split_success);
@@ -226,7 +223,7 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
  *
  * Some simple solutions:
  *
- *     return ( ((m&2)!= 0) || ((m&7)==5) || ((m&11) == 8) )  ?  0  :  1;
+ *     return ( ((n&2)!= 0) || ((n&7)==5) || ((n&11) == 8) )  ?  0  :  1;
  *
  * or:
  *
@@ -247,7 +244,7 @@ int trial_factor(UV n, UV *factors, UV maxtrial)
  */
 static int is_perfect_square(UV n, UV* sqrtn)
 {
-  UV m;  /* lm */
+  UV m;
   m = n & 127;
   if ((m*0x8bc40d7d) & (m*0xa1e2f5d1) & 0x14020a)  return 0;
   /* 82% of non-squares rejected here */
@@ -276,7 +273,9 @@ static int is_perfect_square(UV n, UV* sqrtn)
   m = lm % 11;
   if ((m*0xabf1a3a7) & (m*0x2612bf93) & 0x45854000) return 0;
   /* 99.92% of non-squares are rejected now */
-#else
+#endif
+#if 0
+  /* This could save time on some platforms, but not on x86 */
   m = n % 63;
   if ((m*0x3d491df7) & (m*0xc824a9f9) & 0x10f14008) return 0;
 #endif
@@ -515,12 +514,11 @@ int holf_factor(UV n, UV *factors, UV rounds)
 
 
 /* Pollard / Brent.  Brent's modifications to Pollard's Rho.  Maybe faster. */
-int pbrent_factor(UV n, UV *factors, UV rounds)
+int pbrent_factor(UV n, UV *factors, UV rounds, UV a)
 {
   UV f, i, r;
   UV Xi = 2;
   UV Xm = 2;
-  UV a = 1;
   const UV inner = 64;
 
   MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in pbrent_factor");
@@ -633,19 +631,21 @@ int pminus1_factor(UV n, UV *factors, UV B1, UV B2)
   UV sqrtB1 = isqrt(B1);
   MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in pminus1_factor");
 
-  for (q = 2; q <= sqrtB1; q = _XS_next_prime(q)) {
-    UV k = q*q;
-    UV kmin = B1/q;
+  START_DO_FOR_EACH_PRIME(2, sqrtB1) {
+    UV k = p*p;
+    UV kmin = B1/p;
     while (k <= kmin)
-      k *= q;
+      k *= p;
     a = powmod(a, k, n);
-  }
+    q = p;
+  } END_DO_FOR_EACH_PRIME
   if (a == 0) { factors[0] = n; return 1; }
   f = gcd_ui(a-1, n);
   if (f == 1) {
     savea = a;
     saveq = q;
-    for (; q <= B1; q = _XS_next_prime(q)) {
+    START_DO_FOR_EACH_PRIME(q+1, B1) {
+      q = p;
       a = powmod(a, q, n);
       if ( (j++ % 32) == 0) {
         if (a == 0 || gcd_ui(a-1, n) != 1)
@@ -653,23 +653,24 @@ int pminus1_factor(UV n, UV *factors, UV B1, UV B2)
         savea = a;
         saveq = q;
       }
-    }
+    } END_DO_FOR_EACH_PRIME
     if (a == 0) { factors[0] = n; return 1; }
     f = gcd_ui(a-1, n);
   }
   /* If we found more than one factor in stage 1, backup and single step */
   if (f == n) {
     a = savea;
-    for (q = saveq; q <= B1; q = _XS_next_prime(q)) {
-      UV k = q;
-      UV kmin = B1/q;
+    START_DO_FOR_EACH_PRIME(saveq, B1) {
+      UV k = p;
+      UV kmin = B1/p;
       while (k <= kmin)
-        k *= q;
+        k *= p;
       a = powmod(a, k, n);
       f = gcd_ui(a-1, n);
+      q = p;
       if (f != 1)
         break;
-    }
+    } END_DO_FOR_EACH_PRIME
     /* If f == n again, we could do:
      * for (savea = 3; f == n && savea < 100; savea = _XS_next_prime(savea)) {
      *   a = savea;
@@ -699,10 +700,10 @@ int pminus1_factor(UV n, UV *factors, UV B1, UV B2)
 
     a = powmod(a, q, n);
     j = 1;
-    while (q <= B2) {
+    START_DO_FOR_EACH_PRIME( q+1, B2 ) {
       UV lastq = q;
       UV qdiff;
-      q = _XS_next_prime(q);
+      q = p;
       /* compute a^q = a^lastq * a^(q-lastq) */
       qdiff = (q - lastq) / 2 - 1;
       if (qdiff >= 111) {
@@ -725,7 +726,7 @@ int pminus1_factor(UV n, UV *factors, UV B1, UV B2)
         if (f != 1)
           break;
       }
-    }
+    } END_DO_FOR_EACH_PRIME
     f = gcd_ui(b, n);
   }
   if ( (f != 1) && (f != n) ) {

@@ -16,7 +16,8 @@ extern int holf_factor(UV n, UV *factors, UV rounds);
 extern int squfof_factor(UV n, UV *factors, UV rounds);
 extern int racing_squfof_factor(UV n, UV *factors, UV rounds);
 
-extern int pbrent_factor(UV n, UV *factors, UV maxrounds);
+
+extern int pbrent_factor(UV n, UV *factors, UV maxrounds, UV a);
 
 extern int prho_factor(UV n, UV *factors, UV maxrounds);
 
