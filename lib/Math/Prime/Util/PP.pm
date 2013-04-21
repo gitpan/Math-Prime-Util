@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.24';
+  $Math::Prime::Util::PP::VERSION = '0.26';
 }
 
 # The Pure Perl versions of all the Math::Prime::Util routines.
@@ -882,7 +882,7 @@ sub is_strong_lucas_pseudoprime {
   # It's now time to perform the Lucas pseudoprimality test using $D.
 
   if (ref($n) ne 'Math::BigInt') {
-    if (!defined $MATH::BigInt::VERSION) {
+    if (!defined $Math::BigInt::VERSION) {
       eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
       or do { croak "Cannot load Math::BigInt "; }
     }
@@ -1031,11 +1031,11 @@ sub _test_anr {
 sub is_aks_prime {
   my $n = shift;
 
-  if (!defined $MATH::BigInt::VERSION) {
+  if (!defined $Math::BigInt::VERSION) {
     eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
     or do { croak "Cannot load Math::BigInt "; }
   }
-  if (!defined $MATH::BigFloat::VERSION) {
+  if (!defined $Math::BigFloat::VERSION) {
     eval { require Math::BigFloat;   Math::BigFloat->import(); 1; }
     or do { croak "Cannot load Math::BigFloat "; }
   }
@@ -1137,6 +1137,29 @@ sub trial_factor {
   @factors;
 }
 
+my $_holf_r;
+my @_fsublist = (
+  sub { my $n = shift; return ($n) unless $n < $_half_word;
+        holf_factor   ($n,      64*1024, $_holf_r); $_holf_r +=  64*1024; },
+  sub { prho_factor   (shift,    8*1024, 3) },
+  sub { pbrent_factor (shift,   32*1024, 1) },
+  sub { pminus1_factor(shift,    10_000); },
+  sub { pminus1_factor(shift,   600_000); },
+  sub { pbrent_factor (shift,  512*1024, 7) },
+  sub { ecm_factor    (shift,     1_000,   5_000, 10) },
+  sub { pminus1_factor(shift, 4_000_000); },
+  sub { pbrent_factor (shift,  512*1024, 11) },
+  sub { ecm_factor    (shift,    10_000,  50_000, 10) },
+  sub { holf_factor   (shift, 256*1024, $_holf_r); $_holf_r += 256*1024; },
+  sub { pminus1_factor(shift,20_000_000); },
+  sub { ecm_factor    (shift,   100_000, 800_000, 10) },
+  sub { holf_factor   (shift, 512*1024, $_holf_r); $_holf_r += 512*1024; },
+  sub { pbrent_factor (shift, 2048*1024, 13) },
+  sub { holf_factor   (shift, 2048*1024, $_holf_r); $_holf_r += 2048*1024; },
+  sub { ecm_factor    (shift, 1_000_000, 1_000_000, 10) },
+  sub { pminus1_factor(shift, 100_000_000, 500_000_000); },
+);
+
 sub factor {
   my($n) = @_;
   _validate_positive_integer($n);
@@ -1168,26 +1191,10 @@ sub factor {
     #print "Looking at $n with stack ", join(",",@nstack), "\n";
     while ( ($n >= (31*31)) && !_is_prime7($n) ) {
       my @ftry;
-      my $holf_rounds = 0;
-      if ($n < $_half_word) {
-        $holf_rounds = 64*1024;
-        #warn "trying holf 64k on $n\n";
-        @ftry = holf_factor($n, $holf_rounds);
-      }
-      if (scalar @ftry < 2) {
-        foreach my $add (3, 5, 7, 11, 13) {
-          #warn "trying prho 64k {$add} on $n\n" if scalar @ftry < 2;
-          @ftry = prho_factor($n, 64*1024, $add) if scalar @ftry < 2;
-        }
-      }
-      if (scalar @ftry < 2) {
-        #warn "trying holf 128k on $n\n";
-        @ftry = holf_factor($n, 128*1024, $holf_rounds);
-        $holf_rounds += 128*1024;
-      }
-      if (scalar @ftry < 2) {
-        #warn "trying prho 128k {17} on $n\n";
-        @ftry = prho_factor($n, 128*1024, 17);
+      $_holf_r = 1;
+      foreach my $sub (@_fsublist) {
+        last if scalar @ftry >= 2;
+        @ftry = $sub->($n);
       }
       if (scalar @ftry > 1) {
         #print "  split into ", join(",",@ftry), "\n";
@@ -1206,8 +1213,24 @@ sub factor {
   sort {$a<=>$b} @factors;
 }
 
+sub _found_factor {
+  my($f, $n, $what, @factors) = @_;
+  if ($f == 1 || $f == $n) {
+    push @factors, $n;
+  } else {
+    # Perl 5.6.2 needs things spelled out for it.
+    my $f2 = (ref($n) eq 'Math::BigInt') ? $n->copy->bdiv($f)->as_int
+                                         : int($n/$f);
+    push @factors, $f;
+    push @factors, $f2;
+    croak "internal error in $what" unless $f * $f2 == $n;
+    # MPU::GMP prints this type of message if verbose, so do the same.
+    print "$what found factor $f\n" if Math::Prime::Util::prime_get_config()->{'verbose'} > 0;
+  }
+  @factors;
+}
+
 # TODO:
-sub fermat_factor { trial_factor(@_) }
 sub squfof_factor { trial_factor(@_) }
 
 sub prho_factor {
@@ -1229,21 +1252,14 @@ sub prho_factor {
     $V = $n->copy->bzero->badd($V);
     for my $i (1 .. $rounds) {
       # Would use bmuladd here, but old Math::BigInt's barf with scalar $a.
-      #$U->bmuladd($U, $a);  $U->bmod($n);
-      #$V->bmuladd($V, $a);  $V->bmod($n);
-      #$V->bmuladd($V, $a);  $V->bmod($n);
-      $U->bmul($U); $U->badd($a); $U->bmod($n);
-      $V->bmul($V); $V->badd($a); $V->bmod($n);
-      $V->bmul($V); $V->badd($a); $V->bmod($n);
+      $U->bmul($U)->badd($a)->bmod($n);
+      $V->bmul($V)->badd($a);
+      $V->bmul($V)->badd($a)->bmod($n);
       my $f = Math::BigInt::bgcd( ($U > $V) ? $U-$V : $V-$U,  $n);
       if ($f == $n) {
         last if $inloop++;  # We've been here before
       } elsif ($f != 1) {
-        my $f2 = $n->copy->bdiv($f)->as_int;
-        push @factors, $f;
-        push @factors, $f2;
-        croak "internal error in prho" unless ($f * $f2) == $n;
-        return @factors;
+        return _found_factor($f, $n, "prho", @factors);
       }
     }
 
@@ -1257,33 +1273,21 @@ sub prho_factor {
       if ($f == $n) {
         last if $inloop++;  # We've been here before
       } elsif ($f != 1) {
-        push @factors, $f;
-        push @factors, int($n/$f);
-        croak "internal error in prho" unless ($f * int($n/$f)) == $n;
-        return @factors;
+        return _found_factor($f, $n, "prho", @factors);
       }
     }
 
   } else {
 
     for my $i (1 .. $rounds) {
-      # U^2+a % n
-      $U = _mulmod($U, $U, $n);
-      $U = (($n-$U) > $a)  ?  $U+$a  :  $U+$a-$n;
-      # V^2+a % n
-      $V = _mulmod($V, $V, $n);
-      $V = (($n-$V) > $a)  ?  $V+$a  :  $V+$a-$n;
-      # V^2+a % n
-      $V = _mulmod($V, $V, $n);
-      $V = (($n-$V) > $a)  ?  $V+$a  :  $V+$a-$n;
+      $U = _mulmod($U, $U, $n);  $U = (($n-$U) > $a)  ?  $U+$a  :  $U-$n+$a;
+      $V = _mulmod($V, $V, $n);  $V = (($n-$V) > $a)  ?  $V+$a  :  $V-$n+$a;
+      $V = _mulmod($V, $V, $n);  $V = (($n-$V) > $a)  ?  $V+$a  :  $V-$n+$a;
       my $f = _gcd_ui( ($U > $V) ? $U-$V : $V-$U,  $n );
       if ($f == $n) {
         last if $inloop++;  # We've been here before
       } elsif ($f != 1) {
-        push @factors, $f;
-        push @factors, int($n/$f);
-        croak "internal error in prho" unless ($f * int($n/$f)) == $n;
-        return @factors;
+        return _found_factor($f, $n, "prho", @factors);
       }
     }
 
@@ -1293,32 +1297,59 @@ sub prho_factor {
 }
 
 sub pbrent_factor {
-  my($n, $rounds) = @_;
+  my($n, $rounds, $a) = @_;
   _validate_positive_integer($n);
   $rounds = 4*1024*1024 unless defined $rounds;
+  $a = 3 unless defined $a;
 
   my @factors = _basic_factor($n);
   return @factors if $n < 4;
 
-  my $a = 1;
   my $Xi = 2;
   my $Xm = 2;
 
   if ( ref($n) eq 'Math::BigInt' ) {
 
-    $Xi = $n->copy->bzero->badd($Xi);
-    $Xm = $n->copy->bzero->badd($Xm);
-    for my $i (1 .. $rounds) {
-      $Xi->bmul($Xi);  $Xi->badd($a);  $Xi->bmod($n);
-      my $f = Math::BigInt::bgcd( ($Xi > $Xm) ? $Xi-$Xm : $Xm-$Xi,  $n);
-      if ( ($f != 1) && ($f != $n) ) {
-        my $f2 = $n->copy->bdiv($f)->as_int;
-        push @factors, $f;
-        push @factors, $f2;
-        croak "internal error in pbrent" unless ($f * $f2) == $n;
-        return @factors;
+    # Same code as the GMP version, but runs *much* slower.  Even with
+    # Math::BigInt::GMP it's >200x slower.  With the default Calc backend
+    # it's thousands of times slower.
+    my $inner = 256;
+    my $zero = $n->copy->bzero;
+    my $saveXi;
+    my $f;
+    $Xi = $zero->copy->badd($Xi);
+    $Xm = $zero->copy->badd($Xm);
+    my $r = 1;
+    while ($rounds > 0) {
+      my $rleft = ($r > $rounds) ? $rounds : $r;
+      while ($rleft > 0) {
+        my $dorounds = ($rleft > $inner) ? $inner : $rleft;
+        my $m = $zero->copy->bone;
+        $saveXi = $Xi->copy;
+        foreach my $i (1 .. $dorounds) {
+          $Xi->bmul($Xi)->badd($a)->bmod($n);
+          $m->bmul($Xi - $Xm);
+        }
+        $rleft -= $dorounds;
+        $rounds -= $dorounds;
+        $m->bmod($n);
+        $f = Math::BigInt::bgcd( $m,  $n);
+        last if $f != 1;
       }
-      $Xm = $Xi->copy if ($i & ($i-1)) == 0;  # i is a power of 2
+      if ($f == 1) {
+        $r *= 2;
+        $Xm = $Xi->copy;
+        next;
+      }
+      if ($f == $n) {  # back up to determine the factor
+        $Xi = $saveXi->copy;
+        do {
+          $Xi->bmul($Xi)->badd($a)->bmod($n);
+          $f = Math::BigInt::bgcd( ($Xi > $Xm) ? $Xi-$Xm : $Xm-$Xi,  $n);
+        } while ($f != 1 && $r-- != 0);
+        last if $f == 1 || $f == $n;
+      }
+      return _found_factor($f, $n, "pbrent", @factors);
     }
 
   } elsif ($n < $_half_word) {
@@ -1326,12 +1357,7 @@ sub pbrent_factor {
     for my $i (1 .. $rounds) {
       $Xi = ($Xi * $Xi + $a) % $n;
       my $f = _gcd_ui( ($Xi > $Xm) ? $Xi-$Xm : $Xm-$Xi,  $n );
-      if ( ($f != 1) && ($f != $n) ) {
-        push @factors, $f;
-        push @factors, int($n/$f);
-        croak "internal error in pbrent" unless ($f * int($n/$f)) == $n;
-        return @factors;
-      }
+      return _found_factor($f, $n, "pbrent", @factors) if $f != 1 && $f != $n;
       $Xm = $Xi if ($i & ($i-1)) == 0;  # i is a power of 2
     }
 
@@ -1342,12 +1368,7 @@ sub pbrent_factor {
       $Xi = _mulmod($Xi, $Xi, $n);
       $Xi = (($n-$Xi) > $a)  ?  $Xi+$a  :  $Xi+$a-$n;
       my $f = _gcd_ui( ($Xi > $Xm) ? $Xi-$Xm : $Xm-$Xi,  $n );
-      if ( ($f != 1) && ($f != $n) ) {
-        push @factors, $f;
-        push @factors, int($n/$f);
-        croak "internal error in pbrent" unless ($f * int($n/$f)) == $n;
-        return @factors;
-      }
+      return _found_factor($f, $n, "pbrent", @factors) if $f != 1 && $f != $n;
       $Xm = $Xi if ($i & ($i-1)) == 0;  # i is a power of 2
     }
 
@@ -1356,45 +1377,157 @@ sub pbrent_factor {
   @factors;
 }
 
-# This code is bollocks.  See a proper implementation in factor.c
 sub pminus1_factor {
-  my($n, $rounds) = @_;
+  my($n, $B1, $B2) = @_;
   _validate_positive_integer($n);
-  $rounds = 4*1024*1024 unless defined $rounds;
 
   my @factors = _basic_factor($n);
   return @factors if $n < 4;
 
-  if ( ref($n) eq 'Math::BigInt' ) {
-    my $kf = $n->copy->bzero->badd(13);
-    for my $i (1 .. $rounds) {
-      $kf->bmodpow($i,$n);
-      $kf = $n if $kf == 0;
-      my $f = Math::BigInt::bgcd( $kf-1, $n );
-      if ( ($f != 1) && ($f != $n) ) {
-        my $f2 = $n->copy->bdiv($f)->as_int;
-        push @factors, $f;
-        push @factors, $f2;
-        croak "internal error in pminus1" unless ($f * $f2) == $n;
+  if ( ref($n) ne 'Math::BigInt' ) {
+    # Stage 1 only
+    $B1 = 10_000_000 unless defined $B1;
+    my $a = 2;
+    my $f = 1;
+    my($pc_beg, $pc_end, @bprimes);
+    $pc_beg = 2;
+    $pc_end = $pc_beg + 100_000;
+    my $sqrtb1 = int(sqrt($B1));
+    while (1) {
+      $pc_end = $B1 if $pc_end > $B1;
+      @bprimes = @{ primes($pc_beg, $pc_end) };
+      while (@bprimes) {
+        my $q = shift @bprimes;
+        my $k = $q;
+        if ($q <= $sqrtb1) {
+          my $kmin = int($B1 / $q);
+          while ($k <= $kmin) { $k *= $q; }
+        }
+        $a = _powmod($a, $k, $n);
+        if ($a == 0) { push @factors, $n; return @factors; }
+        my $f = _gcd_ui( $a-1, $n );
+        return _found_factor($f, $n, "pminus1", @factors) if $f != 1;
+      }
+      last if $pc_end >= $B1;
+      $pc_beg = $pc_end+1;
+      $pc_end += 500_000;
+    }
+    push @factors, $n;
+    return @factors;
+  }
+
+  # Stage 2 isn't really any faster than stage 1 for the examples I've tried.
+
+  if (!defined $B1) {
+    for my $mul (1, 100, 1000, 10_000, 100_000, 1_000_000) {
+      $B1 = 1000 * $mul;
+      $B2 = 1*$B1;
+      #warn "Trying p-1 with $B1 / $B2\n";
+      my @nf = pminus1_factor($n, $B1, $B2);
+      if (scalar @nf > 1) {
+        push @factors, @nf;
         return @factors;
       }
     }
-  } else {
-    my $kf = 13;
-    for my $i (1 .. $rounds) {
-      $kf = _powmod($kf, $i, $n);
-      $kf = $n if $kf == 0;
-      my $f = _gcd_ui( $kf-1, $n );
-      if ( ($f != 1) && ($f != $n) ) {
-        push @factors, $f;
-        push @factors, int($n/$f);
-        croak "internal error in pminus1" unless ($f * int($n/$f)) == $n;
-        return @factors;
+    push @factors, $n;
+    return @factors;
+  }
+  $B2 = 1*$B1 unless defined $B2;
+
+  my $one = $n->copy->bone;
+  my ($j, $q, $saveq) = (1, 2, 2);
+  my $t = $one->copy;
+  my $a = $one->copy->badd(1);
+  my $savea = $a->copy;
+  my $f = 1;
+  my($pc_beg, $pc_end, @bprimes);
+
+  $pc_beg = 2;
+  $pc_end = $pc_beg + 100_000;
+  while (1) {
+    $pc_end = $B1 if $pc_end > $B1;
+    @bprimes = @{ primes($pc_beg, $pc_end) };
+    while (@bprimes) {
+      $q = shift @bprimes;
+      my $k = $q;
+      my $kmin = int($B1 / $q);
+      while ($k <= $kmin) { $k *= $q; }
+      $t *= $k;                         # accumulate powers for a
+      if ( ($j++ % 32) == 0) {
+        $a->bmodpow($t, $n);
+        $t = $one->copy;
+        if ($a == 0) { push @factors, $n; return @factors; }
+        $f = Math::BigInt::bgcd( $a-1, $n );
+        last if $f == $n;
+        if ($f != 1) {
+          push @factors, $f, $n/$f;
+          return @factors;
+        }
+        $saveq = $q;
+        $savea = $a->copy;
       }
+    }
+    last if $f != 1 || $pc_end >= $B1;
+    $pc_beg = $pc_end+1;
+    $pc_end += 500_000;
+  }
+  undef @bprimes;
+  $a->bmodpow($t, $n);
+  if ($a == 0) { push @factors, $n; return @factors; }
+  $f = Math::BigInt::bgcd( $a-1, $n );
+  if ($f == $n) {
+    $q = $saveq;
+    $a = $savea->copy;
+    while ($q <= $B1) {
+      my $k = $q;
+      my $kmin = int($B1 / $q);
+      while ($k <= $kmin) { $k *= $q; }
+      $a->bmodpow($k, $n);
+      my $f = Math::BigInt::bgcd( $a-1, $n );
+      if ($f == $n) { push @factors, $n; return @factors; }
+      last if $f != 1;
+      $q = next_prime($q);
     }
   }
-  push @factors, $n;
-  @factors;
+  # STAGE 2
+  if ($f == 1 && $B2 > $B1) {
+    my $bm = $a->copy;
+    my $b = $one->copy;
+    my @precomp_bm;
+    $precomp_bm[0] = ($bm * $bm) % $n;
+    foreach my $j (1..19) {
+      $precomp_bm[$j] = ($precomp_bm[$j-1] * $bm * $bm) % $n;
+    }
+    $a->bmodpow($q, $n);
+    my $j = 1;
+    $pc_beg = $q+1;
+    $pc_end = $pc_beg + 100_000;
+    while (1) {
+      $pc_end = $B2 if $pc_end > $B2;
+      @bprimes = @{ primes($pc_beg, $pc_end) };
+      while (@bprimes) {
+        my $lastq = $q;
+        $q = shift @bprimes;
+        my $qdiff = ($q - $lastq) / 2 - 1;
+        if (!defined $precomp_bm[$qdiff]) {
+          $precomp_bm[$qdiff] = $bm->copy->bmodpow($q-$lastq, $n);
+        }
+        $a->bmul($precomp_bm[$qdiff])->bmod($n);
+        if ($a == 0) { push @factors, $n; return @factors; }
+        $b->bmul($a-1);
+        if (($j++ % 64) == 0) {
+          $b->bmod($n);
+          $f = Math::BigInt::bgcd( $b, $n );
+          last if $f != 1;
+        }
+      }
+      last if $f != 1 || $pc_end >= $B2;
+      $pc_beg = $pc_end+1;
+      $pc_end += 500_000;
+    }
+    $f = Math::BigInt::bgcd( $b, $n );
+  }
+  return _found_factor($f, $n, "pminus1", @factors);
 }
 
 sub holf_factor {
@@ -1402,6 +1535,7 @@ sub holf_factor {
   _validate_positive_integer($n);
   $rounds = 64*1024*1024 unless defined $rounds;
   $startrounds = 1 unless defined $startrounds;
+  $startrounds = 1 if $startrounds < 1;
 
   my @factors = _basic_factor($n);
   return @factors if $n < 4;
@@ -1410,21 +1544,20 @@ sub holf_factor {
     for my $i ($startrounds .. $rounds) {
       my $ni = $n->copy->bmul($i);
       my $s = $ni->copy->bsqrt->bfloor->as_int;
-      $s->binc if ($s * $s) != $ni;
-      my $m = $s->copy->bmul($s)->bmod($n);
+      if ($s * $s == $ni) {
+        # s^2 = n*i, so m = s^2 mod n = 0.  Hence f = GCD(n, s) = GCD(n, n*i)
+        my $f = Math::BigInt::bgcd($ni, $n);
+        return _found_factor($f, $n, "HOLF", @factors);
+      }
+      $s->binc;
+      my $m = ($s * $s) - $ni;
       # Check for perfect square
       my $mc = int(($m & 31)->bstr);
       next unless $mc==0||$mc==1||$mc==4||$mc==9||$mc==16||$mc==17||$mc==25;
       my $f = $m->copy->bsqrt->bfloor->as_int;
       next unless ($f*$f) == $m;
       $f = Math::BigInt::bgcd( ($s > $f) ? $s-$f : $f-$s,  $n);
-      last if $f == 1 || $f == $n;   # Should never happen
-      my $f2 = $n->copy->bdiv($f)->as_int;
-      push @factors, $f;
-      push @factors, $f2;
-      croak "internal error in HOLF" unless ($f * $f2) == $n;
-      # print "HOLF found factors in $i rounds\n";
-      return @factors;
+      return _found_factor($f, $n, "HOLF ($i rounds)", @factors);
     }
   } else {
     for my $i ($startrounds .. $rounds) {
@@ -1437,12 +1570,56 @@ sub holf_factor {
       my $f = int(sqrt($m));
       next unless $f*$f == $m;
       $f = _gcd_ui( ($s > $f)  ?  $s - $f  :  $f - $s,  $n);
-      last if $f == 1 || $f == $n;   # Should never happen
-      push @factors, $f;
-      push @factors, int($n/$f);
-      croak "internal error in HOLF" unless ($f * int($n/$f)) == $n;
-      # print "HOLF found factors in $i rounds\n";
-      return @factors;
+      return _found_factor($f, $n, "HOLF ($i rounds)", @factors);
+    }
+  }
+  push @factors, $n;
+  @factors;
+}
+
+sub fermat_factor {
+  my($n, $rounds) = @_;
+  _validate_positive_integer($n);
+  $rounds = 64*1024*1024 unless defined $rounds;
+
+  my @factors = _basic_factor($n);
+  return @factors if $n < 4;
+
+  if ( ref($n) eq 'Math::BigInt' ) {
+    my $a = $n->copy->bsqrt->bfloor->as_int;
+    return _found_factor($a, $n, "Fermat", @factors) if $a*$a == $n;
+    $a++;
+    my $b2 = $a*$a - $n;
+    my $lasta = $a + $rounds;
+    while ($a <= $lasta) {
+      my $mc = int(($b2 & 31)->bstr);
+      if ($mc==0||$mc==1||$mc==4||$mc==9||$mc==16||$mc==17||$mc==25) {
+        my $s = $b2->copy->bsqrt->bfloor->as_int;
+        if ($s*$s == $b2) {
+          my $i = $a-($lasta-$rounds)+1;
+          return _found_factor($a - $s, $n, "Fermat ($i rounds)", @factors);
+        }
+      }
+      $a++;
+      $b2 = $a*$a-$n;
+    }
+  } else {
+    my $a = int(sqrt($n));
+    return _found_factor($a, $n, "Fermat", @factors) if $a*$a == $n;
+    $a++;
+    my $b2 = $a*$a - $n;
+    my $lasta = $a + $rounds;
+    while ($a <= $lasta) {
+      my $mc = $b2 & 31;
+      if ($mc==0||$mc==1||$mc==4||$mc==9||$mc==16||$mc==17||$mc==25) {
+        my $s = int(sqrt($b2));
+        if ($s*$s == $b2) {
+          my $i = $a-($lasta-$rounds)+1;
+          return _found_factor($a - $s, $n, "Fermat ($i rounds)", @factors);
+        }
+      }
+      $a++;
+      $b2 = $a*$a-$n;
     }
   }
   push @factors, $n;
@@ -1450,6 +1627,347 @@ sub holf_factor {
 }
 
 
+sub ecm_factor {
+  my($n, $B1, $B2, $ncurves) = @_;
+  _validate_positive_integer($n);
+
+  my @factors = _basic_factor($n);
+  return @factors if $n < 4;
+
+  $ncurves = 10 unless defined $ncurves;
+
+  if (!defined $B1) {
+    for my $mul (1, 10, 100, 1000, 10_000, 100_000, 1_000_000) {
+      $B1 = 100 * $mul;
+      $B2 = 10*$B1;
+      #warn "Trying ecm with $B1 / $B2\n";
+      my @nf = ecm_factor($n, $B1, $B2, $ncurves);
+      if (scalar @nf > 1) {
+        push @factors, @nf;
+        return @factors;
+      }
+    }
+    push @factors, $n;
+    return @factors;
+  }
+
+  $B2 = 10*$B1 unless defined $B2;
+  my $sqrt_b1 = int(sqrt($B1)+1);
+
+  # Affine code.  About 3x slower than the projective, and no stage 2.
+  #
+  #if (!defined $Math::Prime::Util::ECAffinePoint::VERSION) {
+  #  eval { require Math::Prime::Util::ECAffinePoint; 1; }
+  #  or do { croak "Cannot load Math::Prime::Util::ECAffinePoint"; };
+  #}
+  #my @bprimes = @{ primes(2, $B1) };
+  #my $irandf = Math::Prime::Util::_get_rand_func();
+  #foreach my $curve (1 .. $ncurves) {
+  #  my $a = $irandf->($n-1);
+  #  my $b = 1;
+  #  my $ECP = Math::Prime::Util::ECAffinePoint->new($a, $b, $n, 0, 1);
+  #  foreach my $q (@bprimes) {
+  #    my $k = $q;
+  #    if ($k < $sqrt_b1) {
+  #      my $kmin = int($B1 / $q);
+  #      while ($k <= $kmin) { $k *= $q; }
+  #    }
+  #    $ECP->mul($k);
+  #    my $f = $ECP->f;
+  #    if ($f != 1) {
+  #      last if $f == $n;
+  #      warn "ECM found factors with B1 = $B1 in curve $curve\n";
+  #      return _found_factor($f, $n, "ECM B1=$B1 curve $curve", @factors);
+  #    }
+  #    last if $ECP->is_infinity;
+  #  }
+  #}
+
+  if (!defined $Math::Prime::Util::ECProjectivePoint::VERSION) {
+    eval { require Math::Prime::Util::ECProjectivePoint; 1; }
+    or do { croak "Cannot load Math::Prime::Util::ECProjectivePoint"; };
+  }
+
+  # With multiple curves, it's better to get all the primes at once.
+  # The downside is this can kill memory with a very large B1.
+  my @bprimes = @{ primes(3, $B1) };
+  my @b2primes = ($B2 > $B1) ? @{primes($B1+1, $B2)} : ();
+  my $irandf = Math::Prime::Util::_get_rand_func();
+
+  foreach my $curve (1 .. $ncurves) {
+    my $sigma = $irandf->($n-1-6) + 6;
+    my ($u, $v) = ( ($sigma*$sigma - 5) % $n, (4 * $sigma) % $n );
+    my ($x, $z) = ( ($u*$u*$u) % $n,  ($v*$v*$v) % $n );
+    my $b = (4 * $x * $v) % $n;
+    my $a = ( (($v-$u)**3) * (3*$u + $v) ) % $n;
+    my $f = Math::BigInt::bgcd( $b, $n );
+    $f = Math::BigInt::bgcd( $z, $n ) if $f == 1;
+    next if $f == $n;
+    return _found_factor($f,$n, "ECM B1=$B1 curve $curve", @factors) if $f != 1;
+    $u = $b->copy->bmodinv($n);
+    $a = (($a*$u) - 2) % $n;
+
+    my $ECP = Math::Prime::Util::ECProjectivePoint->new($a, $n, $x, $z);
+    my $fm = $n-$n+1;
+    my $i = 15;
+
+    for (my $q = 2; $q < $B1; $q *= 2) { $ECP->double(); }
+    foreach my $q (@bprimes) {
+      my $k = $q;
+      if ($k < $sqrt_b1) {
+        my $kmin = int($B1 / $q);
+        while ($k <= $kmin) { $k *= $q; }
+      }
+      $ECP->mul($k);
+      $fm = ($fm * $ECP->x() ) % $n;
+      if ($i++ % 32 == 0) {
+        $f = Math::BigInt::bgcd($fm, $n);
+        last if $f != 1;
+      }
+    }
+    $f = Math::BigInt::bgcd($fm, $n);
+    next if $f == $n;
+
+    if ($f == 1 && $B2 > $B1) { # BEGIN STAGE 2
+      my $D = int(sqrt($B2/2));  $D++ if $D % 2;
+      my $one = $n - $n + 1;
+      my $g = $one;
+
+      my $S2P = $ECP->copy->normalize;
+      $f = $S2P->f;
+      if ($f != 1) {
+        next if $f == $n;
+        #warn "ECM S2 normalize f=$f\n" if $f != 1;
+        return _found_factor($f, $n, "ECM S2 B1=$B1 curve $curve");
+      }
+      my $S2x = $S2P->x;
+      my $S2d = $S2P->d;
+      my @nqx = ($n-$n, $S2x);
+
+      foreach my $i (2 .. 2*$D) {
+        my($x2, $z2);
+        if ($i % 2) {
+          ($x2, $z2) = Math::Prime::Util::ECProjectivePoint::_addx($nqx[($i-1)/2], $nqx[($i+1)/2], $S2x, $n);
+        } else {
+          ($x2, $z2) = Math::Prime::Util::ECProjectivePoint::_double($nqx[$i/2], $one, $n, $S2d);
+        }
+        $nqx[$i] = $x2;
+        #($f, $u, undef) = _extended_gcd($z2, $n);
+        $f = Math::BigInt::bgcd( $z2, $n );
+        last if $f != 1;
+        $u = $z2->copy->bmodinv($n);
+        $nqx[$i] = ($x2 * $u) % $n;
+      }
+      if ($f != 1) {
+        next if $f == $n;
+        #warn "ECM S2 1: B1 $B1 B2 $B2 curve $curve f=$f\n";
+        return _found_factor($f, $n, "ECM S2 B1=$B1 curve $curve", @factors);
+      }
+
+      $x = $nqx[2*$D-1];
+      my $m = 1;
+      while ($m < ($B2+$D)) {
+        if ($m != 1) {
+          my $oldx = $S2x;
+          my ($x1, $z1) = Math::Prime::Util::ECProjectivePoint::_addx($nqx[2*$D], $S2x, $x, $n);
+          $f = Math::BigInt::bgcd( $z1, $n );
+          last if $f != 1;
+          $u = $z1->copy->bmodinv($n);
+          $S2x = ($x1 * $u) % $n;
+          $x = $oldx;
+          last if $f != 1;
+        }
+        if ($m+$D > $B1) {
+          my @p = grep { $_ >= $m-$D && $_ <= $m+$D } @b2primes;
+          foreach my $i (@p) {
+            last if $i >= $m;
+            $g = ($g * ($S2x - $nqx[$m+$D-$i])) % $n;
+          }
+          foreach my $i (@p) {
+            next unless $i > $m;
+            next if is_prime($m+$m-$i);
+            $g = ($g * ($S2x - $nqx[$i-$m])) % $n;
+          }
+          $f = Math::BigInt::bgcd($g, $n);
+          #warn "ECM S2 3: found $f in stage 2\n" if $f != 1;
+          last if $f != 1;
+        }
+        $m += 2*$D;
+      }
+    } # END STAGE 2
+
+    next if $f == $n;
+    if ($f != 1) {
+      #warn "ECM found factors with B1 = $B1 in curve $curve\n";
+      return _found_factor($f, $n, "ECM B1=$B1 curve $curve", @factors);
+    }
+    # end of curve loop
+  }
+  push @factors, $n;
+  @factors;
+}
+
+
+sub primality_proof_lucas {
+  my ($n) = shift;
+  my @composite = (0, []);
+
+  # Since this can take a very long time with a composite, try some easy cuts
+  return @composite if !defined $n || $n < 2;
+  return (2, [$n]) if $n < 4;
+  return @composite if miller_rabin($n,2,15,325) == 0;
+
+  if (!defined $Math::BigInt::VERSION) {
+    eval { require Math::BigInt;   Math::BigInt->import(try=>'GMP,Pari'); 1; }
+    or do { croak "Cannot load Math::BigInt"; };
+  }
+
+  my $nm1 = $n-1;
+  my @factors = factor($nm1);
+  { # remove duplicate factors and make a sorted array of bigints
+    my %uf;
+    undef @uf{@factors};
+    @factors = sort {$a<=>$b} map { Math::BigInt->new("$_") } keys %uf;
+  }
+  for (my $a = 2; $a < $nm1; $a++) {
+    my $ap = Math::BigInt->new("$a");
+    # 1. a must be coprime to n
+    next unless Math::BigInt::bgcd($ap, $n) == 1;
+    # 2. a^(n-1) = 1 mod n.
+    next unless $ap->copy->bmodpow($nm1, $n) == 1;
+    # 3. a^((n-1)/f) != 1 mod n for all f.
+    next if (scalar grep { $_ == 1 }
+             map { $ap->copy->bmodpow(int($nm1/$_),$n); }
+             @factors) > 0;
+    # Verify each factor and add to proof
+    my @fac_proofs;
+    foreach my $f (@factors) {
+      my ($isp, $fproof) = Math::Prime::Util::is_provable_prime_with_cert($f);
+      if ($isp != 2) {
+        carp "could not prove primality of $n.\n";
+        return (1, []);
+      }
+      push @fac_proofs, (scalar @$fproof == 1) ? $fproof->[0] : $fproof;
+    }
+    my @proof = ("$n", "Pratt", [@fac_proofs], $a);
+    return (2, [@proof]);
+  }
+  return @composite;
+}
+
+sub primality_proof_bls75 {
+  my ($n) = shift;
+  my @composite = (0, []);
+
+  # Since this can take a very long time with a composite, try some easy cuts
+  return @composite if !defined $n || $n < 2;
+  return (2, [$n]) if $n < 4;
+  return @composite if ($n & 1) == 0;
+  return @composite if miller_rabin($n,2,15,325) == 0;
+
+  if (!defined $Math::BigInt::VERSION) {
+    eval { require Math::BigInt;   Math::BigInt->import(try=>'GMP,Pari'); 1; }
+    or do { croak "Cannot load Math::BigInt"; };
+  }
+
+  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+  my $nm1 = $n-1;
+  my $A = $nm1->copy->bone;   # factored part
+  my $B = $nm1->copy;         # unfactored part
+  my @factors = (2);
+  croak "BLS75 error: n-1 not even" unless $nm1->is_even();
+  while ($B->is_even) { $B /= 2; $A *= 2; }
+  foreach my $f (3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79) {
+    last if $f*$f > $B;
+    if (($B % $f) == 0) {
+      push @factors, $f;
+      do { $B /= $f;  $A *= $f; } while (($B % $f) == 0);
+    }
+  }
+  my @nstack;
+  # nstack should only hold composites
+  if ($B == 1) {
+    # Completely factored.  Nothing.
+  } elsif (Math::Prime::Util::is_prob_prime($B)) {
+    push @factors, $B;
+    $A *= $B;  $B /= $B;   # completely factored already
+  } else {
+    push @nstack, $B;
+  }
+  while (@nstack) {
+    my ($s,$r) = $B->copy->bdiv($A->copy->bmul(2));
+    my $fpart = ($A+1) * (2*$A*$A + ($r-1) * $A + 1);
+    last if $n < $fpart;
+
+    my $m = pop @nstack;
+    # Don't use bignum if it has gotten small enough.
+    $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= ~0;
+    # Try to find factors of m, using the default set of factor subs.
+    my @ftry;
+    $_holf_r = 1;
+    foreach my $sub (@_fsublist) {
+      last if scalar @ftry >= 2;
+      @ftry = $sub->($m);
+    }
+    # If we couldn't find a factor, skip it.
+    next unless scalar @ftry > 1;
+    # Process each factor
+    foreach my $f (@ftry) {
+      croak "Invalid factoring" if $f == 1 || $f == $m || ($B%$f) != 0;
+      if (Math::Prime::Util::is_prob_prime($f)) {
+        push @factors, $f;
+        do { $B /= $f;  $A *= $f; } while (($B % $f) == 0);
+      } else {
+        push @nstack, $f;
+      }
+    }
+  }
+  # Just in case:
+  foreach my $f (@factors) {
+    while (($B % $f) == 0) {
+      $B /= $f;  $A *= $f;
+    }
+  }
+  { # remove duplicate factors and make a sorted array of bigints
+    my %uf = map { $_ => 1 } @factors;
+    @factors = sort {$a<=>$b} map { Math::BigInt->new("$_") } keys %uf;
+  }
+  # Did we factor enough?
+  my ($s,$r) = $B->copy->bdiv($A->copy->bmul(2));
+  my $fpart = ($A+1) * (2*$A*$A + ($r-1) * $A + 1);
+  return (1,[]) if $n >= $fpart;
+  # Check we didn't mess up
+  croak "BLS75 error: $A * $B != $nm1" unless $A*$B == $nm1;
+  croak "BLS75 error: $A not even" unless $A->is_even();
+  croak "BLS75 error: A and B not coprime" unless Math::BigInt::bgcd($A, $B)==1;
+
+  my $rtest = $r*$r - 8*$s;
+  my $rtestroot = $rtest->copy->bsqrt;
+  return @composite if $s != 0 && ($rtestroot*$rtestroot) == $rtest;
+
+  my @fac_proofs;
+  my @as;
+  foreach my $f (@factors) {
+    my $success = 0;
+    foreach my $a (2 .. 10000) {
+      my $ap = Math::BigInt->new("$a");
+      next unless $ap->copy->bmodpow($nm1, $n) == 1;
+      next unless Math::BigInt::bgcd($ap->copy->bmodpow($nm1/$f, $n)->bsub(1), $n) == 1;
+      push @as, $a;
+      $success = 1;
+      last;
+    }
+    return @composite unless $success;
+    my ($isp, $fproof) = Math::Prime::Util::is_provable_prime_with_cert($f);
+    if ($isp != 2) {
+      carp "could not prove primality of $n.\n";
+      return (1, []);
+    }
+    push @fac_proofs, (scalar @$fproof == 1) ? $fproof->[0] : $fproof;
+  }
+  my @proof = ($n, "n-1", [@fac_proofs], [@as]);
+  return (2, [@proof]);
+}
 
 
 my $_const_euler = 0.57721566490153286060651209008240243104215933593992;
@@ -1472,7 +1990,7 @@ sub ExponentialIntegral {
     my $wantbf = 0;
     my $xdigits = 17;
     if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
-      if (!defined $MATH::BigFloat::VERSION) {
+      if (!defined $Math::BigFloat::VERSION) {
         eval { require Math::BigFloat;   Math::BigFloat->import(); 1; }
         or do { croak "Cannot load Math::BigFloat "; }
       }
@@ -1582,7 +2100,7 @@ sub LogarithmicIntegral {
     my $wantbf = 0;
     my $xdigits = 17;
     if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
-      if (!defined $MATH::BigFloat::VERSION) {
+      if (!defined $Math::BigFloat::VERSION) {
         eval { require Math::BigFloat;   Math::BigFloat->import(); 1; }
         or do { croak "Cannot load Math::BigFloat "; }
       }
@@ -1714,7 +2232,7 @@ sub RiemannZeta {
     my $wantbf = 0;
     my $xdigits = 17;
     if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
-      if (!defined $MATH::BigFloat::VERSION) {
+      if (!defined $Math::BigFloat::VERSION) {
         eval { require Math::BigFloat;   Math::BigFloat->import(); 1; }
         or do { croak "Cannot load Math::BigFloat "; }
       }
@@ -1805,7 +2323,7 @@ sub RiemannR {
     my $wantbf = 0;
     my $xdigits = 17;
     if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
-      if (!defined $MATH::BigFloat::VERSION) {
+      if (!defined $Math::BigFloat::VERSION) {
         eval { require Math::BigFloat;   Math::BigFloat->import(); 1; }
         or do { croak "Cannot load Math::BigFloat "; }
       }
@@ -1901,7 +2419,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.14
+Version 0.26
 
 
 =head1 SYNOPSIS
@@ -2061,7 +2579,7 @@ math packages.  When given two arguments, it returns the inclusive
 count of primes between the ranges (e.g. C<(13,17)> returns 2, C<14,17>
 and C<13,16> return 1, and C<14,16> returns 0).
 
-The Lehmer method is used for large values, which speeds up results greatly.
+The Lehmer method is used for large values, which greatly speeds up results.
 
 
 =head2 nth_prime
@@ -2109,6 +2627,20 @@ base 2 being the other half).
 Takes a positive number as input, and returns 1 if the input can be proven
 prime using the AKS primality test.  This code is included for completeness
 and as an example, but is impractically slow.
+
+=head2 primality_proof_lucas
+
+Given a positive number C<n> as input, performs a full factorization of C<n-1>,
+then attempts a Lucas test on the result.  A Pratt-style certificate is
+returned.  Note that if the input is composite, this will take a B<very> long
+time to return.
+
+=head2 primality_proof_bls75
+
+Given a positive number C<n> as input, performs a partial factorization of
+C<n-1>, then attempts a proof using theorem 5 of Brillhart, Lehmer, and
+Selfridge's 1975 paper.  This can take a long time to return if given a
+composite, though it should not be anywhere near as long as the Lucas test.
 
 
 =head1 UTILITY FUNCTIONS
@@ -2161,7 +2693,10 @@ For large inputs this will be very slow.
 
   my @factors = fermat_factor($n);
 
-Currently unimplementated in Perl.
+Produces factors, not necessarily prime, of the positive number input.  This
+uses Fermat's classic algorithm, without any special improvements (e.g.
+Lehman or McKee).  This is typically slow and usually L</holf_factor> will
+be faster.
 
 =head2 holf_factor
 
@@ -2179,13 +2714,11 @@ same advantages and disadvantages as Fermat's method.
 
   my @factors = squfof_factor($n);
 
-Currently unimplementated in Perl.
+Currently not implemented in Perl.
 
 =head2 prho_factor
 
 =head2 pbrent_factor
-
-=head2 pminus1_factor
 
   my @factors = prho_factor($n);
 
@@ -2193,14 +2726,39 @@ Currently unimplementated in Perl.
   my @factors = prho_factor($n, 1000);
 
 Produces factors, not necessarily prime, of the positive number input.  An
-optional number of rounds can be given as a second parameter.  These attempt
-to find a single factor using one of the probabilistic algorigthms of
-Pollard Rho, Brent's modification of Pollard Rho, or Pollard's C<p - 1>.
-These are more specialized algorithms usually used for pre-factoring very
-large inputs, or checking very large inputs for naive mistakes.  If the
+optional number of rounds can be given as a second parameter.  An optional
+additive factor may be given as a third parameter (default 3).  These methods
+attempt to find a single factor using Pollard's Rho algorithm (or Brent's
+alternative which is typically faster).
+These methods can quickly find small factors.  If the
 input is prime or they run out of rounds, they will return the single
 input value.  On some inputs they will take a very long time, while on
 others they succeed in a remarkably short time.
+
+=head2 pminus1_factor
+
+  my @factors = pminus1_factor($n);
+  my @factors = pminus1_factor($n, 1_000);          # set B1 smoothness
+  my @factors = pminus1_factor($n, 1_000, 50_000);  # set B1 and B2
+
+Produces factors, not necessarily prime, of the positive number input.  This
+is Pollard's C<p-1> method, using two stages.  The default with no B1 or B2
+given is to run with increasing B1 factors.
+This method can rapidly find a factor C<p> of C<n> where C<p-1> is smooth
+(i.e. C<p-1> has no large factors).
+
+=head2 ecm_factor
+
+  my @factors = ecm_factor($n);
+  my @factors = ecm_factor($n, 1000);           # B1 = B2 = 1000, curves = 10
+  my @factors = ecm_factor($n, 1000, 5000, 10); # Set B1, B2, and ncurves
+
+Given a positive number input, tries to discover a factor using ECM.  The
+resulting array will contain either two factors (it succeeded) or the original
+number (no factor was found).  In either case, multiplying @factors yields the
+original input.  The B1 and B2 smoothness factors for stage 1 and stage 2
+respectively may be supplied, as can be number of curves to try.
+
 
 
 
@@ -2351,7 +2909,7 @@ Dana Jacobsen E<lt>dana@acm.orgE<gt>
 
 =head1 COPYRIGHT
 
-Copyright 2012 by Dana Jacobsen E<lt>dana@acm.orgE<gt>
+Copyright 2012-2013 by Dana Jacobsen E<lt>dana@acm.orgE<gt>
 
 This program is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
 

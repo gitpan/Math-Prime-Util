@@ -9,7 +9,7 @@ use Config;
 use autodie;
 use Text::Diff;
 use Time::HiRes qw(gettimeofday tv_interval);
-my $maxdigits = 50;
+my $maxdigits = 100;
 $| = 1;  # fast pipes
 srand(87431);
 my $num = 1000;

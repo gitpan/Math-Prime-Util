@@ -6,7 +6,7 @@ use Bytes::Random::Secure;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.25';
+  $Math::Prime::Util::VERSION = '0.26';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -15,7 +15,8 @@ use base qw( Exporter );
 our @EXPORT_OK =
   qw( prime_get_config prime_set_config
       prime_precalc prime_memfree
-      is_prime is_prob_prime is_provable_prime
+      is_prime is_prob_prime is_provable_prime is_provable_prime_with_cert
+      prime_certificate verify_prime
       is_strong_pseudoprime is_strong_lucas_pseudoprime
       is_aks_prime
       miller_rabin
@@ -25,7 +26,7 @@ our @EXPORT_OK =
       prime_count_lower prime_count_upper prime_count_approx
       nth_prime nth_prime_lower nth_prime_upper nth_prime_approx
       random_prime random_ndigit_prime random_nbit_prime
-      random_strong_prime random_maurer_prime
+      random_strong_prime random_maurer_prime random_maurer_prime_with_cert
       primorial pn_primorial consecutive_integer_lcm
       factor all_factors
       moebius mertens euler_phi jordan_totient exp_mangoldt
@@ -833,10 +834,21 @@ sub primes {
   }
 
   sub random_maurer_prime {
+    my ($n, $cert) = random_maurer_prime_with_cert(@_);
+    croak "maurer prime $n failed certificate verification!"
+          unless verify_prime(@$cert);
+    return $n;
+  }
+
+  sub random_maurer_prime_with_cert {
     my($k) = @_;
     _validate_positive_integer($k, 2);
+    my @cert;
     if ($] < 5.008 && $_Config{'maxbits'} > 32) {
-      return random_nbit_prime($k) if $k <= 49;
+      if ($k <= 49) {
+        my $n = random_nbit_prime($k);
+        return ($n, [$n]);
+      }
       croak "Random Maurer not supported on old Perl";
     }
 
@@ -845,7 +857,12 @@ sub primes {
     # returning 2.  This should be reasonably fast to ~128 bits with MPU::GMP.
     my $p0 = $_Config{'maxbits'};
 
-    return random_nbit_prime($k) if $k <= $p0;
+    if ($k <= $p0) {
+      my $n = random_nbit_prime($k);
+      my ($isp, $cert) = is_provable_prime_with_cert($n);
+      croak "small nbit prime could not be proven" if $isp != 2;
+      return ($n, $cert);
+    }
 
     if (!defined $Math::BigInt::VERSION) {
       eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
@@ -876,7 +893,7 @@ sub primes {
     }
 
     # I've seen +0, +1, and +2 here.  Maurer uses +0.  Menezes uses +1.
-    my $q = random_maurer_prime( ($r * $k)->bfloor + 1 );
+    my ($q, $certref) = random_maurer_prime_with_cert( ($r * $k)->bfloor + 1 );
     $q = Math::BigInt->new("$q") unless ref($q) eq 'Math::BigInt';
     my $I = Math::BigInt->new(2)->bpow($k-2)->bdiv($q)->bfloor->as_int();
     print "B = $B  r = $r  k = $k  q = $q  I = $I\n" if $verbose && $verbose != 3;
@@ -954,7 +971,15 @@ sub primes {
         #  2) make history by finding the first known BPSW pseudo-prime
         croak "Maurer prime $n=2*$R*$q+1 failed BPSW" unless is_prob_prime($n);
 
-        return $n;
+        # Build up cert, knowing n-1 = 2*q*R, q > sqrt(n).
+        # We'll need to find the right a value for the factor 2.
+        foreach my $f2a (2 .. 200) {
+          $a = Math::BigInt->new($f2a);
+          next unless $a->copy->bmodpow($n-1, $n) == 1;
+          next unless Math::BigInt::bgcd($a->copy->bmodpow(($n-1)/2, $n)->bsub(1), $n) == 1;
+          @cert = ("$n", "n-1", [2, [@$certref]], [$f2a, $try_a]);
+          return ($n, \@cert);
+        }
       }
       # Didn't pass the selected a values.  Try another R.
     }
@@ -1599,50 +1624,349 @@ sub is_prob_prime {
   return ($n <= 18446744073709551615)  ?  2  :  1;
 }
 
+# Return just the non-cert portion.
 sub is_provable_prime {
   my($n) = @_;
   return 0 if defined $n && $n < 2;
   _validate_positive_integer($n);
 
-  # Shortcut some of the calls.
   return _XS_is_prime($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
-  return Math::Prime::Util::GMP::is_provable_prime($n) if $_HAVE_GMP
-                       && defined &Math::Prime::Util::GMP::is_provable_prime;
+  return Math::Prime::Util::GMP::is_provable_prime($n)
+         if $_HAVE_GMP && defined &Math::Prime::Util::GMP::is_provable_prime;
 
-  my $is_prob_prime = is_prob_prime($n);
-  return $is_prob_prime unless $is_prob_prime == 1;
+  my ($is_prime, $cert) = is_provable_prime_with_cert($n);
+  return $is_prime;
+}
 
-  # At this point we know it is almost certainly a prime, but we need to
-  # prove it.  We should do ECPP or APR-CL now, or failing that, do the
-  # Brillhart-Lehmer-Selfridge test, or Pocklington-Lehmer.  Until those
-  # are written here, we'll do a Lucas test, which is super simple but may
-  # be very slow.  We have AKS code, but it's insanely slow.
+# Return just the cert portion.
+sub prime_certificate {
+  my($n) = @_;
+  my ($is_prime, $cert) = is_provable_prime_with_cert($n);
+  return @$cert;
+}
+
+
+sub is_provable_prime_with_cert {
+  my($n) = @_;
+  return 0 if defined $n && $n < 2;
+  _validate_positive_integer($n);
+
+  # Set to 0 if you want the proof to go down to 11.
+  if (1) {
+    if (ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL) {
+      my $isp = _XS_is_prime($n);
+      return ($isp == 2) ? ($isp, [$n]) : ($isp, []);
+    }
+    if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::is_provable_prime_with_cert) {
+      return Math::Prime::Util::GMP::is_provable_prime_with_cert($n);
+    }
+
+    my $isp = is_prob_prime($n);
+    if ($isp != 1) {
+      return ($isp == 2) ? ($isp, [$n]) : ($isp, []);
+    }
+  } else {
+    if ($n <= 10) {
+      if ($n==2||$n==3||$n==5||$n==7) {
+        return (2, [$n]);
+      }
+      return 0;
+    }
+  }
+
+  # Choice of methods for proof:
+  #   ECPP         needs a fair bit of programming work
+  #   APRCL        needs a lot of programming work
+  #   BLS75 combo  Corollary 11 of BLS75.  Trial factor n-1 and n+1 to B, find
+  #                factors F1 of n-1 and F2 of n+1.  Quit when:
+  #                B > (N/(F1*F1*(F2/2)))^1/3 or B > (N/((F1/2)*F2*F2))^1/3
+  #   BLS75 n+1    Requires factoring n+1 to (n/2)^1/3 (theorem 19)
+  #   BLS75 n-1    Requires factoring n-1 to (n/2)^1/3 (theorem 5 or 7)
+  #   Pocklington  Requires factoring n-1 to n^1/2 (BLS75 theorem 4)
+  #   Lucas        Easy, requires factoring of n-1 (BLS75 theorem 1)
+  #   AKS          horribly slow
   # See http://primes.utm.edu/prove/merged.html or other sources.
 
-  # It shouldn't be possible to get here without BigInt already loaded.
+  #my ($isp, $pref) = Math::Prime::Util::PP::primality_proof_lucas($n);
+  my ($isp, $pref) = Math::Prime::Util::PP::primality_proof_bls75($n);
+  carp "proved $n is not prime\n" if !$isp;
+  return ($isp, $pref);
+}
+
+
+sub verify_prime {
+  my @pdata = @_;
+  my $verbose = $_Config{'verbose'};
+
+  # Empty input = no certificate = not prime
+  return 0 if scalar @pdata == 0;
+
+  # Handle case of being handed a reference to the certificate.
+  @pdata = @{$pdata[0]} if scalar @pdata == 1 && ref($pdata[0]) eq 'ARRAY';
+
+  my $n = shift @pdata;
+  if (length($n) == 1) {
+    return 1 if $n =~ /^[2357]$/;
+    print "primality fail: $n tiny and not prime\n" if $verbose;
+    return 0;
+  }
+
   if (!defined $Math::BigInt::VERSION) {
     eval { require Math::BigInt;   Math::BigInt->import(try=>'GMP,Pari'); 1; }
     or do { croak "Cannot load Math::BigInt"; };
   }
-  my $nm1 = $n-1;
-  my @factors = factor($nm1);
-  # Remember that we have to prove the primality of every factor.
-  if ( (scalar grep { is_provable_prime($_) != 2 } @factors) > 0) {
-    carp "could not prove primality of $n.\n";
+  $n = Math::BigInt->new("$n") if ref($n) ne 'Math::BigInt';
+  if ($n->is_even) {
+    print "primality fail: $n even\n" if $verbose;
+    return 0;
+  }
+
+  my $method = (scalar @pdata > 0) ? shift @pdata : 'BPSW';
+
+  if ($method eq 'BPSW') {
+    if ($n > Math::BigInt->new("18446744073709551615")) {
+      print "primality fail: $n too large for BPSW proof\n" if $verbose;
+      return 0;
+    }
+    my $bpsw = 0;
+    if ($_HAVE_GMP) {
+      $bpsw = Math::Prime::Util::GMP::is_prob_prime($n);
+    } else {
+      $bpsw = Math::Prime::Util::PP::miller_rabin($n, 2)
+           && Math::Prime::Util::PP::is_strong_lucas_pseudoprime($n);
+    }
+    if (!$bpsw) {
+      print "primality fail: BPSW indicated $n is composite\n" if $verbose;
+      return 0;
+    }
+    print "primality success: $n by BPSW\n" if $verbose > 1;
     return 1;
   }
 
-  for (my $a = 2; $a < $nm1; $a++) {
-    my $ap = Math::BigInt->new("$a");
-    # 1. a^(n-1) = 1 mod n.
-    next if $ap->copy->bmodpow($nm1, $n) != 1;
-    # 2. a^((n-1)/f) != 1 mod n for all f.
-    next if (scalar grep { $_ == 1 }
-             map { $ap->copy->bmodpow(int($nm1/$_),$n); }
-             @factors) > 0;
-    return 2;
+  if ($method eq 'Pratt' || $method eq 'Lucas') {
+    # Based on Lucas primality test, which requires full n-1 factorization.
+    if (scalar @pdata != 2 || (ref($pdata[0]) ne 'ARRAY') || (ref($pdata[1]) eq 'ARRAY')) {
+      warn "verify_prime: incorrect Pratt format, must have factors and a value\n";
+      return 0;
+    }
+    my @factors = @{shift @pdata};
+    my $a = Math::BigInt->new(shift @pdata);
+    my $nm1 = $n - 1;
+    my $B = $nm1;    # Unfactored part
+
+    my @prime_factors;
+    my %factors_seen;
+    foreach my $farray (@factors) {
+      my $f;
+      if (ref($farray) eq 'ARRAY') {
+        $f = Math::BigInt->new("$farray->[0]");
+        return 0 unless verify_prime(@$farray);
+      } else {
+        $f = $farray;
+        return 0 unless verify_prime($f);
+      }
+      next if defined $factors_seen{"$f"};   # repeated factors
+      if (($B % $f) != 0) {
+        print "primality fail: given factor $f does not divide $nm1\n" if $verbose;
+        return 0;
+      }
+      while (($B % $f) == 0) {
+        $B /= $f;
+      }
+      push @prime_factors, $f;
+      $factors_seen{"$f"} = 1;
+    }
+    croak "Pratt error: n-1 not completely factored" unless $B == 1;
+
+    # 1. a must be co-prime to n.
+    if (Math::BigInt::bgcd($a, $n) != 1) {
+      print "primality fail: a and n not coprime\n" if $verbose;
+      return 0;
+    }
+    # 2. n is a psp base a
+    if ($a->copy->bmodpow($nm1, $n) != 1) {
+      print "primality fail: n is not a psp base a\n" if $verbose;
+      return 0;
+    }
+    # 3. For each factor f of n-1, a^((n-1)/f) != 1 mod n
+    foreach my $f (@prime_factors) {
+      if ($a->copy->bmodpow(int($nm1/$f),$n) == 1) {
+        print "primality fail: factor f fails a^((n-1)/f) != 1 mod n\n" if $verbose;
+        return 0;
+      }
+    }
+    print "primality success: $n by Lucas test\n" if $verbose > 1;
+    return 1;
   }
-  carp "proved $n is not prime\n";
+
+  if ($method eq 'n-1') {
+    # BLS75 or generalized Pocklington
+    # http://www.ams.org/journals/mcom/1975-29-130/S0025-5718-1975-0384673-1/S0025-5718-1975-0384673-1.pdf
+    if (scalar @pdata != 2 || (ref($pdata[0]) ne 'ARRAY') || (ref($pdata[1]) ne 'ARRAY')) {
+      warn "verify_prime: incorrect n-1 format, must have factors and a values\n";
+      return 0;
+    }
+    my @factors = @{shift @pdata};
+    my @as = @{shift @pdata};
+    if ($#factors != $#as) {
+      warn "verify_prime: incorrect n-1 format, must have a value for each factor\n";
+      return 0;
+    }
+
+    my $nm1 = $n - 1;
+    my $A = $n-$n+1;  # Factored part    (F_1 in BLS paper)
+    my $B = $nm1;     # Unfactored part  (R_1 in BLS paper)
+
+    my @prime_factors;
+    my @pfas;
+    my %factors_seen;
+    foreach my $farray (@factors) {
+      my $f;
+      my $a = shift @as;
+      if (ref($farray) eq 'ARRAY') {
+        $f = Math::BigInt->new("$farray->[0]");
+        return 0 unless verify_prime(@$farray);
+      } else {
+        $f = Math::BigInt->new("$farray");
+        return 0 unless verify_prime($f);
+      }
+      next if defined $factors_seen{"$f"};   # repeated factors
+      if (($B % $f) != 0) {
+        print "primality fail: given factor $f does not divide $nm1\n" if $verbose;
+        return 0;
+      }
+      while (($B % $f) == 0) {
+        $B /= $f;
+        $A *= $f;
+      }
+      push @prime_factors, $f;
+      push @pfas, $a;
+      $factors_seen{"$f"} = 1;
+    }
+    croak "BLS75 error: $A * $B != $nm1" unless $A*$B == $nm1;
+
+    # The theorems state that A is the even portion, so we are requiring 2 be
+    # listed as a factor.
+    if ($A->is_odd) {
+      print "primality fail: 2 must be included as a factor" if $verbose;
+      return 0;
+    }
+
+    # TODO: consider: if B=1 and a single a is given, then Lucas test.
+
+    if (Math::BigInt::bgcd($A, $B) != 1) {
+      print "primality fail: A and B not coprime\n" if $verbose;
+      return 0;
+    }
+    # Theorem 5, m = 1, page 624
+    {
+      my ($s,$r) = $B->copy->bdiv($A->copy->bmul(2));
+      my $fpart = ($A+1) * (2*$A*$A + ($r-1) * $A + 1);
+      if ($n >= $fpart) {
+        print "primality fail: not enough factors\n" if $verbose;
+        return 0;
+      }
+      my $rtest = $r*$r - 8*$s;
+      my $rtestroot = $rtest->copy->bsqrt;
+      if ($s != 0 && ($rtestroot*$rtestroot) == $rtest) {
+        print "primality fail: BLS75 theorem 5: s=$s, r=$r indicates composite\n" if $verbose;
+        return 0;
+      }
+    }
+    # Now verify (I), page 623
+    foreach my $i (0 .. $#prime_factors) {
+      my $f = $prime_factors[$i];
+      my $a = Math::BigInt->new("$pfas[$i]");
+      if ($a->copy->bmodpow($nm1, $n) != 1 ||
+          Math::BigInt::bgcd($a->copy->bmodpow($nm1/$f, $n)->bsub(1), $n) != 1) {
+        print "primality fail: BLS75 factor=$f, a=$a failed.\n" if $verbose;
+        return 0;
+      }
+    }
+    print "primality success: $n by BLS75 theorem 5\n" if $verbose > 1;
+    return 1;
+  }
+
+  if ($method eq 'ECPP' || $method eq 'AGKM') {
+    # EC cert: Atkin-Morain etc.
+    # Normally we'd have the q values set up recursively, but to follow the
+    # standard trend, we have this set up as a list:
+    # n, "AGKM", [n,a,b,m,q,P], [n1,a,b,m,q,P], ...
+    #
+    # Examples:
+    #   (100000000000000000039, "AGKM", [100000000000000000039, 31484432173069852672, 39553474583282556928, 100000000014867206541, 539348143913549, [39164891430400385024,86449249723524901718]])
+    #   (677826928624294778921, "AGKM", [677826928624294778921, 404277700094248015180, 599134911995823048257, 677826928656744857936, 104088901820753203, [2293544533, 356794037129589115041]])
+    #      Ux,Uy should be 600992528322000913770, 206075883056439332684
+    #      Vx,Vy should be 0, 1
+    if (scalar @pdata < 1) {
+      warn "verify_prime: incorrect AGKM format\n";
+      return 0;
+    }
+    my ($ni, $a, $b, $m, $P);
+    my ($qval, $q) = ($n, $n);
+    foreach my $block (@pdata) {
+      if (ref($block) ne 'ARRAY' || scalar @$block != 6) {
+        warn "verify_prime: incorrect AGKM block format\n";
+        return 0;
+      }
+      if ($block->[0] != $q) {
+        warn "verify_prime: incorrect AGKM block format: block n != q\n";
+        return 0;
+      }
+      ($ni, $a, $b, $m, $qval, $P) = @$block;
+      $q = ref($qval) eq 'ARRAY' ? $qval->[0] : $qval;
+      if (ref($P) ne 'ARRAY' || scalar @$P != 2) {
+        warn "verify_prime: incorrect AGKM block point format\n";
+        return 0;
+      }
+      my($Px, $Py) = @$P;
+      $ni = $n->copy->bzero->badd("$ni") unless ref($ni) eq 'Math::BigInt';
+      $a  = $n->copy->bzero->badd("$a")  unless ref($a)  eq 'Math::BigInt';
+      $b  = $n->copy->bzero->badd("$b")  unless ref($b)  eq 'Math::BigInt';
+      $m  = $n->copy->bzero->badd("$m")  unless ref($m)  eq 'Math::BigInt';
+      $q  = $n->copy->bzero->badd("$q")  unless ref($q)  eq 'Math::BigInt';
+      $Px = $n->copy->bzero->badd("$Px") unless ref($Px) eq 'Math::BigInt';
+      $Py = $n->copy->bzero->badd("$Py") unless ref($Py) eq 'Math::BigInt';
+      if (Math::BigInt::bgcd($ni, 6) != 1) {
+        warn "verify_prime: AGKM block n '$ni' is divisible by 2 or 3\n";
+        return 0;
+      }
+      my $c = $a*$a*$a * 4 + $b*$b * 27;
+      if (Math::BigInt::bgcd($c, $ni) != 1) {
+        warn "verify_prime: AGKM block gcd 4a^3+27b^2,n incorrect\n";
+        return 0;
+      }
+      if ($q <= $ni->copy->broot(4)->badd(1)->bpow(2)) {
+        warn "verify_prime: AGKM block q is too small\n";
+        return 0;
+      }
+      # Final check, check that we've got a bound above and below (Hasse)
+      if (!defined $Math::Prime::Util::ECAffinePoint::VERSION) {
+        eval { require Math::Prime::Util::ECAffinePoint; 1; }
+        or do { croak "Cannot load Math::Prime::Util::ECAffinePoint"; };
+      }
+      my $ECP = Math::Prime::Util::ECAffinePoint->new($a, $b, $ni, $Px, $Py);
+      # Compute U = (m/q)P, check U != point at infinity
+      $ECP->mul( $m->copy->bdiv($q)->as_int );
+      if ($ECP->is_infinity) {
+        warn "verify_prime: AGKM point does not multiply correctly.\n";
+        return 0;
+      }
+      # Compute V = qU, check V = point at infinity
+      $ECP->mul( $q );
+      if (! $ECP->is_infinity) {
+        warn "verify_prime: AGKM point does not multiply correctly.\n";
+        return 0;
+      }
+    }
+    # Check primality of last q
+    return 0 unless verify_prime($qval);
+
+    print "primality success: $n by A-K-G-M elliptic curve\n" if $verbose > 1;
+    return 1;
+  }
+
+  warn "verify_prime: Unknown method: '$method'.\n";
   return 0;
 }
 
@@ -1992,7 +2316,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.25
+Version 0.26
 
 
 =head1 SYNOPSIS
@@ -2136,10 +2460,15 @@ Two scripts are also included and installed by default:
 
 =over 4
 
-=item primes.pl displays primes between start and end values, with many
-options for filtering (e.g. twin, safe, circular, good, lucky, etc.).
+=item *
 
-=item factor.pl operates similar to the GNU C<factor> program.  It supports
+primes.pl displays primes between start and end values or expressions,
+with many options for filtering (e.g. twin, safe, circular, good, lucky,
+etc.).  Use C<--help> to see all the options.
+
+=item *
+
+factor.pl operates similar to the GNU C<factor> program.  It supports
 bigint and expression inputs.
 
 =back
@@ -2229,13 +2558,13 @@ it will return 0 for composite and 1 for probably prime, using a strong BPSW
 test.  If L<Math::Prime::Util::GMP> is installed, some quick primality proofs
 are run on larger numbers, so will return 2 for many of those also.
 
-Also see the L</"is_prob_prime"> function, which will never do additional
-tests, and the L</"is_provable_prime"> function which will try very hard to
+Also see the L</is_prob_prime> function, which will never do additional
+tests, and the L</is_provable_prime> function which will try very hard to
 return only 0 or 2 for any input.
 
 For native precision numbers (anything smaller than C<2^64>, all three
 functions are identical and use a deterministic set of Miller-Rabin tests.
-While L</"is_prob_prime"> and L</"is_prime"> return probable prime results
+While L</is_prob_prime> and L</is_prime> return probable prime results
 for larger numbers, they use the strong Baillie-PSW test, which has had
 no counterexample found since it was published in 1980 (though certainly they
 exist).
@@ -2308,9 +2637,9 @@ under 1 minute, C<Pi(10^15)> in under 5 minutes, and C<Pi(10^16)> in under
 In contrast, even primesieve using 12 cores would take over a week on this
 same computer to determine C<Pi(10^16)>.
 
-Also see the function L</"prime_count_approx"> which gives a very good
-approximation to the prime count, and L</"prime_count_lower"> and
-L</"prime_count_upper"> which give tight bounds to the actual prime count.
+Also see the function L</prime_count_approx> which gives a very good
+approximation to the prime count, and L</prime_count_lower> and
+L</prime_count_upper> which give tight bounds to the actual prime count.
 These functions return quickly for any input, including bigints.
 
 
@@ -2483,14 +2812,111 @@ exist, there is a weak conjecture (Martin) that none exist under 10000 digits.
 
 Takes a positive number as input and returns back either 0 (composite),
 2 (definitely prime), or 1 (probably prime).  This gives it the same return
-values as C<is_prime> and C<is_prob_prime>.
+values as L</is_prime> and L</is_prob_prime>.
 
-The current implementation uses a Lucas test requiring a complete factorization
-of C<n-1>, which may not be possible in a reasonable amount of time.  The GMP
-version uses the BLS (Brillhart-Lehmer-Selfridge) method, requiring C<n-1> to
-be factored to the cube root of C<n>, which is more likely to succeed and will
-usually take less time, but can still fail.  Hence you should always test that
-the result is C<2> to ensure the prime is proven.
+The current implementation of both the Perl and GMP proofs is using theorem 5
+of BLS75 (Brillhart-Lehmer-Selfridge), requiring C<n-1> to be factored to
+C<(n/2)^(1/3))>.  This takes less time than factoring to C<n^0.5> as required
+by the generalized Pocklington test or C<n-1> for the Lucas test.  However it
+is possible a factor cannot be found in a reasonable amount of time, so you
+should always test that the result in C<2> to ensure it was proven.
+
+A later implementation will use an ECPP test for larger inputs.
+
+
+=head2 prime_certificate
+
+  my @cert = prime_certificate($n);
+  say verify_prime(@cert) ? "proven prime" : "not prime";
+
+Given a positive integer C<n> as input, returns either an empty array (we could
+not prove C<n> prime) or an array representing a certificate of primality.
+This may be examined or given to L</verify_prime> for verification.  The latter
+function contains the description of the format.
+
+
+=head2 is_provable_prime_with_cert
+
+Given a positive integer as input, returns a two element array containing the
+result of L</is_provable_prime> and an array reference containing the primality
+certificate like L</prime_certificate>.  The certificate will be an empty
+array reference if the result is not 2 (definitely prime).
+
+
+=head2 verify_prime
+
+  my @cert = prime_certificate($n);
+  say verify_prime(@cert) ? "proven prime" : "not prime";
+
+Given an array representing a certificate of primality, returns either 0 (not
+verified), or 1 (verified).  The computations are all done using pure Perl
+Math::BigInt and should not be time consuming (the Pari or GMP backends will
+help with large inputs).
+
+A certificate is an array holding an C<n-cert>.  An C<n-cert> is one of:
+
+  n
+       implies n,"BPSW"
+
+  n,"BPSW"
+       the number n is small enough to be proven with BPSW.  This
+       currently means smaller than 2^64.
+
+  n,"Pratt",[n-cert, ...],a
+       A Pratt certificate.  We are given n, the method "Pratt" or
+       "Lucas", a list of n-certs that indicate all the unique factors
+       of n-1, and an 'a' value to be used in the Lucas primality test.
+       The certificate passes if:
+         1 all factor n-certs can be verified
+         2 all n-certs are factors of n-1 and none are missing
+         3 a is coprime to n
+         4 a^(n-1) = 1 mod n
+         5 a^((n-1)/f) != 1 mod n for each factor
+
+  n,"n-1",[n-cert, ...],[a,...]
+       An n-1 certificate suitable for the generalized Pocklington or the
+       BLS75 (Brillhart-Lehmer-Selfridge 1975, theorem 5) test.  The
+       proof is performed using BLS75 theorem 5 which requires n-1 to be
+       factored up to (n/2)^1/3.  If n-1 is factored to more than
+       sqrt(n), then the conditions are identical to the generalized
+       Pocklington test.
+       The certificate passes if:
+         1 all factor n-certs can be verified
+         2 all factor n-certs are factors of n-1
+         3 there must be a corresponding 'a' for each factor n-cert
+         4 given A (the factored part of n-1), B = (n-1)/A (the
+           unfactored part), s = int(B/(2A)), r = B-s*2A:
+             - n < (A+1)(2*A*A+(r-a)A+a)    [ n-1 factored to (n/2)^1/3 ]
+             - s = 0 or r*r-8s not a perfect square
+             - A and B are coprime
+         5 for each pair (f,a) representing a factor n-cert and its 'a':
+             - a^(n-1) = 1 mod n
+             - gcd( a^((n-1)/f)-1, n ) = 1
+
+  n,"AGKM",[ec-block],[ec-block],...
+       An Elliptic Curve certificate.  We are given n, the method "AGKM"
+       or "ECPP", and one or more 6-element blocks representing a
+       standard ECPP or Atkin-Goldwasser-Kilian-Morain certificate.
+       In its traditional form, it is non-recursive, with each q value
+       being proved by successive blocks (this makes it easy to use for
+       programs like Sage and GMP-ECPP).  A q value is also allowed to
+       be an n-cert, which allows an alternative proof for the last q.
+       Every ec-block has 6 elements:
+         N   the N value this block proves prime if q is prime
+         a   value describing the elliptic curve to be used
+         b   value describing the elliptic curve to be used
+         m   order of the curve
+         q   a probable prime > (N^1/4+1)^2 (may be an n-cert)
+         P   a point [x,y] on the curve (affine coordinates)
+       The certificate passes if:
+         - the final q can be proved with BPSW.
+         - for each block:
+             - N is the same as the preceeding block's q
+             - N is not divisible by 2 or 3
+             - gcd( 4a^3 + 27b^2, N ) == 1;
+             - q > (N^1/4+1)^2
+             - U = (m/q)P is not the point at infinity
+             - V = qU is the point at infinity
 
 
 =head2 is_aks_prime
@@ -2532,8 +2958,8 @@ which is a segmented version of Lioen and van de Lune (1994) algorithm 3.2.
   say "Mertens(10M) = ", mertens(10_000_000);   # = 1037
 
 Returns M(n), the Mertens function for a non-negative integer input.  This
-function is defined as C<sum(moebius(1..n))>.  This is a much more efficient
-solution for larger inputs.  For example, computing Mertens(100M) takes:
+function is defined as C<sum(moebius(1..n))>, but calculated more efficiently
+for large inputs.  For example, computing Mertens(100M) takes:
 
    time    approx mem
      0.4s      0.1MB   mertens(100_000_000)
@@ -2548,14 +2974,14 @@ The current method is a simple C<n^1/2> version of Deléglise and Rivat (1996),
 which involves calculating all moebius values to C<n^1/2>, which in turn will
 require prime sieving to C<n^1/4>.
 
-Various methods exist for this, using differing quantities of μ(n).  The
+Various algorithms exist for this, using differing quantities of μ(n).  The
 simplest way is to efficiently sum all C<n> values.  Benito and Varona (2008)
 show a clever and simple method that only requires C<n/3> values.  Deléglise
 and Rivat (1996) describe a segmented method using only C<n^1/3> values.  The
-current implementation does a simple non-segmented C<n^1/2> version of this.
-Kuznetsov (2011) gives an alternate method that he indicates is even faster.
-Lastly, one of the advanced prime count algorithms could be theoretically used
-to create a faster solution.
+current implementation does a simple non-segmented C<n^1/2> version of their
+method.  Kuznetsov (2011) gives an alternate method that he indicates is even
+faster.  Lastly, one of the advanced prime count algorithms could be
+theoretically used to create a faster solution.
 
 
 =head2 euler_phi
@@ -2591,11 +3017,13 @@ the Dedikind psi function, where C<psi(n) = J(2,n) / J(1,n)>.
 
   say "exp(lambda($_)) = ", exp_mangoldt($_) for 1 .. 100;
 
-Returns Λ(n), the Mangoldt function (also known as von Mangoldt's function) for
-an integer value.  It is equal to log p if n is prime or a power of a prime,
+Returns exp(Λ(n)), the exponential of the Mangoldt function (also known
+as von Mangoldt's function) for an integer value.
+It is equal to log p if n is prime or a power of a prime,
 and 0 otherwise.  We return the exponential so all results are integers.
- Hence the return value for C<exp_mangoldt> is:
-   C<p>   if C<n = p^m> for some prime C<p> and integer C<m E<gt>= 1>
+Hence the return value for C<exp_mangoldt> is:
+
+   p   if n = p^m for some prime p and integer m >= 1
    1   otherwise.
 
 
@@ -2605,11 +3033,12 @@ and 0 otherwise.  We return the exponential so all results are integers.
 
 Returns θ(n), the first Chebyshev function for a non-negative integer input.
 This is the sum of the logarithm of each prime where C<p E<lt>= n>.  An
-alternate computation is as the logarithm of n primorial, hence:
+alternate computation is as the logarithm of n primorial.
+Hence these functions:
 
-  use List::Util qw/sum/;
+  use List::Util qw/sum/;  use Math::BigFloat;
+
   sub c1a { 0+sum( map { log($_) } @{primes(shift)} ) }
-  use Math::BigFloat;
   sub c1b { Math::BigFloat->new(primorial(shift))->blog }
 
 yield similar results, albeit slower and using more memory.
@@ -2625,9 +3054,9 @@ integer k.  An alternate computation is as the summatory Mangoldt function.
 Another alternate computation is as the logarithm of lcm(1,2,...,n).
 Hence these functions:
 
-  use List::Util qw/sum/;
+  use List::Util qw/sum/;  use Math::BigFloat;
+
   sub c2a { 0+sum( map { log(exp_mangoldt($_)) } 1 .. shift ) }
-  use Math::BigFloat;
   sub c2b { Math::BigFloat->new(consecutive_integer_lcm(shift))->blog }
 
 yield similar results, albeit slower and using more memory.
@@ -2659,7 +3088,7 @@ the 5th Jordan totient (OEIS A059378):
 
   divisor_sum( $n, sub { my $d=shift; $d**5 * moebius($n/$d); } );
 
-though in the last case we have a function L</"jordan_totient"> to compute
+though in the last case we have a function L</jordan_totient> to compute
 it more efficiently.
 
 This function is useful for calculating things like aliquot sums, abundant
@@ -2743,7 +3172,7 @@ then select a random prime from the partition.  This gives some loss of
 uniformity but results in many fewer bits of randomness being consumed as
 well as being much faster.
 
-If an C<irand> function has been set via L</"prime_set_config">, it will be
+If an C<irand> function has been set via L</prime_set_config>, it will be
 used to construct any ranged random numbers needed.  The function should
 return a uniformly random 32-bit integer, which is how the irand functions
 exported by L<Math::Random::Secure>, L<Math::Random::MT>,
@@ -2844,9 +3273,10 @@ either method so make the point moot.  Third, due to key size growth and
 advances in factoring and attacks, for practical purposes, using large random
 primes offer security equivalent to using strong primes.
 
-Similar to L</"random_nbit_prime">, the result will be a BigInt if the
+Similar to L</random_nbit_prime>, the result will be a BigInt if the
 number of bits is greater than the native bit size.  For better performance
 with large bit sizes, install L<Math::Prime::Util::GMP>.
+
 
 =head2 random_maurer_prime
 
@@ -2854,12 +3284,29 @@ with large bit sizes, install L<Math::Prime::Util::GMP>.
 
 Construct an n-bit provable prime, using the FastPrime algorithm of
 Ueli Maurer (1995).  This is the same algorithm used by L<Crypt::Primes>.
-Similar to L</"random_nbit_prime">, the result will be a BigInt if the
+Similar to L</random_nbit_prime>, the result will be a BigInt if the
 number of bits is greater than the native bit size.  For better performance
 with large bit sizes, install L<Math::Prime::Util::GMP>.
 
 The differences between this function and that in L<Crypt::Primes> are
 described in the L</"SEE ALSO"> section.
+
+Internally this additionally runs the BPSW probable prime test on every
+partial result, and constructs a primality certificate for the final
+result, which is verified.  These add additional checks that the resulting
+value has been properly constructed.
+
+
+=head2 random_maurer_prime_with_cert
+
+  my($n, $cert_ref) = random_maurer_prime_with_cert(512)
+
+As with L</random_maurer_prime>, but returns a two-element array containing
+the n-bit provable prime along with a primality certificate.  The certificate
+is the same as produced by L</prime_certificate> or
+L</is_provable_prime_with_cert>, and can be parsed by L</verify_prime> or
+any other software that can parse the certificate (the "n-1" form is described
+in detail in L</verify_prime>).
 
 
 
@@ -2920,25 +3367,26 @@ the configuration, so changing it has no effect.  The settings include:
 
 Allows setting of some parameters.  Currently the only parameters are:
 
-  xs              Allows turning off the XS code, forcing the Pure Perl code
-                  to be used.  Set to 0 to disable XS, set to 1 to re-enable.
-                  You probably will never want to do this.
+  xs              Allows turning off the XS code, forcing the Pure Perl
+                  code to be used.  Set to 0 to disable XS, set to 1 to
+                  re-enable.  You probably will never want to do this.
 
   gmp             Allows turning off the use of L<Math::Prime::Util::GMP>,
-                  which means using Pure Perl code for big numbers.  Set to
-                  0 to disable GMP, set to 1 to re-enable.
+                  which means using Pure Perl code for big numbers.  Set
+                  to 0 to disable GMP, set to 1 to re-enable.
                   You probably will never want to do this.
 
-  assume_rh       Allows functions to assume the Riemann hypothesis is true
-                  if set to 1.  This defaults to 0.  Currently this setting
-                  only impacts prime count lower and upper bounds, but could
-                  later be applied to other areas such as primality testing.
-                  A later version may also have a way to indicate whether
-                  no RH, RH, GRH, or ERH is to be assumed.
+  assume_rh       Allows functions to assume the Riemann hypothesis is
+                  true if set to 1.  This defaults to 0.  Currently this
+                  setting only impacts prime count lower and upper
+                  bounds, but could later be applied to other areas such
+                  as primality testing.  A later version may also have a
+                  way to indicate whether no RH, RH, GRH, or ERH is to
+                  be assumed.
 
-  irand           Takes a code ref to an irand function returning a uniform
-                  number between 0 and 2**32-1.  This will be used for all
-                  random number generation in the module.
+  irand           Takes a code ref to an irand function returning a
+                  uniform number between 0 and 2**32-1.  This will be
+                  used for all random number generation in the module.
 
 
 =head1 FACTORING FUNCTIONS
@@ -2958,7 +3406,8 @@ The current algorithm for non-bigints is a sequence of small trial division,
 a few rounds of Pollard's Rho, SQUFOF, Pollard's p-1, Hart's OLF, a long
 run of Pollard's Rho, and finally trial division if anything survives.  This
 process is repeated for each non-prime factor.  In practice, it is very rare
-to require more than the first Rho + SQUFOF to find a factor.
+to require more than the first Rho + SQUFOF to find a factor, and I have not
+seen anything go to the last step.
 
 Factoring bigints works with pure Perl, and can be very handy on 32-bit
 machines for numbers just over the 32-bit limit, but it can be B<very> slow
@@ -3309,22 +3758,22 @@ you don't want to use MPU:
 
 =over 4
 
-=item L<Math::Prime::FastSieve>
-This is the alternative module I use for basic functionality with small
-integers.  It's fast and simple, and has a good set of features.
+=item * L<Math::Prime::FastSieve> is the alternative module I use for basic
+functionality with small integers.  It's fast and simple, and has a good
+set of features.
 
-=item L<Math::Primality>
-This is the alternative module I use for primality testing on bigints.
+=item * L<Math::Primality> is the alternative module I use for primality
+testing on bigints.
 
-=item L<Math::Pari>
-If you want the kitchen sink and can install it and handle using it.  There
-are still some functions it doesn't do well (e.g. prime count and nth_prime).
+=item * L<Math::Pari> if you want the kitchen sink and can install it and
+handle using it.  There are still some functions it doesn't do well
+(e.g. prime count and nth_prime).
 
 =back
 
 
 L<Math::Prime::XS> has C<is_prime> and C<primes> functionality.  There is no
-bigint support.  The C<is_prime> function is a well-written trial division,
+bigint support.  The C<is_prime> function uses well-written trial division,
 meaning it is very fast for small numbers, but terribly slow for large
 64-bit numbers.  The prime sieve is an unoptimized non-segmented SoE which
 which returns an array.  It works well for 32-bit values, but speed and
@@ -3359,7 +3808,7 @@ for security.
 What Crypt::Primes has that MPU does not is support for returning a generator.
 
 L<Math::Factor::XS> calculates prime factors and factors, which correspond to
-the L</"factor"> and L<"all_factors"> functions of MPU.  These functions do
+the L</factor> and L</all_factors> functions of MPU.  These functions do
 not support bigints.  Both are implemented with trial division, meaning they
 are very fast for really small values, but quickly become unusably slow
 (factoring 19 digit semiprimes is over 700 times slower).  It has additional
@@ -3376,7 +3825,7 @@ L<Math::Big::Factors> supports factorization using wheel factorization (smart
 trial division).  It supports bigints.  Unfortunately it is extremely slow on
 any input that isn't comprised entirely of small factors.  Even 7 digit inputs
 can take hundreds or thousands of times longer to factor than MPU or
-L<Math::Factor::XS>.  19-digit semiprimes will take hours vs. MPU's single
+L<Math::Factor::XS>.  19-digit semiprimes will take I<hours> vs. MPU's single
 milliseconds.
 
 L<Math::Factoring> is a placeholder module for bigint factoring.  Version 0.02
@@ -3400,7 +3849,7 @@ bigints.  In fact, Math::Primality was made originally with bigints in mind,
 while MPU was originally targeted to native integers, but both have added
 better support for the other.  The main differences are extra functionality
 (MPU has more functions) and performance.  With native integer inputs, MPU
-is generally much faster, especially with L</"prime_count">.  For bigints,
+is generally much faster, especially with L</prime_count>.  For bigints,
 MPU is slower unless the L<Math::Prime::Util::GMP> module is installed, in
 which case they have somewhat similar speeds.  L<Math::Primality> also installs
 a C<primes.pl> program, but it has much less functionality than the one
@@ -3412,8 +3861,8 @@ primes, twin primes, Sophie-Germain primes, lucky primes, moebius, divisor
 count, factor count, Euler totient, primorials, etc.  Math::NumSeq is mainly
 set up for accessing these values in order, rather than for arbitrary values,
 though some sequences support that.  The primary advantage I see is the
-uniform access mechanism for a <I>lot</I> of sequences.  For those methods that
-overlap, MPU is usually much faster.  Importantly, most all the sequences in
+uniform access mechanism for a I<lot> of sequences.  For those methods that
+overlap, MPU is usually much faster.  Importantly, most of the sequences in
 Math::NumSeq are limited to 32-bit indices.
 
 L<Math::Pari> supports a lot of features, with a great deal of overlap.  In
@@ -3424,7 +3873,9 @@ will eventually win out).  Trying to hit some of the highlights:
 
 =over 4
 
-=item isprime Similar to MPU's L<is_prob_prime> or L<is_prime> functions.
+=item isprime
+
+Similar to MPU's L<is_prob_prime> or L<is_prime> functions.
 MPU is deterministic for native integers, and uses a strong
 BPSW test for bigints (with a quick primality proof tried as well).  The
 default version of Pari used by L<Math::Pari> (2.1.7) uses 10 random M-R
@@ -3434,37 +3885,53 @@ newer 2.3.5 library makes C<isprime> use an APRCL primality proof, which
 can take longer (though will be much faster than the BLS75 proof used in
 MPU's L<is_provable_prime> routine).
 
-=item primepi Similar to MPU's L<prime_count> function.  Pari uses a naive
+=item primepi
+
+Similar to MPU's L<prime_count> function.  Pari uses a naive
 counting algorithm with its precalculated primes, so this is not very useful.
 
-=item primes Doesn't support ranges, requires bumping up the precalculated
+=item primes
+
+Doesn't support ranges, requires bumping up the precalculated
 primes for larger numbers, which means knowing in advance the upper limit
 for primes.  Support for numbers larger than 400M requires making with Pari
 version 2.3.5.  If that is used, sieving is about 2x faster than MPU, but
 doesn't support segmenting.
 
-=item factorint Similar to MPU's L<factor> though with a different return (I
+=item factorint
+
+Similar to MPU's L<factor> though with a different return (I
 find the result value quite inconvenient to work with, but others may like
 its vector of factor/exponent format).  Slower than MPU for all 64-bit inputs
 on an x86_64 platform, it may be faster for large values on other platforms.
 Bigints are slightly faster with Math::Pari for "small" values, and MPU slows
 down rapidly (the difference is noticeable with 30+ digit numbers).
 
-=item eulerphi Similar to MPU's L<euler_phi>.  MPU is 2-5x faster for native
+=item eulerphi
+
+Similar to MPU's L<euler_phi>.  MPU is 2-5x faster for native
 integers.  There is also support for a range, which can be much more efficient.
 Without L<Math::Prime::Util::GMP> installed, MPU is very slow with bigints.
 With it installed, it is about 2x slower than Math::Pari.
 
-=item moebius Similar to MPU's L<moebius>.  Comparisons are similar to
-C<eulerphi>.
+=item moebius
 
-=item sumdiv Similar to MPU's L<divisor_sum>.  The standard sum (sigma_1) is
+Similar to MPU's L<moebius>.  Comparisons are similar to C<eulerphi>.
+
+=item sumdiv
+
+Similar to MPU's L<divisor_sum>.  The standard sum (sigma_1) is
 very fast in MPU.  Giving it a sub makes it much slower, and for numbers
-with very many factors, Pari is <I>much</I> faster.
+with very many factors, Pari is I<much> faster.
 
-=item eint1 Similar to MPU's L<ExponentialIntegral>.
+=item eint1
 
-=item zeta A more substantial version of MPU's L<RiemannZeta> function.
+Similar to MPU's L<ExponentialIntegral>.
+
+=item zeta
+
+A more feature-rich version MPU's L<RiemannZeta> function (supports negative
+and complex inputs).
 
 =back
 
@@ -3616,8 +4083,7 @@ faster with Math::Prime::Util.  For 30+ digit numbers, L<Math::Pari> is much
 faster.  Without the L<Math::Prime::Util::GMP> module, almost all actions on
 numbers greater than native scalars will be much faster in Pari.
 
-The presentation here:
- L<http://math.boisestate.edu/~liljanab/BOISECRYPTFall09/Jacobsen.pdf>
+L<This slide presentation|http://math.boisestate.edu/~liljanab/BOISECRYPTFall09/Jacobsen.pdf>
 has a lot of data on 64-bit and GMP factoring performance I collected in 2009.
 Assuming you do not know anything about the inputs, trial division and
 optimized Fermat or Lehman work very well for small numbers (<= 10 digits),
@@ -3630,15 +4096,18 @@ L<yafu|http://sourceforge.net/projects/yafu/>,
 L<msieve|http://sourceforge.net/projects/msieve/>,
 L<gmp-ecm|http://ecm.gforge.inria.fr/>,
 L<GGNFS|http://sourceforge.net/projects/ggnfs/>,
-and L<Pari|http://pari.math.u-bordeaux.fr/>.
+and L<Pari|http://pari.math.u-bordeaux.fr/>.  The latest yafu should cover most
+uses, with GGNFS likely only providing a benefit for numbers large enough to
+warrant distributed processing.
 
 
 The primality proving algorithms leave much to be desired.  If you have
-numbers larger than C<2^128>, I recommend Pari's C<isprime(n, 2)> which
-will run a fast APRCL test, or
-L<GMP-ECPP|http://http://sourceforge.net/projects/gmp-ecpp/>.  Either one
+numbers larger than C<2^128>, I recommend C<isprime(n, 2)> from Pari 2.3+
+which will run a fast APRCL test,
+L<GMP-ECPP|http://http://sourceforge.net/projects/gmp-ecpp/>, or
+L<Primo|http://www.ellipsa.eu/>.  Any of those
 will be much faster than the Lucas or BLS algorithms used in MPU for large
-inputs.
+inputs.  For very large numbers, Primo is the one to use.
 
 
 =head1 AUTHORS
@@ -3649,7 +4118,7 @@ Dana Jacobsen E<lt>dana@acm.orgE<gt>
 =head1 ACKNOWLEDGEMENTS
 
 Eratosthenes of Cyrene provided the elegant and simple algorithm for finding
-the primes.
+primes.
 
 Terje Mathisen, A.R. Quesada, and B. Van Pelt all had useful ideas which I
 used in my wheel sieve.
@@ -3671,7 +4140,7 @@ Silverman's code.
 
 =item *
 
-Pierre Dusart, "Estimates of Some Functions Over Primes without R.H.", preprint, 2010.  L<http://arxiv.org/abs/1002.0442/>
+Pierre Dusart, "Estimates of Some Functions Over Primes without R.H.", preprint, 2010.  Updates to the best non-RH bounds for prime count and nth prime.  L<http://arxiv.org/abs/1002.0442/>
 
 =item *
 
@@ -3679,7 +4148,7 @@ Pierre Dusart, "Autour de la fonction qui compte le nombre de nombres premiers",
 
 =item *
 
-Gabriel Mincu, "An Asymptotic Expansion", <Journal of Inequalities in Pure and Applied Mathematics>, v4, n2, 2003.  A very readable account of Cipolla's 1902 nth prime approximation.  L<http://www.emis.de/journals/JIPAM/images/153_02_JIPAM/153_02.pdf>
+Gabriel Mincu, "An Asymptotic Expansion", I<Journal of Inequalities in Pure and Applied Mathematics>, v4, n2, 2003.  A very readable account of Cipolla's 1902 nth prime approximation.  L<http://www.emis.de/journals/JIPAM/images/153_02_JIPAM/153_02.pdf>
 
 =item *
 
@@ -3707,11 +4176,11 @@ W. J. Cody, K. E. Hillstrom, and Henry C. Thacher Jr., "Chebyshev Approximations
 
 =item *
 
-Ueli M. Maurer, "Fast Generation of Prime Numbers and Secure Public-Key Cryptographic Parameters", 1995.  L<http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.26.2151>
+Ueli M. Maurer, "Fast Generation of Prime Numbers and Secure Public-Key Cryptographic Parameters", 1995.  Generating random provable primes by building up the prime.  L<http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.26.2151>
 
 =item *
 
-Pierre-Alain Fouque and Mehdi Tibouchi, "Close to Uniform Prime Number Generation With Fewer Random Bits", pre-print, 2011.  L<http://eprint.iacr.org/2011/481>
+Pierre-Alain Fouque and Mehdi Tibouchi, "Close to Uniform Prime Number Generation With Fewer Random Bits", pre-print, 2011.  Describes random prime distributions, their algorithm for creating random primes using few random bits, and comparisons to other methods.  Definitely worth reading for the discussions of uniformity.  L<http://eprint.iacr.org/2011/481>
 
 =item *
 
@@ -3719,7 +4188,7 @@ Douglas A. Stoll and Patrick Demichel , "The impact of ζ(s) complex zeros on π
 
 =item *
 
-L<OEIS: Primorial|http://oeis.org/wiki/Primorial>.
+L<OEIS: Primorial|http://oeis.org/wiki/Primorial>
 
 =item *
 
@@ -3731,7 +4200,7 @@ Marc Deléglise and Joöl Rivat, "Computing the summation of the Möbius functio
 
 =item *
 
-Manuel Benito and Juan L. Varona, "Recursive formulas related to the summation of the Möbius function", I<The Open Mathematics Journal>, v1, pp 25-34, 2007.  Presents a nice algorithm to compute the Mertens functions with only n/3 Möbius values.  L<http://www.unirioja.es/cu/jvarona/downloads/Benito-Varona-TOMATJ-Mertens.pdf>
+Manuel Benito and Juan L. Varona, "Recursive formulas related to the summation of the Möbius function", I<The Open Mathematics Journal>, v1, pp 25-34, 2007.  Among many other things, shows a simple formula for computing the Mertens functions with only n/3 Möbius values (not as fast as Deléglise and Rivat, but really simple).  L<http://www.unirioja.es/cu/jvarona/downloads/Benito-Varona-TOMATJ-Mertens.pdf>
 
 =back
 
