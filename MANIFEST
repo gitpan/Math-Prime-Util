@@ -58,7 +58,8 @@ examples/test-bpsw.pl
 examples/test-factor-gnufactor.pl
 examples/test-primes-script.pl
 examples/test-primes-script2.pl
-examples/verify-gmp-eccp-cert.pl
+examples/verify-gmp-ecpp-cert.pl
+examples/verify-sage-ecpp-cert.pl
 bin/primes.pl
 bin/factor.pl
 t/01-load.t
@@ -77,6 +78,7 @@ t/19-moebius.t
 t/20-primorial.t
 t/21-conseq-lcm.t
 t/22-aks-prime.t
+t/23-primality-proofs.t
 t/30-relations.t
 t/31-threading.t
 t/50-factoring.t
@@ -87,10 +89,12 @@ t/81-bignum.t
 t/90-release-perlcritic.t
 t/91-release-pod-syntax.t
 t/92-release-pod-coverage.t
+t/93-release-spelling.t
 xt/moebius-mertens.pl
 xt/totient-range.pl
 xt/primality-small.pl
 xt/primality-aks.pl
+xt/primality-proofs.pl
 xt/small-is-next-prev.pl
 xt/factor-holf.pl
 xt/make-script-test-data.pl

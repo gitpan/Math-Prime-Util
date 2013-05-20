@@ -6,7 +6,6 @@ use Test::More;
 use Math::Prime::Util qw/is_prime/;
 
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
-my $extra = defined $ENV{RELEASE_TESTING} && $ENV{RELEASE_TESTING};
 my $broken64 = (18446744073709550592 == ~0);
 
 my @small_primes = qw/
@@ -110,8 +109,10 @@ foreach my $n (@primes) {
 }
 
 # Check that we do the right thing near the word-size edge
+Math::Prime::Util::prime_set_config(gmp=>0);
 SKIP: {
   skip "Skipping 64-bit edge case on broken 64-bit Perl", 1 if $use64 && $broken64;
+  skip "Skipping ~0 + delta because we have Math::BigInt loaded", 1 if defined $Math::BigInt::VERSION;
   eval { is_prime( $use64 ? "18446744073709551629" : "4294967306" ); };
   like($@, qr/range/i, "is_prime on ~0 + delta without bigint should croak");
 }

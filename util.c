@@ -66,6 +66,10 @@ static int _verbose = 0;
 void _XS_set_verbose(int v) { _verbose = v; }
 int _XS_get_verbose(void) { return _verbose; }
 
+static int _call_gmp = 0;
+void _XS_set_callgmp(int v) { _call_gmp = v; }
+int  _XS_get_callgmp(void) { return _call_gmp; }
+
 
 static const unsigned char byte_zeros[256] =
   {8,7,7,6,7,6,6,5,7,6,6,5,6,5,5,4,7,6,6,5,6,5,5,4,6,5,5,4,5,4,4,3,
@@ -84,25 +88,6 @@ static UV count_zero_bits(const unsigned char* m, UV nbytes)
   return count;
 }
 
-
-/* Does trial division, assuming x not divisible by 2, 3, or 5 */
-static int _is_trial_prime7(UV n)
-{
-  UV limit, i;
-  limit = isqrt(n);
-  i = 7;
-  while (1) {   /* trial division, skipping multiples of 2/3/5 */
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 6;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 6;
-  }
-  return 2;
-}
 
 /* Does trial division or prob tests, assuming x not divisible by 2, 3, or 5 */
 static int _is_prime7(UV n)
@@ -190,25 +175,8 @@ int _XS_is_prime(UV n)
             :  -1;
   release_prime_cache(sieve);
 
-  return (isprime >= 0)  ?  isprime  :  _is_prime7(n);
-}
-
-
-UV next_trial_prime(UV n)
-{
-  UV d,m;
-
-  if (n < 7)
-    return (n < 2) ? 2 : (n < 3) ? 3 : (n < 5) ? 5 : 7;
-
-  d = n/30;
-  m = n - d*30;
-  /* Move forward one, knowing we may not be on the wheel */
-  if (m == 29) { d++; m = 1; } else  { m = nextwheel30[m]; }
-  while (!_is_trial_prime7(d*30+m)) {
-    m = nextwheel30[m];  if (m == 1) d++;
-  }
-  return(d*30+m);
+  /* return (isprime >= 0)  ?  isprime  :  _is_prime7(n); */
+  return (isprime >= 0)  ?  isprime  :  _XS_is_prob_prime(n);
 }
 
 
@@ -670,10 +638,15 @@ UV _XS_nth_prime(UV n)
   MPUassert(upper_limit > 0, "nth_prime got an upper limit of 0");
 
   /* For relatively small values, generate a sieve and count the results.
+   *
    * For larger values, compute a lower bound, use Lehmer's algorithm to get
    * a fast prime count, then start segment sieving from there.
+   *
+   * For very large values, binary search on Riemann's R function to get a
+   * good approximation, use Lehmer's algorithm to get the count, then walk
+   * backwards or sieve forwards.
    */
-  if (upper_limit <= 1*1024*1024*30) {
+  if (upper_limit <= 32*1024*30) {
     /* Generate a sieve and count. */
     segment_size = get_prime_cache(upper_limit, &cache_sieve) / 30;
     /* Count up everything in the cached sieve. */
@@ -800,8 +773,8 @@ char* _moebius_range(UV lo, UV hi)
   for (i = lo; i <= hi; i++) {
     IV a = A[i-lo];
     if (a != 0)
-      mu[i-lo] = (a != i && -a != i)  ?  (a<0) - (a>0)
-                                      :  (a>0) - (a<0);
+      mu[i-lo] = (a != (IV)i && -a != (IV)i)  ?  (a<0) - (a>0)
+                                              :  (a>0) - (a<0);
   }
   Safefree(A);
 #endif

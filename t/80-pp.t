@@ -4,7 +4,7 @@ use warnings;
 
 # This is a subset of our tests.  You really should run the whole test suite
 # on the PP code.  What this will do is basic regression testing.
-my $extra = defined $ENV{RELEASE_TESTING} && $ENV{RELEASE_TESTING};
+my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
 my $use64 = ~0 > 4294967295;
 
 use Test::More;
@@ -36,6 +36,7 @@ my @composites = qw/
 9439201 17236801 23382529 34657141 56052361 146843929
 341 561 645 1105 1387 1729 1905 2047 2465 2701 2821 3277 4033 4369 4371
 4681 5461 6601 7957 8321 52633 88357
+66066 173645446 7500135 115501463
 /;
 
 # pseudoprimes to various small prime bases
@@ -54,6 +55,7 @@ my %pseudoprimes = (
   37 => [ qw/9 451 469 589 685 817 1333 3781 8905 9271 18631 19517 20591 25327 34237 45551 46981 47587 48133 59563 61337 68101 68251 73633 79381 79501 83333 84151 96727/ ],
   61 => [ qw/217 341 1261 2701 3661 6541 6697 7613 13213 16213 22177 23653 23959 31417 50117 61777 63139 67721 76301 77421 79381 80041/ ],
   73 => [ qw/205 259 533 1441 1921 2665 3439 5257 15457 23281 24617 26797 27787 28939 34219 39481 44671 45629 64681 67069 76429 79501 93521/ ],
+ lucas      => [ qw/5459 5777 10877 16109 18971 22499 24569 25199 40309 58519 75077 97439/ ],
 );
 # Test a pseudoprime larger than 2^32.
 push @{$pseudoprimes{2}}, 75792980677 if $use64;
@@ -213,23 +215,56 @@ my %rvals = (
     10000000000 =>  455050683.30684692446315,
 18446744073709551615 => 4.25656284014012122706963685602e17,
 );
-
+my %rzvals = (
+            2   =>  0.6449340668482264364724151666,
+            2.5 =>  0.3414872572509171797567696934,
+            4.5 =>  0.0547075107614542640229672890,
+            7   =>  0.0083492773819228268397975498,
+            8.5 =>  0.0028592508824156277133439825,
+           20.6 =>  0.0000006293391573578212882457,
+           80   =>  8.27180612553034e-25,
+          180   =>  6.52530446799852e-55,
+);
+my %ipp = (
+  5 => 2,
+  10 => 0,
+  49 => 0,
+  347 => 2,
+  697 => 0,
+  7080233 => 2,
+  7080249 => 0,
+  17471059 => 2,
+  17471061 => 0,
+  36010357 => 2,
+  36010359 => 0,
+);
 
 plan tests => 1 +
-              2 +
+              3 +
               3 + scalar(keys %small_single) + scalar(keys %small_range) +
               2*scalar(keys %primegaps) + 8 + 1 + 1 + 1 +
               scalar(keys %pivals_small) + scalar(keys %pi_intervals) +
               2*scalar(keys %pivals_small) + scalar(keys %nthprimes_small) +
               4 + scalar(keys %pseudoprimes) +
-              scalar(keys %eivals) + scalar(keys %livals) + scalar(keys %rvals) +
+              scalar(keys %eivals) + scalar(keys %livals) + scalar(keys %rvals) + scalar(keys %rzvals) +
+              ($extra ? 4 : 0) +  # Bigfloat RiemannZeta
               1 + 1 +    # factor
-              8 + 4*3 +  # factoring subs
+              10 + 8*3 + # factoring subs
               10 +       # AKS
+              3 +        # Lucas and BLS75 primality proofs
+              3 +        # M-R and Lucas on bigint
+              13 +       # Misc util.pm functions
+              scalar(keys %ipp) +
               1;
 
-use Math::Prime::Util qw/primes prime_count_approx prime_count_lower/;
+use Math::Prime::Util qw/primes prime_count_approx prime_count_lower
+                         prime_get_config prime_set_config
+                         consecutive_integer_lcm moebius mertens euler_phi
+                         exp_mangoldt chebyshev_theta chebyshev_psi
+                         is_prob_prime
+                        /;
 use Math::BigInt try => 'GMP';
+use Math::BigFloat;
 require_ok 'Math::Prime::Util::PP';
     # This function skips some setup
     undef *primes;
@@ -242,12 +277,14 @@ require_ok 'Math::Prime::Util::PP';
     *next_prime     = \&Math::Prime::Util::PP::next_prime;
     *prev_prime     = \&Math::Prime::Util::PP::prev_prime;
 
+    *is_strong_lucas_pseudoprime = \&Math::Prime::Util::PP::is_strong_lucas_pseudoprime;
     *miller_rabin   = \&Math::Prime::Util::PP::miller_rabin;
     *is_aks_prime   = \&Math::Prime::Util::PP::is_aks_prime;
 
     *factor         = \&Math::Prime::Util::PP::factor;
 
     *RiemannR            = \&Math::Prime::Util::PP::RiemannR;
+    *RiemannZeta         = \&Math::Prime::Util::PP::RiemannZeta;
     *LogarithmicIntegral = \&Math::Prime::Util::PP::LogarithmicIntegral;
     *ExponentialIntegral = \&Math::Prime::Util::PP::ExponentialIntegral;
 
@@ -268,6 +305,10 @@ $_ = 'this should not change';
   push @exprime, map { "$_ is composite" } @composites;
   is_deeply( \@isprime, \@exprime, "is_prime for selected numbers" );
 }
+
+is_deeply( Math::Prime::Util::PP::trial_primes(80),
+           [2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79],
+           "Trial primes 2-80" );
 
 ###############################################################################
 
@@ -352,7 +393,9 @@ is( miller_rabin(3, 2), 1, "MR with 3 shortcut prime");
 while (my($base, $ppref) = each (%pseudoprimes)) {
   my $npseudos = scalar @$ppref;
   my @expmr = map { 1 } @$ppref;
-  my @gotmr = map { miller_rabin($_, $base) } @$ppref;
+  my @gotmr;
+  if ($base eq 'lucas') { @gotmr = map { is_strong_lucas_pseudoprime($_) } @$ppref; }
+  else                  { @gotmr = map { miller_rabin($_, $base) } @$ppref;         }
   is_deeply(\@gotmr, \@expmr, "$npseudos pseudoprimes (base $base)");
 }
 
@@ -366,6 +409,20 @@ while (my($n, $lin) = each (%livals)) {
 }
 while (my($n, $rin) = each (%rvals)) {
   cmp_closeto( RiemannR($n), $rin, 0.00000001 * abs($rin), "R($n) ~= $rin");
+}
+while (my($n, $zin) = each (%rzvals)) {
+  cmp_closeto( RiemannZeta($n), $zin, 0.00000001 * abs($zin), "Zeta($n) ~= $zin");
+}
+if ($extra) {
+  my ($n, $zin);
+  ($n, $zin) = (4.5, $rzvals{4.5});
+  cmp_closeto( RiemannZeta(Math::BigFloat->new($n)), $zin, 0.00000001 * abs($zin), "Zeta($n) ~= $zin");
+  ($n, $zin) = (20.6, $rzvals{20.6});
+  cmp_closeto( RiemannZeta(Math::BigFloat->new($n)), $zin, 0.00000001 * abs($zin), "Zeta($n) ~= $zin");
+  ($n, $zin) = (80, $rzvals{80});
+  cmp_closeto( RiemannZeta(Math::BigFloat->new($n)), $zin, 0.00000001 * abs($zin), "Zeta($n) ~= $zin");
+  ($n, $zin) = (180, $rzvals{180});
+  cmp_closeto( RiemannZeta(Math::BigFloat->new($n)), $zin, 0.00000001 * abs($zin), "Zeta($n) ~= $zin");
 }
 
 ###############################################################################
@@ -415,6 +472,9 @@ while (my($n, $rin) = each (%rvals)) {
   is_deeply( [ sort {$a<=>$b} Math::Prime::Util::PP::holf_factor(403) ],
              [ 13, 31 ],
              "holf(403)" );
+  is_deeply( [ sort {$a<=>$b} Math::Prime::Util::PP::fermat_factor(403) ],
+             [ 13, 31 ],
+             "fermat(403)" );
   is_deeply( [ sort {$a<=>$b} Math::Prime::Util::PP::prho_factor(403) ],
              [ 13, 31 ],
              "prho(403)" );
@@ -430,6 +490,9 @@ while (my($n, $rin) = each (%rvals)) {
   is_deeply( [ sort {$a<=>$b} Math::Prime::Util::PP::pbrent_factor(851981) ],
              [ 13, 65537 ],
              "pbrent(851981)" );
+  is_deeply( [ sort {$a<=>$b} Math::Prime::Util::PP::ecm_factor(851981) ],
+             [ 13, 65537 ],
+             "ecm(851981)" );
   my $n64 = $use64 ? 55834573561 : Math::BigInt->new("55834573561");
   is_deeply( [ sort {$a<=>$b} Math::Prime::Util::PP::prho_factor($n64) ],
              [ 13, 4294967197 ],
@@ -456,6 +519,33 @@ while (my($n, $rin) = each (%rvals)) {
   is(scalar @nfac, 2, "pminus1 finds a factor of 18686551294184381720251");
   is($nfac[0] * $nfac[1], $nbig, "pminus1 found a correct factor");
   ok($nfac[0] != 1 && $nfac[1] != 1, "pminus1 didn't return a degenerate factor");
+  @nfac = sort {$a<=>$b} Math::Prime::Util::PP::ecm_factor($nbig);
+  is(scalar @nfac, 2, "ecm finds a factor of 18686551294184381720251");
+  is($nfac[0] * $nfac[1], $nbig, "ecm found a correct factor");
+  ok($nfac[0] != 1 && $nfac[1] != 1, "ecm didn't return a degenerate factor");
+
+  $nbig = Math::BigInt->new("73786976930493367637");
+  # Check stage 2 p-1.  Fast with Math::BigInt::GMP, slow without.
+  SKIP: {
+    skip "Skipping p-1 stage 2 tests", 3 unless $extra;
+    @nfac = sort {$a<=>$b} Math::Prime::Util::PP::pminus1_factor($nbig, 27000, 35000);
+    is(scalar @nfac, 2, "pminus1 finds a factor of 73786976930493367637");
+    is($nfac[0] * $nfac[1], $nbig, "pminus1 found a correct factor");
+    ok($nfac[0] != 1 && $nfac[1] != 1, "pminus1 didn't return a degenerate factor");
+  }
+  @nfac = sort {$a<=>$b} Math::Prime::Util::PP::fermat_factor($nbig);
+  is(scalar @nfac, 2, "fermat finds a factor of 73786976930493367637");
+  is($nfac[0] * $nfac[1], $nbig, "fermat found a correct factor");
+  ok($nfac[0] != 1 && $nfac[1] != 1, "fermat didn't return a degenerate factor");
+  SKIP: {
+    # Unfortunately we can't guarantee this isn't found in stage 1.
+    skip "ecm stage 2", 3 unless $extra;
+    $nbig = Math::BigInt->new("14270401808568703916861");
+    @nfac = sort {$a<=>$b} Math::Prime::Util::PP::ecm_factor($nbig, 5, 2000, 40);
+    is(scalar @nfac, 2, "ecm(5,2000) finds a factor of 14270401808568703916861");
+    is($nfac[0] * $nfac[1], $nbig, "ecm(5,2000) found a correct factor");
+    ok($nfac[0] != 1 && $nfac[1] != 1, "ecm(5,2000) didn't return a degenerate factor");
+  }
 }
 
 ##### AKS primality test.  Be very careful with performance.
@@ -471,6 +561,69 @@ is( is_aks_prime(70747), 0, "AKS: 70747 is composite (n mod r)" );
 SKIP: {
   skip "Skipping PP AKS test on 32-bit machine", 1 unless $use64 || $extra;
   is( is_aks_prime(74513), 0, "AKS: 74513 is composite (failed anr test)" );
+}
+
+is_deeply( [Math::Prime::Util::PP::primality_proof_lucas(100003)],
+           [2, [100003, "Pratt", [2, 3, 7, 2381], 2]],
+           "primality_proof_lucas(100003)" );
+# Had to reduce these to make borked up Perl 5.6.2 work.
+#is_deeply( [Math::Prime::Util::PP::primality_proof_bls75("210596120454733723")],
+#           [2, ["210596120454733723", "n-1", [2, 3, 82651, "47185492693"], [2, 2, 2, 2]]],
+#           "primality_proof_bls75(210596120454733723)" );
+#is_deeply( [Math::Prime::Util::PP::primality_proof_bls75("809120722675364249")],
+#           [2, ["809120722675364249", "n-1",
+#               ["B", 20000, "22233477760919", 2], [2, 4549], [3, 2]]],
+#           "primality_proof_bls75(809120722675364249)" );
+is_deeply( [Math::Prime::Util::PP::primality_proof_bls75(1490266103)],
+           [2, [1490266103, 'n-1', [2, 13, 19, 1597, 1889], [5, 2, 2, 2, 2]]],
+           "primality_proof_bls75(1490266103)" );
+is_deeply( [Math::Prime::Util::PP::primality_proof_bls75(Math::BigInt->new("64020974585221"))],
+           [2, ["64020974585221", "n-1",
+               ["B", 20000, "5154667841", 2], [2, 3, 5, 23], [2, 2, 2, 2]]],
+           "primality_proof_bls75(64020974585221)" );
+
+{
+  my $n = Math::BigInt->new("168790877523676911809192454171451");
+  is( miller_rabin( $n, 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47), 1, "168790877523676911809192454171451 looks prime with bases 2..52" );
+  is( miller_rabin( $n, 53), 0, "168790877523676911809192454171451 found composite with base 53" );
+  is ( is_strong_lucas_pseudoprime($n), 0, "168790877523676911809192454171451 is not a strong Lucas pseudoprime" );
+}
+
+{
+  # Test some functions usually not tested in Util.pm
+  my $xs  = prime_get_config->{'xs'};
+  my $gmp = prime_get_config->{'gmp'};
+  my $verbose = prime_get_config->{'verbose'};
+  prime_set_config(xs=>0, gmp=>0);
+
+  is( consecutive_integer_lcm(13), 360360, "consecutive_integer_lcm(13)" );
+  is( consecutive_integer_lcm(52), Math::BigInt->new("3099044504245996706400"), "consecutive_integer_lcm(52)" );
+
+  is_deeply( [moebius(513,537)],
+             [qw/0 1 1 0 1 -1 1 0 -1 0 -1 0 0 1 1 0 0 -1 0 0 1 -1 1 0 1/],
+             "moebius(513,537)" );
+
+  is( mertens(4219), -13, "mertens(4219)" );
+
+  is_deeply( [euler_phi(1513,1537)],
+             [qw/1408 756 800 756 1440 440 1260 576 936 760 1522 504 1200 648 1016 760 1380 384 1530 764 864 696 1224 512 1456/],
+             "euler_phi(1513,1537)" );
+  is( euler_phi(324234), 108072, "euler_phi(324234)" );
+
+  is( exp_mangoldt(16), 2, "exp_mangoldt of power of 2 = 2" );
+  is( exp_mangoldt(14), 1, "exp_mangoldt of even = 1" );
+  is( exp_mangoldt(21), 1, "exp_mangoldt of 21 = 1" );
+  is( exp_mangoldt(23), 23, "exp_mangoldt of 23 = 23" );
+  is( exp_mangoldt(27), 3, "exp_mangoldt of 27 (3^3) = 3" );
+
+  cmp_closeto( chebyshev_theta(27001), 26837.3487140827, 0.00027, "chebyshev_theta(27001) =~ 26837.35");
+  cmp_closeto( chebyshev_psi(87001), 86964.5577535435, 0.00087, "chebyshev_psi(87001) =~ 86964.56");
+
+  while (my($n, $isp) = each (%ipp)) {
+    is( is_prob_prime($n), $isp, "is_prob_prime($n) should be $isp" );
+  }
+
+  prime_set_config(xs=>$xs, gmp=>$gmp, verbose=>$verbose);
 }
 
 is( $_, 'this should not change', "Nobody clobbered \$_" );

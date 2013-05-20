@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 
+#define FUNC_gcd_ui
 #include "ptypes.h"
 #include "factor.h"
 #include "util.h"
@@ -345,12 +346,12 @@ int _XS_is_prob_prime(UV n)
   int nbases;
   int prob_prime;
 
-  if ( (n == 2) || (n == 3) || (n == 5) || (n == 7) )
-    return 2;
-  if ( (n<2) || ((n% 2)==0) || ((n% 3)==0) || ((n% 5)==0) || ((n% 7)==0) )
-    return 0;
-  if (n < 121)
-    return 2;
+  if (n == 2 || n == 3 || n == 5)           return 2;
+  if (n < 2 || !(n%2) || !(n%3) || !(n%5))  return 0;
+  if (n <   49) /* 7*7 */                   return 2;
+  if (!(n% 7) || !(n%11) || !(n%13) || !(n%17) || !(n%19) || !(n%23)) return 0;
+  if (!(n%29) || !(n%31) || !(n%37) || !(n%41) || !(n%43) || !(n%47)) return 0;
+  if (n < 2809) /* 53*53 */                 return 2;
 
 #if BITS_PER_WORD == 32
   if (n < UVCONST(9080191)) {
@@ -359,8 +360,7 @@ int _XS_is_prob_prime(UV n)
     bases[0] = 2; bases[1] = 7; bases[2] = 61; nbases = 3;
   }
 #else
-#if 1
-  /* Better bases from http://miller-rabin.appspot.com/, 10 Mar 2013 */
+  /* Better bases from http://miller-rabin.appspot.com/, 18 May 2013 */
   if (n < UVCONST(341531)) {
     bases[0] = UVCONST(9345883071009581737);
     nbases = 1;
@@ -368,10 +368,10 @@ int _XS_is_prob_prime(UV n)
     bases[0] = 15;
     bases[1] = UVCONST( 13393019396194701 );
     nbases = 2;
-  } else if (n < UVCONST(154639673381)) {
+  } else if (n < UVCONST(242175507817)) {
     bases[0] = 15;
-    bases[1] = UVCONST(  176006322 );
-    bases[2] = UVCONST( 4221622697 );
+    bases[1] = UVCONST(      7363882082 );
+    bases[2] = UVCONST( 211573017068182 );
     nbases = 3;
   } else if (n < UVCONST(47636622961201)) {
     bases[0] = 2;
@@ -396,28 +396,6 @@ int _XS_is_prob_prime(UV n)
     bases[6] = UVCONST( 1795265022 );
     nbases = 7;
   }
-#else
-  /* Classic bases */
-  if (n < UVCONST(9080191)) {
-    bases[0] = 31; bases[1] = 73; nbases = 2;
-  } else if (n < UVCONST(4759123141)) {
-    bases[0] = 2; bases[1] = 7; bases[2] = 61; nbases = 3;
-  } else if (n < UVCONST(21652684502221)) {
-    bases[0] = 2; bases[1] = 1215; bases[2] = 34862; bases[3] = 574237825;
-    nbases = 4;
-  } else if (n < UVCONST(341550071728321)) {
-    bases[0] =  2; bases[1] =  3; bases[2] =  5; bases[3] =  7; bases[4] = 11;
-    bases[5] = 13; bases[6] = 17; nbases = 7;
-  } else if (n < UVCONST(3825123056546413051)) {
-    bases[0] =  2; bases[1] =  3; bases[2] =  5; bases[3] =  7; bases[4] = 11;
-    bases[5] = 13; bases[6] = 17; bases[7] = 19; bases[8] = 23; nbases = 9;
-  } else {
-    bases[0] =  2; bases[1] =  3; bases[2] =  5; bases[3] =  7; bases[4] = 11;
-    bases[5] = 13; bases[6] = 17; bases[7] = 19; bases[8] = 23; bases[9] = 29;
-    bases[10]= 31; bases[11]= 37;
-    nbases = 12;
-  }
-#endif
 #endif
   prob_prime = _XS_miller_rabin(n, bases, nbases);
   return 2*prob_prime;

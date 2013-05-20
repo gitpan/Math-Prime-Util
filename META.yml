@@ -4,11 +4,12 @@ author:
   - 'Dana A Jacobsen <dana@acm.org>'
 build_requires:
   Test::More: 0.45
+  Test::Warn: 0
   bignum: 0.22
 configure_requires:
   ExtUtils::MakeMaker: 0
 dynamic_config: 1
-generated_by: 'ExtUtils::MakeMaker version 6.64, CPAN::Meta::Converter version 2.120921'
+generated_by: 'ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.120921'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -36,4 +37,4 @@ requires:
 resources:
   homepage: https://github.com/danaj/Math-Prime-Util
   repository: https://github.com/danaj/Math-Prime-Util
-version: 0.26
+version: 0.27
