@@ -6,7 +6,7 @@ use Bytes::Random::Secure;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.27';
+  $Math::Prime::Util::VERSION = '0.28';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -21,6 +21,7 @@ our @EXPORT_OK =
       is_aks_prime
       miller_rabin
       primes
+      forprimes prime_iterator
       next_prime  prev_prime
       prime_count
       prime_count_lower prime_count_upper prime_count_approx
@@ -91,6 +92,7 @@ BEGIN {
     *is_prime      = \&Math::Prime::Util::_generic_is_prime;
     *next_prime    = \&Math::Prime::Util::_generic_next_prime;
     *prev_prime    = \&Math::Prime::Util::_generic_prev_prime;
+    *forprimes     = \&Math::Prime::Util::_generic_forprimes;
 
     *_prime_memfreeall = \&Math::Prime::Util::PP::_prime_memfreeall;
     *prime_memfree  = \&Math::Prime::Util::PP::prime_memfree;
@@ -1350,6 +1352,34 @@ sub divisor_sum {
   return $sum;
 }
 
+                                   # Need proto for the block
+sub _generic_forprimes (&$;$) {    ## no critic qw(ProhibitSubroutinePrototypes)
+  my($sub, $beg, $end) = @_;
+  if (!defined $end) { $end = $beg; $beg = 2; }
+  _validate_num($beg) || _validate_positive_integer($beg);
+  _validate_num($end) || _validate_positive_integer($end);
+  my $p = ($beg <= 2) ? 2 : next_prime($beg-1);
+  while ($p <= $end) {
+    local *_ = \$p;
+    $sub->();
+    $p = next_prime($p);
+  }
+}
+
+sub prime_iterator {
+  my($start) = @_;
+  $start = 0 unless defined $start;
+  _validate_num($start) || _validate_positive_integer($start);
+  my $p = ($start > 0) ? $start-1 : 0;
+  if (ref($p) ne 'Math::BigInt' && $p <= $_XS_MAXVAL) {
+    return sub { $p = _XS_next_prime($p); return $p; };
+  } elsif ($_HAVE_GMP) {
+    return sub { $p = $p-$p+Math::Prime::Util::GMP::next_prime($p); return $p;};
+  } else {
+    return sub { $p = Math::Prime::Util::PP::next_prime($p); return $p; }
+  }
+}
+
 # Omega function A001221.  Just an example.
 sub _omega {
   my($n) = @_;
@@ -2341,7 +2371,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords Möbius Deléglise totient moebius mertens irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD
+=for stopwords forprimes Möbius Deléglise totient moebius mertens irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD
 
 
 =head1 NAME
@@ -2351,7 +2381,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.27
+Version 0.28
 
 
 =head1 SYNOPSIS
@@ -2370,6 +2400,8 @@ Version 0.27
   # If you want them in an array instead
   my @primes = @{primes( 500 )};
 
+  # You can do something for every prime in a range.  Twin primes to 10k:
+  forprimes { say if is_prime($_+2) } 10000;
 
   # For non-bigints, is_prime and is_prob_prime will always be 0 or 2.
   # They return return 0 (composite), 2 (prime), or 1 (probably prime)
@@ -2646,6 +2678,41 @@ C<18,446,744,073,709,551,557> in 64-bit).
 
 Returns the prime smaller than the input number.  0 is returned if the
 input is C<2> or lower.
+
+
+=head2 forprimes
+
+  forprimes { say } 100,200;                  # print primes from 100-200
+
+  $sum=0;  forprimes { $sum += $_ } 100000;   # sum primes to 100k
+
+  forprimes { say if is_prime($_+2) } 10000;  # print twin primes to 10k
+
+Given a block and either an end count or a start and end pair, calls the
+block for each prime in the range.  Compared to getting a big array of primes
+and iterating through it, this is more memory efficient and perhaps more
+convenient.  There is no way to exit the loop early, so the iterator may
+be more appropriate for those uses.
+
+
+=head2 prime_iterator
+
+  my $it = prime_iterator;
+  $sum += $it->() for 1..100000;
+
+Returns a closure-style iterator.  The start value defaults to the first
+prime (2) but an initial value may be given as an argument, which will result
+in the first value returned being the next prime greater than or equal to the
+argument.  For example, this:
+
+  my $it = prime_iterator(200);  say $it->();  say $it->();
+
+will return 211 followed by 223, as those are the next primes E<gt>= 200.
+On each call, the iterator returns the current value and increments to
+the next prime.
+
+In general, L</forprimes> will be more efficient, but the generic iterator has
+more flexibility (e.g. exiting a loop early, or passing the iterator around).
 
 
 =head2 prime_count

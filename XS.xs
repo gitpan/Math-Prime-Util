@@ -1,8 +1,10 @@
 
+#define PERL_NO_GET_CONTEXT 1 /* Define at top for more efficiency. */
+
 #include "EXTERN.h"
 #include "perl.h"
 #include "XSUB.h"
-#include <ctype.h>
+#include "multicall.h"  /* only works in 5.6 and newer */
 /* We're not using anything for which we need ppport.h */
 #ifndef XSRETURN_UV   /* Er, almost.  Fix 21086 from Sep 2003 */
   #define XST_mUV(i,v)  (ST(i) = sv_2mortal(newSVuv(v))  )
@@ -16,13 +18,32 @@
 #include "lehmer.h"
 #include "aks.h"
 
+/* Workaround perl 5.6 UVs */
 #if PERL_REVISION <= 5 && PERL_VERSION <= 6 && BITS_PER_WORD == 64
  /* This could be blown up with a wacky string, but it's just for 5.6 */
  #define set_val_from_sv(val, sv) \
-   { char*ptr = SvPV_nolen(sv); val = strtoul(ptr, NULL, 10); }
+   { char*ptr = SvPV_nolen(sv); val = Strtoul(ptr, NULL, 10); }
 #else
  #define set_val_from_sv(val, sv) \
    val = SvUV(sv)
+#endif
+
+/* multicall compatibility stuff */
+#if PERL_VERSION < 7
+# define USE_MULTICALL 0   /* Too much trouble to work around it */
+#else
+# define USE_MULTICALL 1
+#endif
+
+#if PERL_VERSION < 13 || (PERL_VERSION == 13 && PERL_SUBVERSION < 9)
+#  define PERL_HAS_BAD_MULTICALL_REFCOUNT
+#endif
+#ifndef CvISXSUB
+#  define CvISXSUB(cv) CvXSUB(cv)
+#endif
+/* Not right, but close */
+#if !defined cxinc && ( (PERL_VERSION == 8 && PERL_SUBVERSION >= 2) || (PERL_VERSION == 10 && PERL_SUBVERSION <= 1) )
+# define cxinc() Perl_cxinc(aTHX)
 #endif
 
 
@@ -37,6 +58,7 @@ static int pbrent_factor_a1(UV n, UV *factors, UV maxrounds) {
  */
 static int _validate_int(SV* n, int negok)
 {
+  dTHX;
   char* ptr;
   STRLEN i, len;
   UV val;
@@ -49,10 +71,12 @@ static int _validate_int(SV* n, int negok)
   ptr = SvPV(n, len);
   if (len == 0)  croak("Parameter '' must be a positive integer");
   for (i = 0; i < len; i++) {
-    if (!isdigit(ptr[i])) {
+    if (!isDIGIT(ptr[i])) {
       if (i == 0 && ptr[i] == '-' && negok)
         isneg = 1;
-      else if (i == 0 && ptr[i] != '+')
+      else if (i == 0 && ptr[i] == '+')
+        /* Allowed */ ;
+      else
         croak("Parameter '%s' must be a positive integer", ptr); /* TODO NULL */
     }
   }
@@ -76,6 +100,7 @@ static int _validate_int(SV* n, int negok)
  */
 static SV* _callsub(SV* arg, const char* name)
 {
+  dTHX;
   dSP;                               /* Local copy of stack pointer         */
   int count;
   SV* v;
@@ -606,3 +631,74 @@ _validate_num(SV* n, ...)
     }
   OUTPUT:
     RETVAL
+
+void
+forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
+  PROTOTYPE: &$;$
+  CODE:
+  {
+#if !USE_MULTICALL
+    dSP;
+    PUSHMARK(SP);
+    XPUSHs(block); XPUSHs(svbeg); XPUSHs(svend);
+    PUTBACK;
+    (void) call_pv("Math::Prime::Util::_generic_forprimes", G_VOID|G_DISCARD);
+    SPAGAIN;
+#else
+    UV beg, end;
+    GV *gv;
+    HV *stash;
+    CV *cv;
+    SV* svarg;
+
+    if (!_validate_int(svbeg, 0) || (items >= 3 && !_validate_int(svend,0))) {
+      dSP;
+      PUSHMARK(SP);
+      XPUSHs(block); XPUSHs(svbeg); XPUSHs(svend);
+      PUTBACK;
+      (void) call_pv("Math::Prime::Util::_generic_forprimes", G_VOID|G_DISCARD);
+      SPAGAIN;
+      XSRETURN_UNDEF;
+    }
+    if (items < 3) {
+      beg = 2;
+      set_val_from_sv(end, svbeg);
+    } else {
+      set_val_from_sv(beg, svbeg);
+      set_val_from_sv(end, svend);
+    }
+    if (beg > end)
+      XSRETURN_UNDEF;
+
+    cv = sv_2cv(block, &stash, &gv, 0);
+    if (cv == Nullcv)
+      croak("Not a subroutine reference");
+    SAVESPTR(GvSV(PL_defgv));
+    svarg = newSVuv(0);
+    if (!CvISXSUB(cv)) {
+      dMULTICALL;
+      I32 gimme = G_VOID;
+      PUSH_MULTICALL(cv);
+      START_DO_FOR_EACH_PRIME(beg, end) {
+        sv_setuv(svarg, p);
+        GvSV(PL_defgv) = svarg;
+        MULTICALL;
+      } END_DO_FOR_EACH_PRIME
+#ifdef PERL_HAS_BAD_MULTICALL_REFCOUNT
+      if (CvDEPTH(multicall_cv) > 1)
+        SvREFCNT_inc(multicall_cv);
+#endif
+      POP_MULTICALL;
+    } else {
+      START_DO_FOR_EACH_PRIME(beg, end) {
+        dSP;
+        sv_setuv(svarg, p);
+        GvSV(PL_defgv) = svarg;
+        PUSHMARK(SP);
+        call_sv((SV*)cv, G_VOID|G_DISCARD);
+      } END_DO_FOR_EACH_PRIME
+    }
+    SvREFCNT_dec(svarg);
+#endif
+    XSRETURN_UNDEF;
+  }

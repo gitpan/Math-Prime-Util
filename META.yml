@@ -37,4 +37,4 @@ requires:
 resources:
   homepage: https://github.com/danaj/Math-Prime-Util
   repository: https://github.com/danaj/Math-Prime-Util
-version: 0.27
+version: 0.28
