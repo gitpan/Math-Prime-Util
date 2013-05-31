@@ -247,6 +247,7 @@ segment_primes(IN UV low, IN UV high);
   PREINIT:
     AV* av = newAV();
   CODE:
+    /* Could rewrite using {start/next/end}_segment_primes functions */
     if ((low <= 2) && (high >= 2)) { av_push(av, newSVuv( 2 )); }
     if ((low <= 3) && (high >= 3)) { av_push(av, newSVuv( 3 )); }
     if ((low <= 5) && (high >= 5)) { av_push(av, newSVuv( 5 )); }
@@ -324,7 +325,7 @@ erat_primes(IN UV low, IN UV high)
     RETVAL
 
 
-#define SIMPLE_FACTOR(func, n, ...) \
+#define SIMPLE_FACTOR(func, n, arg1) \
     if (n <= 1) { \
       XPUSHs(sv_2mortal(newSVuv( n ))); \
     } else { \
@@ -336,7 +337,26 @@ erat_primes(IN UV low, IN UV high)
       else { \
         UV factors[MPU_MAX_FACTORS+1]; \
         int i, nfactors; \
-        nfactors = func(n, factors, ## __VA_ARGS__); \
+        nfactors = func(n, factors, arg1); \
+        for (i = 0; i < nfactors; i++) { \
+          XPUSHs(sv_2mortal(newSVuv( factors[i] ))); \
+        } \
+      } \
+    }
+#define SIMPLE_FACTOR_2ARG(func, n, arg1, arg2) \
+    /* Stupid MSVC won't bring its C compiler out of the 1980s. */ \
+    if (n <= 1) { \
+      XPUSHs(sv_2mortal(newSVuv( n ))); \
+    } else { \
+      while ( (n% 2) == 0 ) {  n /=  2;  XPUSHs(sv_2mortal(newSVuv( 2 ))); } \
+      while ( (n% 3) == 0 ) {  n /=  3;  XPUSHs(sv_2mortal(newSVuv( 3 ))); } \
+      while ( (n% 5) == 0 ) {  n /=  5;  XPUSHs(sv_2mortal(newSVuv( 5 ))); } \
+      if (n == 1) {  /* done */ } \
+      else if (_XS_is_prime(n)) { XPUSHs(sv_2mortal(newSVuv( n ))); } \
+      else { \
+        UV factors[MPU_MAX_FACTORS+1]; \
+        int i, nfactors; \
+        nfactors = func(n, factors, arg1, arg2); \
         for (i = 0; i < nfactors; i++) { \
           XPUSHs(sv_2mortal(newSVuv( factors[i] ))); \
         } \
@@ -395,7 +415,10 @@ pminus1_factor(IN UV n, IN UV B1 = 1*1024*1024, IN UV B2 = 0)
   PPCODE:
     if (B2 == 0)
       B2 = 10*B1;
-    SIMPLE_FACTOR(pminus1_factor, n, B1, B2);
+    SIMPLE_FACTOR_2ARG(pminus1_factor, n, B1, B2);
+
+int
+_XS_is_pseudoprime(IN UV n, IN UV a)
 
 int
 _XS_miller_rabin(IN UV n, ...)
@@ -424,6 +447,11 @@ _XS_miller_rabin(IN UV n, ...)
   OUTPUT:
     RETVAL
 
+int
+_XS_is_extra_strong_lucas_pseudoprime(IN UV n)
+
+int
+_XS_is_frobenius_underwood_pseudoprime(IN UV n)
 
 int
 _XS_is_prob_prime(IN UV n)
@@ -546,7 +574,7 @@ _XS_moebius(IN UV lo, IN UV hi = 0)
     UV i;
   PPCODE:
     if (hi != lo && hi != 0) {   /* mobius in a range */
-      char* mu = _moebius_range(lo, hi);
+      signed char* mu = _moebius_range(lo, hi);
       MPUassert( mu != 0, "_moebius_range returned 0" );
       EXTEND(SP, hi-lo+1);
       for (i = lo; i <= hi; i++)
@@ -650,6 +678,9 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
     HV *stash;
     CV *cv;
     SV* svarg;
+    void* ctx;
+    unsigned char* segment;
+    UV seg_base, seg_low, seg_high;
 
     if (!_validate_int(svbeg, 0) || (items >= 3 && !_validate_int(svend,0))) {
       dSP;
@@ -675,28 +706,48 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
       croak("Not a subroutine reference");
     SAVESPTR(GvSV(PL_defgv));
     svarg = newSVuv(0);
-    if (!CvISXSUB(cv)) {
-      dMULTICALL;
-      I32 gimme = G_VOID;
-      PUSH_MULTICALL(cv);
-      START_DO_FOR_EACH_PRIME(beg, end) {
-        sv_setuv(svarg, p);
-        GvSV(PL_defgv) = svarg;
-        MULTICALL;
-      } END_DO_FOR_EACH_PRIME
-#ifdef PERL_HAS_BAD_MULTICALL_REFCOUNT
-      if (CvDEPTH(multicall_cv) > 1)
-        SvREFCNT_inc(multicall_cv);
-#endif
-      POP_MULTICALL;
-    } else {
-      START_DO_FOR_EACH_PRIME(beg, end) {
-        dSP;
-        sv_setuv(svarg, p);
+    /* Handle early part */
+    while (beg < 7) {
+      dSP;
+      beg = (beg <= 2) ? 2 : (beg <= 3) ? 3 : 5; 
+      if (beg <= end) {
+        sv_setuv(svarg, beg);
         GvSV(PL_defgv) = svarg;
         PUSHMARK(SP);
         call_sv((SV*)cv, G_VOID|G_DISCARD);
-      } END_DO_FOR_EACH_PRIME
+      }
+      beg += 1 + (beg > 2);
+    }
+    if (beg <= end) {
+      ctx = start_segment_primes(beg, end, &segment);
+      while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
+        /* I'm getting a memory leak in the MULTICALL and I'm having no luck
+         * finding out why it is happening.  Don't use this for now. */
+        if (0 && !CvISXSUB(cv)) {
+          dMULTICALL;
+          I32 gimme = G_VOID;
+          PUSH_MULTICALL(cv);
+          START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {
+            sv_setuv(svarg, seg_base + p);
+            GvSV(PL_defgv) = svarg;
+            MULTICALL;
+          } END_DO_FOR_EACH_SIEVE_PRIME
+#ifdef PERL_HAS_BAD_MULTICALL_REFCOUNT
+          if (CvDEPTH(multicall_cv) > 1)
+            SvREFCNT_inc(multicall_cv);
+#endif
+          POP_MULTICALL;
+        } else {
+          START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {
+            dSP;
+            sv_setuv(svarg, seg_base + p);
+            GvSV(PL_defgv) = svarg;
+            PUSHMARK(SP);
+            call_sv((SV*)cv, G_VOID|G_DISCARD);
+          } END_DO_FOR_EACH_SIEVE_PRIME
+        }
+      }
+      end_segment_primes(ctx);
     }
     SvREFCNT_dec(svarg);
 #endif

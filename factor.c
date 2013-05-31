@@ -289,6 +289,45 @@ static int is_perfect_square(UV n, UV* sqrtn)
   return 1;
 }
 
+static int jacobi_iu(IV in, UV m) {
+  int j = 1;
+  UV n = (in < 0) ? -in : in;
+
+  if (m <= 0 || (m%2) == 0) return 0;
+  if (in < 0 && (m%4) == 3) j = -j;
+  while (n != 0) {
+    while ((n % 2) == 0) {
+      n >>= 1;
+      if ( (m % 8) == 3 || (m % 8) == 5 )  j = -j;
+    }
+    { UV t = n; n = m; m = t; }
+    if ( (n % 4) == 3 && (m % 4) == 3 )  j = -j;
+    n = n % m;
+  }
+  return (m == 1) ? j : 0;
+}
+
+
+/* Fermat pseudoprime */
+int _XS_is_pseudoprime(UV n, UV a)
+{
+  UV x;
+  UV const nm1 = n-1;
+
+  if (n == 2 || n == 3)  return 1;
+  if (n < 5) return 0;
+  if (a < 2) croak("Base %"UVuf" is invalid", a);
+  if (a >= n) {
+    a %= n;
+    if ( a <= 1 || a == nm1 )
+      return 1;
+  }
+
+  x = powmod(a, nm1, n);    /* x = a^(n-1) mod n */
+  return (x == 1);
+}
+
+
 /* Miller-Rabin probabilistic primality test
  * Returns 1 if probably prime relative to the bases, 0 if composite.
  * Bases must be between 2 and n-2
@@ -310,15 +349,10 @@ int _XS_miller_rabin(UV n, const UV *bases, int nbases)
 
     if (a < 2)
       croak("Base %"UVuf" is invalid", a);
-#if 0
-    if (a > (n-2))
-      croak("Base %"UVuf" is invalid for input %"UVuf, a, n);
-#else
     if (a >= n)
       a %= n;
     if ( (a <= 1) || (a == nm1) )
       continue;
-#endif
 
     /* n is a strong pseudoprime to this base if either
      *   -  a^d = 1 mod n
@@ -340,6 +374,31 @@ int _XS_miller_rabin(UV n, const UV *bases, int nbases)
   return 1;
 }
 
+/* M-R with a = 2 and some checks removed.  For internal use. */
+int _SPRP2(UV n)
+{
+  UV const nm1 = n-1;
+  UV d = n-1;
+  UV x;
+  int r, s = 0;
+
+  MPUassert(n > 3, "S-PRP-2 called with n <= 3");
+  if (!(n & 1)) return 0;
+  while ( (d & 1) == 0 ) {  s++;  d >>= 1; }
+  /* n is a strong pseudoprime to this base if either
+   *   -  a^d = 1 mod n
+   *   -  a^(d2^r) = -1 mod n for some r: 0 <= r <= s-1 */
+  x = powmod(2, d, n);
+  if (x == 1 || x == nm1)  return 1;
+
+  /* just did r=0, now test r = 1 to s-1 */
+  for (r = 1; r < s; r++) {
+    x = sqrmod(x, n);
+    if (x == nm1)  return 1;
+  }
+  return 0;
+}
+
 int _XS_is_prob_prime(UV n)
 {
   UV bases[12];
@@ -354,40 +413,56 @@ int _XS_is_prob_prime(UV n)
   if (n < 2809) /* 53*53 */                 return 2;
 
 #if BITS_PER_WORD == 32
+
   /* These aren't ideal.  Could use 1 when n < 49191, 2 when n < 360018361 */
   if (n < UVCONST(9080191)) {
     bases[0] = 31; bases[1] = 73; nbases = 2;
   } else  {
     bases[0] = 2; bases[1] = 7; bases[2] = 61; nbases = 3;
   }
+  prob_prime = _XS_miller_rabin(n, bases, nbases);
+  return 2*prob_prime;
+
 #else
-  /* Better bases from http://miller-rabin.appspot.com/, 23 May 2013 */
+
+  /* Verified with Feitsma database.  No counterexamples below 2^64.
+   * This is faster than multiple M-R routines once we're over 32-bit */
+  if (n >= UVCONST(4294967295)) {
+    prob_prime = _SPRP2(n) && _XS_is_extra_strong_lucas_pseudoprime(n);
+    return 2*prob_prime;
+  }
+
+  /* Better bases from http://miller-rabin.appspot.com/, 27 May 2013 */
+  /* Verify with:
+   *  cat /local/share/spsps-below-2-to-64.txt | perl -MMath::Prime::Util=:all
+   *    -nE 'chomp; next unless is_strong_pseudoprime($_, @bases); say;'
+   */
   if (n < UVCONST(341531)) {
-    bases[0] = UVCONST(9345883071009581737);
+    bases[0] = UVCONST(  9345883071009581737 );
     nbases = 1;
-  } else if (n < UVCONST(716169301)) {
-    bases[0] = 15;
-    bases[1] = UVCONST( 13393019396194701 );
+  } else if (n < UVCONST(885594169)) {
+    bases[0] = UVCONST(   725270293939359937 );
+    bases[1] = UVCONST(  3569819667048198375 );
     nbases = 2;
-  } else if (n < UVCONST(273919523041)) {
-    bases[0] = 15;
-    bases[1] = UVCONST(        7363882082 );
-    bases[2] = UVCONST(   992620450144556 );
+  } else if (n < UVCONST(350269456337)) {
+    bases[0] = UVCONST(  4230279247111683200 );
+    bases[1] = UVCONST( 14694767155120705706 );
+    bases[2] = UVCONST( 16641139526367750375 );
     nbases = 3;
-  } else if (n < UVCONST(55245642489451)) {
+  } else if (n < UVCONST(55245642489451)) {      /* 38+ bits */
     bases[0] = 2;
     bases[1] = UVCONST(      141889084524735 );
     bases[2] = UVCONST(  1199124725622454117 );
     bases[3] = UVCONST( 11096072698276303650 );
     nbases = 4;
-  } else if (n < UVCONST(7999252175582851)) {
+  } else if (n < UVCONST(7999252175582851)) {    /* 45+ bits */
     bases[0] = 2;
     bases[1] = UVCONST(        4130806001517 );
     bases[2] = UVCONST(   149795463772692060 );
     bases[3] = UVCONST(   186635894390467037 );
     bases[4] = UVCONST(  3967304179347715805 );
     nbases = 5;
-  } else if (n < UVCONST(585226005592931977)) {
+  } else if (n < UVCONST(585226005592931977)) {  /* 52+ bits */
     bases[0] = 2;
     bases[1] = UVCONST(      123635709730000 );
     bases[2] = UVCONST(     9233062284813009 );
@@ -395,7 +470,7 @@ int _XS_is_prob_prime(UV n)
     bases[4] = UVCONST(   761179012939631437 );
     bases[5] = UVCONST(  1263739024124850375 );
     nbases = 6;
-  } else {
+  } else {                                       /* 59+ bits */
     bases[0] = 2;
     bases[1] = UVCONST( 325        );
     bases[2] = UVCONST( 9375       );
@@ -405,9 +480,79 @@ int _XS_is_prob_prime(UV n)
     bases[6] = UVCONST( 1795265022 );
     nbases = 7;
   }
-#endif
   prob_prime = _XS_miller_rabin(n, bases, nbases);
   return 2*prob_prime;
+#endif
+}
+
+/* Extra Strong Lucas test.
+ *
+ * Goal:
+ *       (1) no false results when combined with the SPRP-2 test.
+ *       (2) fast enough to use SPRP-2 + this in place of 3+ M-R tests.
+ *
+ * Why the extra strong test?  If we use Q=1, the code is both simpler and
+ * faster.  But the Selfridge parameters have P==1 Q!=1.  Once we decide to
+ * go with the Q==1, P!=1 method, then we may as well use the extra strong
+ * test so we can verify results (e.g. OEIS A217719).  There is no cost to
+ * run this vs. the strong or standard test.
+ *
+ * This runs about 7x faster than the GMP strong test, and about 2x slower
+ * than our M-R tests.
+ */
+int _XS_is_extra_strong_lucas_pseudoprime(UV n)
+{
+  UV P, D, Q, U, V, d, s, b;
+  int const _verbose = _XS_get_verbose();
+
+  if (n == 2 || n == 3) return 1;
+  if (n < 5 || (n%2) == 0) return 0;
+  if (n == UV_MAX) return 0;
+
+  P = 3;
+  Q = 1;
+  while (1) {
+    D = P*P - 4;
+    if (gcd_ui(D, n) > 1 && gcd_ui(D, n) != n) return 0;
+    if (jacobi_iu(D, n) == -1)
+      break;
+    /* Perhaps n is a perfect square? */
+    if (P == 21 && is_perfect_square(n, 0)) return 0;
+    P++;
+  }
+  if (_verbose>3) printf("N: %lu  D: %ld  P: %lu  Q: %ld\n", n, D, P, Q);
+  MPUassert( D == ((IV)(P*P)) - 4*Q , "incorrect DPQ");
+
+  U = 1;
+  V = P;
+  d = n+1;
+  s = 0;
+  while ( (d & 1) == 0 ) {  s++;  d >>= 1; }
+  { UV v = d; b = 1; while (v >>= 1) b++; }
+
+  if (_verbose>3) printf("U=%lu  V=%lu\n", U, V);
+  while (b > 1) {
+    U = mulmod(U, V, n);
+    V = muladdmod(V, V, n-2, n);
+    b--;
+    if (_verbose>3) printf("U2k=%lu  V2k=%lu\n", U, V);
+    if ( (d >> (b-1)) & UVCONST(1) ) {
+      UV t2 = mulmod(U, D, n);
+      U = muladdmod(U, P, V, n);
+      if (U & 1) { U = (n>>1) + (U>>1) + 1; } else { U >>= 1; }
+      V = muladdmod(V, P, t2, n);
+      if (V & 1) { V = (n>>1) + (V>>1) + 1; } else { V >>= 1; }
+    }
+    if (_verbose>3) printf("U=%lu  V=%lu\n", U, V);
+  }
+  if ( (U == 0 && (V == 2 || V == (n-2))) || (V == 0) )
+    return 1;
+  while (s--) {
+    V = muladdmod(V, V, n-2, n);
+    if (V == 0)
+      return 1;
+  }
+  return 0;
 }
 
 
@@ -1045,4 +1190,129 @@ int racing_squfof_factor(UV n, UV *factors, UV rounds)
   /* No factors found */
   factors[0] = n;
   return 1;
+}
+
+
+/****************************************************************************/
+
+/*
+ *
+ * The Frobenius-Underwood test has no known counterexamples below 10^13, but
+ * has not been extensively tested above that.  This is the Minimal Lambda+2
+ * test from section 9 of "Quadratic Composite Tests" by Paul Underwood.
+ *
+ * Given the script:
+ *  time mpu 'forprimes { Math::Prime::Util::_XS_is_frobenius_underwood_pseudoprime($_); Math::Prime::Util::_XS_is_frobenius_underwood_pseudoprime($_+2); } 100_000_000'
+ * and replacing the tests appropriately, I get these times:
+ *
+ *   0.57    $_ (cost of empty loop)
+ *   6.89    _XS_is_pseudoprime($_,2)
+ *   6.82    _XS_miller_rabin($_,2)
+ *  11.81    _XS_is_extra_strong_lucas_pseudoprime($_)
+ *  13.07    _XS_is_frobenius_underwood_pseudoprime($_)
+ *   7.87    _XS_is_prob_prime($_)
+ *   8.74    _XS_is_prime($_)
+ *
+ * At these sizes is_prob_prime is doing 1-2 M-R tests.  The input validation
+ * is adding a noticeable overhead to is_prime.
+ *
+ * With a set of 10k 64-bit random primes; 'do { die unless ... } for 1..500'
+ *
+ *   0.36    empty loop
+ *  12.38    _XS_is_pseudoprime($_,2)
+ *  12.05    _XS_miller_rabin($_,2)
+ *  24.95    _XS_is_extra_strong_lucas_pseudoprime($_)
+ *  22.35    _XS_is_frobenius_underwood_pseudoprime($_)
+ *  36.67    _XS_is_prob_prime($_)
+ *  37.24    _XS_is_prime($_)
+ *
+ * At this point is_prob_prime has transitioned to BPSW.
+ *
+ * Calling a powmod a 'Selfridge' unit, then we see:
+ *    1 Selfridge unit    M-R test
+ *    2 Selfridge units   Lucas or Frobenius-Underwood
+ *    3 Selfridge units   BPSW
+ *
+ * We try to structure the primality test like:
+ *   1) simple divisibility    very fast       primes and ~10% of composites
+ *   2) M-R with base 2        1 Selfridge     primes and .00000000002% comps
+ *   3) Lucas test             2 Selfridge     only primes
+ *
+ * Hence given a random composite, about 90% of the time it costs us almost
+ * nothing.  After spending 1 Selfridge on the first MR test, less than 32M
+ * composites remain undecided out of 18 quintillion 64-bit composites.  The
+ * final Lucas test has no false positives.
+ * Replacing the Lucas test with the F-U test won't save any time.  Replacing
+ * the whole thing with the F-U test (assuming it has no false results for
+ * all 64-bit values, which hasn't been verified), doesn't help either.
+ * It's 2/3 the cost for primes, but much more expensive for composites.  It
+ * seems of interest for > 2^64 as a different test to do in addition to BPSW.
+ */
+
+
+int _XS_is_frobenius_underwood_pseudoprime(UV n)
+{
+  int bit;
+  UV x, result, multiplier, a, b, np1, len, t1, t2, na;
+  IV t;
+
+  if (n < 2) return 0;
+  if (n < 4) return 1;
+  if ((n % 2) == 0) return 0;
+  if (is_perfect_square(n,0)) return 0;
+  if (n == UV_MAX) return 0;
+
+  x = 0;
+  t = -1;
+  while ( jacobi_iu( t, n ) != -1 ) {
+    x++;
+    t = (IV)(x*x) - 4;
+  }
+  result = addmod( addmod(x, x, n), 5, n);
+  multiplier = addmod(x, 2, n);
+
+  a = 1;
+  b = 2;
+  np1 = n+1;
+  { UV v = np1; len = 1;  while (v >>= 1) len++; }
+
+  if (x == 0) {
+    for (bit = len-2; bit >= 0; bit--) {
+      t2 = addmod(b, b, n);
+      na = mulmod(a, t2, n);
+      t1 = addmod(b, a, n);
+      t2 = addmod(b, n-a, n);  /* subtract */
+      b = mulmod(t1, t2, n);
+      a = na;
+      if ( (np1 >> bit) & UVCONST(1) ) {
+        t1 = mulmod(a, 2, n);
+        na = addmod(t1, b, n);
+        t1 = addmod(b, b, n);
+        b = addmod(t1, n-a, n); /* subtract */
+        a = na;
+      }
+    }
+  } else {
+    for (bit = len-2; bit >= 0; bit--) {
+      t1 = mulmod(a, x, n);
+      t2 = addmod(b, b, n);
+      t1 = addmod(t1, t2, n);
+      na = mulmod(a, t1, n);
+      t1 = addmod(b, a, n);
+      t2 = addmod(b, n-a, n);  /* subtract */
+      b = mulmod(t1, t2, n);
+      a = na;
+      if ( (np1 >> bit) & UVCONST(1) ) {
+        t1 = mulmod(a, multiplier, n);
+        na = addmod(t1, b, n);
+        t1 = addmod(b, b, n);
+        b = addmod(t1, n-a, n); /* subtract */
+        a = na;
+      }
+    }
+  }
+  if (_XS_get_verbose()>1) printf("%"UVuf" is %s with x = %"UVuf"\n", n, (a == 0 && b == result) ? "probably prime" : "composite", x);
+  if (a == 0 && b == result)
+    return 1;
+  return 0;
 }
