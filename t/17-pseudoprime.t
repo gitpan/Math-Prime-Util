@@ -4,9 +4,14 @@ use warnings;
 
 use Test::More;
 use Math::Prime::Util qw/is_prime
-                         is_pseudoprime is_strong_pseudoprime
-                         is_lucas_pseudoprime is_strong_lucas_pseudoprime
-                         is_extra_strong_lucas_pseudoprime/;
+                         is_pseudoprime
+                         is_strong_pseudoprime
+                         is_lucas_pseudoprime
+                         is_strong_lucas_pseudoprime
+                         is_extra_strong_lucas_pseudoprime
+                         is_almost_extra_strong_lucas_pseudoprime
+                         is_frobenius_underwood_pseudoprime
+                         lucas_sequence/;
 
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
 my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
@@ -64,13 +69,32 @@ my %pseudoprimes = (
  psp3       => [ qw/91 121 286 671 703 949 1105 1541 1729 1891 2465 2665 2701 2821 3281 3367 3751 4961 5551 6601 7381 8401 8911 10585 11011 12403 14383 15203 15457 15841 16471 16531 18721 19345 23521 24046 24661 24727 28009 29161/ ],
  lucas      => [ qw/323 377 1159 1829 3827 5459 5777 9071 9179 10877 11419 11663 13919 14839 16109 16211 18407 18971 19043/ ],
  slucas     => [ qw/5459 5777 10877 16109 18971 22499 24569 25199 40309 58519 75077 97439 100127 113573 115639 130139/ ],
- eslucas    => [ qw/989 3239 5777 10877 27971 29681 30739 31631 39059 72389 73919 75077 100127 113573 125249 137549 137801/ ],
+ eslucas    => [ qw/989 3239 5777 10877 27971 29681 30739 31631 39059 72389 73919 75077 100127 113573 125249 137549 137801 153931 155819/ ],
+ aeslucas1  => [ qw/989 3239 5777 10469 10877 27971 29681 30739 31631 39059 72389 73919 75077 100127 113573 125249 137549 137801 153931 154697 155819/ ],
+ aeslucas2  => [ qw/3239 4531 5777 10877 12209 21899 31631 31831 32129 34481 36079 37949 47849 50959 51641 62479 73919 75077 97109 100127 108679 113573 116899 154697 161027/ ],
 );
 my $num_pseudoprimes = 0;
 foreach my $ppref (values %pseudoprimes) {
   $num_pseudoprimes += scalar @$ppref;
 }
 my @small_lucas_trials = (2, 9, 16, 100, 102, 2047, 2048, 5781, 9000, 14381);
+
+my %lucas_sequences = (
+  "323 1 1 324" => [0,2,1],
+  "323 4 1 324" => [170,308,1],
+  "323 4 5 324" => [194,156,115],
+  "323 3 1 324" => [0,2,1],
+  "323 3 1  81" => [0,287,1],
+  "323 5 -1 81" => [153,195,322],
+  "49001 25 117 24501" => [20933,18744,19141],
+  "18971 10001 -1 4743" => [5866,14421,18970],
+  "18971 10001 -1 4743" => [5866,14421,18970],
+  "3613982123 1 -1 3613982124" => [0,3613982121,1],
+  "3613982121 1 -1 3613982122" => [2586640546,2746447323,1],
+  "3613982121 1 -1 1806991061" => [3535079342,1187662808,3613982120],
+  "547968611 1 -1 547968612" => [1,3,1],
+  "547968611 1 -1 136992153" => [27044236,448467899,547968610],
+);
 
 plan tests => 0 + 3
                 + 4
@@ -79,6 +103,8 @@ plan tests => 0 + 3
                 + 1  # mr base 2    2-4k
                 + 9  # mr with large bases
                 + scalar @small_lucas_trials
+                + scalar(keys %lucas_sequences)
+                + 1  # frob-underwood
                 + 1*$extra;
 
 ok(!eval { is_strong_pseudoprime(2047); }, "MR with no base fails");
@@ -94,15 +120,18 @@ is( is_strong_pseudoprime(3, 2), 1, "MR with 3 shortcut prime");
 # Check that each strong pseudoprime base b makes it through MR with that base
 while (my($base, $ppref) = each (%pseudoprimes)) {
   foreach my $p (@$ppref) {
-    if      ($base eq 'eslucas') {
+    if      ($base =~ /^psp(\d+)/) {
+      my $base = $1;
+      ok(is_pseudoprime($p, $base), "$p is a pseudoprime to base $base");
+    } elsif ($base =~ /^aeslucas(\d+)/) {
+      my $inc = $1;
+      ok(is_almost_extra_strong_lucas_pseudoprime($p,$inc), "$p is an almost extra strong Lucas pseudoprime (increment $inc)");
+    } elsif ($base eq 'eslucas') {
       ok(is_extra_strong_lucas_pseudoprime($p), "$p is an extra strong Lucas pseudoprime");
     } elsif ($base eq 'slucas') {
       ok(is_strong_lucas_pseudoprime($p), "$p is a strong Lucas-Selfridge pseudoprime");
     } elsif ($base eq 'lucas') {
       ok(is_lucas_pseudoprime($p), "$p is a Lucas-Selfridge pseudoprime");
-    } elsif ($base =~ /^psp(\d+)/) {
-      my $base = $1;
-      ok(is_pseudoprime($p, $base), "$p is a pseudoprime to base $base");
     } else {
       ok(is_strong_pseudoprime($p, $base), "Pseudoprime (base $base) $p passes MR");
     }
@@ -163,5 +192,27 @@ if ($extra) {
       last;
     }
   }
-  is($mr2fail, 0, "is_strong_pseudoprime bases 2,3 matches is_prime to 1,373,652");
+  is($mr2fail, 0, "is_strong_pseudoprime bases 2,3 matches is_prime");
+}
+
+# Lucas sequences, used for quite a few tests
+sub lucas_sequence_to_native {
+  map { (ref($_) eq 'Math::BigInt') ? int($_->bstr) : $_ } lucas_sequence(@_);
+}
+while (my($params, $expect) = each (%lucas_sequences)) {
+  is_deeply( [lucas_sequence_to_native(split(' ', $params))], $expect, "Lucas sequence $params" );
+}
+
+{
+  my $fufail = 0;
+  foreach my $i (1 .. 100) {
+    my $n = 2*int(rand(1000000000)) + 1;
+    my $ispfu = !!is_frobenius_underwood_pseudoprime($n);
+    my $prime = !!is_prime($n);
+    if ($ispfu != $prime) {
+      $fufail = $n;
+      last;
+    }
+  }
+  is($fufail, 0, "is_frobenius_underwood_pseudoprime matches is_prime");
 }

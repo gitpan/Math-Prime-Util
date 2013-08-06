@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.29';
+  $Math::Prime::Util::PP::VERSION = '0.30';
 }
 
 # The Pure Perl versions of all the Math::Prime::Util routines.
@@ -150,7 +150,7 @@ sub _is_prime7 {  # n must not be divisible by 2, 3, or 5
               !($n % 37) || !($n % 41) || !($n % 43) || !($n % 47) ||
               !($n % 53) || !($n % 59);
 
-  if ($n <= 10_000_000) {
+  if ($n <= 1_000_000) {
     my $limit = int(sqrt($n));
     my $i = 61;
     while (($i+30) <= $limit) {
@@ -176,18 +176,18 @@ sub _is_prime7 {  # n must not be divisible by 2, 3, or 5
     return 2;
   }
 
-  if ($n < 105936894253) {   # BPSW seems to be faster after this
+  if ($n < 47636622961201) {   # BPSW seems to be faster after this
     # Deterministic set of Miller-Rabin tests.  If the MR routines can handle
     # bases greater than n, then this can be simplified.
     my @bases;
-    if    ($n <          9080191) { @bases = (31,       73); }
-    elsif ($n <         19471033) { @bases = ( 2,   299417); }
+    # n > 1_000_000 because of the previous block.
+    if    ($n <         19471033) { @bases = ( 2,  299417); }
     elsif ($n <         38010307) { @bases = ( 2,  9332593); }
     elsif ($n <        316349281) { @bases = ( 11000544, 31481107); }
     elsif ($n <       4759123141) { @bases = ( 2, 7, 61); }
-    elsif ($n <     105936894253) { @bases = ( 2, 1005905886, 1340600841); }
-    elsif ($n <   31858317218647) { @bases = ( 2, 642735, 553174392, 3046413974); }
-    elsif ($n < 3071837692357849) { @bases = ( 2, 75088, 642735, 203659041, 3613982119); }
+    elsif ($n <     154639673381) { @bases = ( 15, 176006322, 4221622697); }
+    elsif ($n <   47636622961201) { @bases = ( 2, 2570940, 211991001, 3749873356); }
+    elsif ($n < 3770579582154547) { @bases = ( 2, 2570940, 880937, 610386380, 4130785767); }
     else                          { @bases = ( 2, 325, 9375, 28178, 450775, 9780504, 1795265022); }
     return miller_rabin($n, @bases)  ?  2  :  0;
   }
@@ -195,10 +195,10 @@ sub _is_prime7 {  # n must not be divisible by 2, 3, or 5
   # BPSW probable prime.  No composites are known to have passed this test
   # since it was published in 1980, though we know infinitely many exist.
   # It has also been verified that no 64-bit composite will return true.
-  # Slow since it's all in PP, but it's the Right Thing To Do.
+  # Slow since it's all in PP and uses bigints.
 
   return 0 unless miller_rabin($n, 2);
-  return 0 unless is_strong_lucas_pseudoprime($n);
+  return 0 unless is_extra_strong_lucas_pseudoprime($n);
   return ($n <= 18446744073709551615)  ?  2  :  1;
 }
 
@@ -903,7 +903,7 @@ sub _jacobi {
 }
 
 # Find first D in sequence (5,-7,9,-11,13,-15,...) where (D|N) == -1
-sub _find_jacobi_d_sequence {
+sub _lucas_selfridge_params {
   my($n) = @_;
 
   # D is typically quite small: 67 max for N < 10^19.  However, it is
@@ -913,39 +913,47 @@ sub _find_jacobi_d_sequence {
   while (1) {
     my $gcd = (ref($n) eq 'Math::BigInt') ? Math::BigInt::bgcd($d, $n)
                                           : _gcd_ui($d, $n);
-    return 0 if $gcd > 1 && $gcd != $n;  # Found divisor $d
+    return (0,0,0) if $gcd > 1 && $gcd != $n;  # Found divisor $d
     my $j = _jacobi($d * $sign, $n);
     last if $j == -1;
     $d += 2;
     croak "Could not find Jacobi sequence for $n" if $d > 4_000_000_000;
     $sign = -$sign;
   }
-  return ($sign * $d);
-}
-
-sub is_lucas_pseudoprime {
-  return is_strong_lucas_pseudoprime($_[0], 'weak');
-}
-
-sub is_strong_lucas_pseudoprime {
-  my($n, $doweak) = @_;
-  _validate_positive_integer($n);
-  $doweak = (defined $doweak && $doweak eq 'weak') ? 1 : 0;
-
-  return 1 if $n == 2;
-  return 0 if $n < 2 || ($n % 2) == 0;
-  return 0 if _is_perfect_square($n);
-
-  # Determine Selfridge D, P, and Q parameters
-  my $D = _find_jacobi_d_sequence($n);
-  return 0 if $D == 0;  # We found a divisor in the sequence
+  my $D = $sign * $d;
   my $P = 1;
   my $Q = int( (1 - $D) / 4 );
-  # Verify we've calculated this right
-  die "Selfridge error: $D, $P, $Q\n" if ($D != $P*$P - 4*$Q);
-  #warn "N: $n  D: $D  P: $P  Q: $Q\n";
+  ($P, $Q, $D)
+}
 
-  # It's now time to perform the Lucas pseudoprimality test using $D.
+sub _lucas_extrastrong_params {
+  my($n, $increment) = @_;
+  $increment = 1 unless defined $increment;
+
+  my ($P, $Q, $D) = (3, 1, 5);
+  while (1) {
+    my $gcd = (ref($n) eq 'Math::BigInt') ? Math::BigInt::bgcd($D, $n)
+                                          : _gcd_ui($D, $n);
+    return (0,0,0) if $gcd > 1 && $gcd != $n;  # Found divisor $d
+    last if _jacobi($D, $n) == -1;
+    $P += $increment;
+    croak "Could not find Jacobi sequence for $n" if $P > 65535;
+    $D = $P*$P - 4;
+  }
+  ($P, $Q, $D);
+}
+
+# returns U_k, V_k, Q_k all mod n
+sub lucas_sequence {
+  my($n, $P, $Q, $k) = @_;
+
+  croak "lucas_sequence: n must be >= 2" if $n < 2;
+  croak "lucas_sequence: k must be >= 0" if $k < 0;
+  croak "lucas_sequence: P out of range" if $P < 0 || $P >= $n;
+  croak "lucas_sequence: Q out of range" if $Q >= $n;
+
+  my $D = $P*$P - 4*$Q;
+  croak "lucas_sequence: D is zero" if $D == 0;
 
   if (ref($n) ne 'Math::BigInt') {
     if (!defined $Math::BigInt::VERSION) {
@@ -955,49 +963,113 @@ sub is_strong_lucas_pseudoprime {
     $n = Math::BigInt->new("$n");
   }
 
-  my $m = $n->copy->badd(1);
-  # Traditional d,s:
-  #   my $d=$m->copy; my $s=0; while ($d->is_even) { $s++; $d->brsft(1); }
-  #   die "Invalid $m, $d, $s\n" unless $m == $d * 2**$s;
-  my $dstr = substr($m->as_bin, 2);
-  my $s = 0;
-  if (!$doweak) {
-    $dstr =~ s/(0*)$//;
-    $s = length($1);
-  }
-
   my $ZERO = $n->copy->bzero;
   my $U = $ZERO + 1;
   my $V = $ZERO + $P;
   my $Qk = $ZERO + $Q;
+
+  return ($ZERO, $ZERO+2) if $k == 0;
+  $k = Math::BigInt->new("$k") unless ref($k) eq 'Math::BigInt';
+  my $kstr = substr($k->as_bin, 2);
   my $bpos = 0;
-  while (++$bpos < length($dstr)) {
-    $U = ($U * $V) % $n;
-    $V = ($V * $V - 2*$Qk) % $n;
-    $Qk = ($Qk * $Qk) % $n;
-    if (substr($dstr,$bpos,1)) {
-      my $T1 = $U->copy->bmul($D);
-      $U->badd($V);
-      $U->badd($n) if $U->is_odd;
-      $U->brsft(1);
-      $U->bmod($n);
 
-      $V->badd($T1);
-      $V->badd($n) if $V->is_odd;
-      $V->brsft(1);
-      $V->bmod($n);
+  if ($Q == 1) {
+    my $Dinverse = ($ZERO+$D)->bmodinv($n);
+    if ($P > 2 && !$Dinverse->is_nan) {
+      # Calculate V_k with U=V_{k+1}
+      $U = $ZERO + ($P*$P - 2);
+      while (++$bpos < length($kstr)) {
+        if (substr($kstr,$bpos,1)) {
+          $V->bmul($U)->bsub($P)->bmod($n);
+          $U->bmul($U)->bsub( 2)->bmod($n);
+        } else {
+          $U->bmul($V)->bsub($P)->bmod($n);
+          $V->bmul($V)->bsub( 2)->bmod($n);
+        }
+      }
+      # Crandall and Pomerance eq 3.13: U_n = D^-1 (2V_{n+1} - PV_n)
+      $U = $Dinverse * (2*$U - $P*$V);
+    } else {
+      while (++$bpos < length($kstr)) {
+        $U = ($U * $V) % $n;
+        $V = ($V * $V - 2) % $n;
+        if (substr($kstr,$bpos,1)) {
+          my $T1 = $U->copy->bmul($D);
+          $U->bmul($P)->badd( $V)->badd( $U->is_odd ? $n : 0 )->brsft(1);
+          $V->bmul($P)->badd($T1)->badd( $V->is_odd ? $n : 0 )->brsft(1);
+        }
+      }
+    }
+  } else {
+    while (++$bpos < length($kstr)) {
+      $U = ($U * $V) % $n;
+      $V = ($V * $V - 2*$Qk) % $n;
+      $Qk->bmul($Qk);
+      if (substr($kstr,$bpos,1)) {
+        my $T1 = $U->copy->bmul($D);
+        $U->bmul($P);
+        $U->badd($V);
+        $U->badd($n) if $U->is_odd;
+        $U->brsft(1);
 
-      $Qk = ($Qk * $Q) % $n;
+        $V->bmul($P);
+        $V->badd($T1);
+        $V->badd($n) if $V->is_odd;
+        $V->brsft(1);
+
+        $Qk->bmul($Q);
+      }
+      $Qk->bmod($n);
     }
   }
-  if ($doweak) { return $U->is_zero ? 1 : 0; }
-  return 1 if $U->is_zero || $V->is_zero;
+  $U->bmod($n);
+  $V->bmod($n);
+  return ($U, $V, $Qk);
+}
 
-  # Compute powers of V
-  foreach my $r (1 .. $s-1) {
-    $V = ($V * $V - 2*$Qk) % $n;
+sub is_lucas_pseudoprime {
+  my($n) = @_;
+  _validate_positive_integer($n);
+
+  return 1 if $n == 2;
+  return 0 if $n < 2 || ($n % 2) == 0;
+  return 0 if _is_perfect_square($n);
+
+  my ($P, $Q, $D) = _lucas_selfridge_params($n);
+  return 0 if $D == 0;  # We found a divisor in the sequence
+  die "Lucas parameter error: $D, $P, $Q\n" if ($D != $P*$P - 4*$Q);
+
+  my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $n+1);
+  return $U->is_zero ? 1 : 0;
+}
+
+sub is_strong_lucas_pseudoprime {
+  my($n) = @_;
+  _validate_positive_integer($n);
+
+  return 1 if $n == 2;
+  return 0 if $n < 2 || ($n % 2) == 0;
+  return 0 if _is_perfect_square($n);
+
+  my ($P, $Q, $D) = _lucas_selfridge_params($n);
+  return 0 if $D == 0;  # We found a divisor in the sequence
+  die "Lucas parameter error: $D, $P, $Q\n" if ($D != $P*$P - 4*$Q);
+
+  my $m = $n+1;
+  my($s, $k) = (0, $m);
+  while ( $k > 0 && !($k % 2) ) {
+    $s++;
+    $k >>= 1;
+  }
+  my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $k);
+
+  return 1 if $U->is_zero;
+  foreach my $r (0 .. $s-1) {
     return 1 if $V->is_zero;
-    $Qk = ($Qk * $Qk) % $n if $r < ($s-1);
+    if ($r < ($s-1)) {
+      $V->bmul($V)->bsub(2*$Qk)->bmod($n);
+      $Qk->bmul($Qk)->bmod($n);
+    }
   }
   return 0;
 }
@@ -1010,16 +1082,46 @@ sub is_extra_strong_lucas_pseudoprime {
   return 0 if $n < 2 || ($n % 2) == 0;
   return 0 if _is_perfect_square($n);
 
-  my ($P, $Q, $D) = (3, 1, 5);
-  while (1) {
-    my $gcd = (ref($n) eq 'Math::BigInt') ? Math::BigInt::bgcd($D, $n)
-                                          : _gcd_ui($D, $n);
-    return 0 if $gcd > 1 && $gcd != $n;  # Found divisor $d
-    last if _jacobi($D, $n) == -1;
-    $P++;
-    $D = $P*$P - 4;
+  my ($P, $Q, $D) = _lucas_extrastrong_params($n);
+  return 0 if $D == 0;  # We found a divisor in the sequence
+  die "Lucas parameter error: $D, $P, $Q\n" if ($D != $P*$P - 4*$Q);
+
+  my $m = $n+1;
+  my($s, $k) = (0, $m);
+  while ( $k > 0 && !($k % 2) ) {
+    $s++;
+    $k >>= 1;
   }
-  die "Lucas incorrect DPQ: $D, $P, $Q\n" if ($D != $P*$P - 4*$Q);
+  my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $k);
+
+  return 1 if $U->is_zero && ($V == 2 || $V == ($n-2));
+  foreach my $r (0 .. $s-2) {
+    return 1 if $V->is_zero;
+    $V->bmul($V)->bsub(2)->bmod($n);
+  }
+  return 0;
+}
+
+sub is_almost_extra_strong_lucas_pseudoprime {
+  my($n, $increment) = @_;
+  _validate_positive_integer($n);
+  $increment = 1 unless defined $increment;
+  _validate_positive_integer($increment, 1, 256);
+
+  return 1 if $n == 2;
+  return 0 if $n < 2 || ($n % 2) == 0;
+  return 0 if _is_perfect_square($n);
+
+  my ($P, $Q, $D) = _lucas_extrastrong_params($n, $increment);
+  return 0 if $D == 0;  # We found a divisor in the sequence
+  die "Lucas parameter error: $D, $P, $Q\n" if ($D != $P*$P - 4*$Q);
+
+  my $m = $n+1;
+  my($s, $k) = (0, $m);
+  while ( $k > 0 && !($k % 2) ) {
+    $s++;
+    $k >>= 1;
+  }
 
   if (ref($n) ne 'Math::BigInt') {
     if (!defined $Math::BigInt::VERSION) {
@@ -1029,42 +1131,73 @@ sub is_extra_strong_lucas_pseudoprime {
     $n = Math::BigInt->new("$n");
   }
 
-  my $m = $n->copy->badd(1);
-  # Traditional d,s:
-  #   my $d=$m->copy; my $s=0; while ($d->is_even) { $s++; $d->brsft(1); }
-  #   die "Invalid $m, $d, $s\n" unless $m == $d * 2**$s;
-  my $dstr = substr($m->as_bin, 2);
-  $dstr =~ s/(0*)$//;
-  my $s = length($1);
-
   my $ZERO = $n->copy->bzero;
-  my $U = $ZERO + 1;
-  my $V = $ZERO + $P;
+  my $V = $ZERO + $P;        # V_{k}
+  my $W = $ZERO + $P*$P-2;   # V_{k+1}
+  $k = Math::BigInt->new("$k") unless ref($k) eq 'Math::BigInt';
+  my $kstr = substr($k->as_bin, 2);
   my $bpos = 0;
-  while (++$bpos < length($dstr)) {
-    $U->bmul($V)->bmod($n);
-    $V->bmul($V)->bsub(2)->bmod($n);
-    if (substr($dstr,$bpos,1)) {
-      my $U_times_D = $U->copy->bmul($D);
-      $U->bmul($P)->badd($V);
-      $U->badd($n) if $U->is_odd;
-      $U->brsft(1);
-
-      $V->bmul($P)->badd($U_times_D);
-      $V->badd($n) if $V->is_odd;
-      $V->brsft(1);
+  while (++$bpos < length($kstr)) {
+    if (substr($kstr,$bpos,1)) {
+      $V->bmul($W)->bsub($P)->bmod($n);
+      $W->bmul($W)->bsub( 2)->bmod($n);
+    } else {
+      $W->bmul($V)->bsub($P)->bmod($n);
+      $V->bmul($V)->bsub( 2)->bmod($n);
     }
   }
-  $U->bmod($n);
-  $V->bmod($n);
-  return 1 if $U->is_zero && ($V == 2 || $V == ($n-2));
-  return 1 if $V->is_zero;
 
-  foreach my $r (1 .. $s-1) {
-    $V->bmul($V)->bsub(2)->bmod($n);
+  return 1 if $V == 2 || $V == ($n-2);
+  foreach my $r (0 .. $s-2) {
     return 1 if $V->is_zero;
+    $V->bmul($V)->bsub(2)->bmod($n);
   }
   return 0;
+}
+
+sub is_frobenius_underwood_pseudoprime {
+  my($n) = @_;
+  _validate_positive_integer($n);
+  return 0 if $n < 2;
+  return 1 if $n < 4;
+  return 0 if ($n % 2) == 0;
+  return 0 if _is_perfect_square($n);
+
+  if (ref($n) ne 'Math::BigInt') {
+    if (!defined $Math::BigInt::VERSION) {
+      eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
+      or do { croak "Cannot load Math::BigInt "; }
+    }
+    $n = Math::BigInt->new("$n");
+  }
+
+  my $ZERO = $n->copy->bzero;
+  my $a = $ZERO + 1;
+  my $b = $ZERO + 2;
+
+  my ($x, $t, $np1, $len, $na) = (0, -1, $n+1, 1, undef);
+  while ( _jacobi($t, $n) != -1 ) {
+    $x++;
+    $t = $x*$x - 4;
+  }
+  my $result = $x+$x+5;
+  my $multiplier = $x+2;
+  $result %= $n if $result > $n;
+  $multiplier %= $n if $multiplier > $n;
+  { my $v = $np1; $len++ while ($v >>= 1); }
+  foreach my $bit (reverse 0 .. $len-2) {
+    $na = $a * (($a*$x) + ($b+$b));
+    $b = ( ($b + $a) * ($b - $a) ) % $n;
+    $a = $na % $n;
+    if ( ($np1 >> $bit) & 1 ) {
+      $na = $b + ($a * $multiplier);
+      $b += ($b - $a);
+      $a = $na;
+    }
+  }
+  $a->bmod($n);
+  $b->bmod($n);
+  return ($a == 0 && $b == $result) ? 1 : 0;
 }
 
 
@@ -1937,190 +2070,6 @@ sub ecm_factor {
 }
 
 
-sub primality_proof_lucas {
-  my ($n) = shift;
-  my @composite = (0, []);
-
-  # Since this can take a very long time with a composite, try some easy cuts
-  return @composite if !defined $n || $n < 2;
-  return (2, [$n]) if $n < 4;
-  return @composite if miller_rabin($n,2,15,325) == 0;
-
-  if (!defined $Math::BigInt::VERSION) {
-    eval { require Math::BigInt;   Math::BigInt->import(try=>'GMP,Pari'); 1; }
-    or do { croak "Cannot load Math::BigInt"; };
-  }
-
-  my $nm1 = $n-1;
-  my @factors = factor($nm1);
-  { # remove duplicate factors and make a sorted array of bigints
-    my %uf;
-    undef @uf{@factors};
-    @factors = sort {$a<=>$b} map { Math::BigInt->new("$_") } keys %uf;
-  }
-  for (my $a = 2; $a < $nm1; $a++) {
-    my $ap = Math::BigInt->new("$a");
-    # 1. a must be coprime to n
-    next unless Math::BigInt::bgcd($ap, $n) == 1;
-    # 2. a^(n-1) = 1 mod n.
-    next unless $ap->copy->bmodpow($nm1, $n) == 1;
-    # 3. a^((n-1)/f) != 1 mod n for all f.
-    next if (scalar grep { $_ == 1 }
-             map { $ap->copy->bmodpow(int($nm1/$_),$n); }
-             @factors) > 0;
-    # Verify each factor and add to proof
-    my @fac_proofs;
-    foreach my $f (@factors) {
-      my ($isp, $fproof) = Math::Prime::Util::is_provable_prime_with_cert($f);
-      if ($isp != 2) {
-        carp "could not prove primality of $n.\n";
-        return (1, []);
-      }
-      push @fac_proofs, (scalar @$fproof == 1) ? $fproof->[0] : $fproof;
-    }
-    my @proof = ("$n", "Pratt", [@fac_proofs], $a);
-    return (2, [@proof]);
-  }
-  return @composite;
-}
-
-sub primality_proof_bls75 {
-  my ($n) = shift;
-  my @composite = (0, []);
-
-  # Since this can take a very long time with a composite, try some easy cuts
-  return @composite if !defined $n || $n < 2;
-  return (2, [$n]) if $n < 4;
-  return @composite if ($n & 1) == 0;
-  return @composite if miller_rabin($n,2,15,325) == 0;
-
-  if (!defined $Math::BigInt::VERSION) {
-    eval { require Math::BigInt;   Math::BigInt->import(try=>'GMP,Pari'); 1; }
-    or do { croak "Cannot load Math::BigInt"; };
-  }
-
-  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
-  my $nm1 = $n-1;
-  my $A = $nm1->copy->bone;   # factored part
-  my $B = $nm1->copy;         # unfactored part
-  my @factors = (2);
-  croak "BLS75 error: n-1 not even" unless $nm1->is_even();
-  my $trial_B = 20000;
-  {
-    while ($B->is_even) { $B /= 2; $A *= 2; }
-    my @tf = trial_factor($B, $trial_B);
-    pop @tf if $tf[-1] > $trial_B;
-    foreach my $f (@tf) {
-      next if $f == $factors[-1];
-      push @factors, $f;
-      do { $B /= $f;  $A *= $f; } while (($B % $f) == 0);
-    }
-  }
-  my @nstack;
-  # nstack should only hold composites
-  if ($B == 1) {
-    # Completely factored.  Nothing.
-  } elsif (Math::Prime::Util::is_prob_prime($B)) {
-    push @factors, $B;
-    $A *= $B;  $B /= $B;   # completely factored already
-  } else {
-    push @nstack, $B;
-  }
-  my $theorem = 5;
-  while (@nstack) {
-    my ($s,$r) = $B->copy->bdiv($A->copy->bmul(2));
-    my $fpart = ($A+1) * (2*$A*$A + ($r-1) * $A + 1);
-    last if $n < $fpart;
-    # Theorem 7....
-    $fpart = ($A*$trial_B+1) * (2*$A*$A + ($r-$trial_B) * $A + 1);
-    if ($n < $fpart) { $theorem = 7; last; }
-
-    my $m = pop @nstack;
-    # Don't use bignum if it has gotten small enough.
-    $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= ''.~0;
-    # Try to find factors of m, using the default set of factor subs.
-    my @ftry;
-    $_holf_r = 1;
-    foreach my $sub (@_fsublist) {
-      @ftry = $sub->($m);
-      last if scalar @ftry >= 2;
-    }
-    # If we couldn't find a factor, skip it.
-    next unless scalar @ftry > 1;
-    # Process each factor
-    foreach my $f (@ftry) {
-      croak "Invalid factoring: B=$B m=$m f=$f" if $f == 1 || $f == $m || ($B%$f) != 0;
-      if (Math::Prime::Util::is_prob_prime($f)) {
-        push @factors, $f;
-        do { $B /= $f;  $A *= $f; } while (($B % $f) == 0);
-      } else {
-        push @nstack, $f;
-      }
-    }
-  }
-  # Just in case:
-  foreach my $f (@factors) {
-    while (($B % $f) == 0) {
-      $B /= $f;  $A *= $f;
-    }
-  }
-  { # remove duplicate factors and make a sorted array of bigints
-    my %uf = map { $_ => 1 } @factors;
-    @factors = sort {$a<=>$b} map { Math::BigInt->new("$_") } keys %uf;
-  }
-  # Did we factor enough?
-  my ($s,$r) = $B->copy->bdiv($A->copy->bmul(2));
-  my $fpart = ($theorem == 5)
-            ? ($A+1) * (2*$A*$A + ($r-1) * $A + 1)
-            : ($A*$trial_B+1) * (2*$A*$A + ($r-$trial_B) * $A + 1);
-  return (1,[]) if $n >= $fpart;
-  # Check we didn't mess up
-  croak "BLS75 error: $A * $B != $nm1" unless $A*$B == $nm1;
-  croak "BLS75 error: $A not even" unless $A->is_even();
-  croak "BLS75 error: A and B not coprime" unless Math::BigInt::bgcd($A, $B)==1;
-
-  my $rtest = $r*$r - 8*$s;
-  my $rtestroot = $rtest->copy->bsqrt;
-  return @composite if $s != 0 && ($rtestroot*$rtestroot) == $rtest;
-
-  my @fac_proofs;
-  my @as;
-  foreach my $f (@factors) {
-    my $success = 0;
-    foreach my $a (2 .. 10000) {
-      my $ap = Math::BigInt->new($a);
-      next unless $ap->copy->bmodpow($nm1, $n) == 1;
-      next unless Math::BigInt::bgcd($ap->copy->bmodpow($nm1/$f, $n)->bsub(1), $n) == 1;
-      push @as, $a;
-      $success = 1;
-      last;
-    }
-    return @composite unless $success;
-    my ($isp, $fproof) = Math::Prime::Util::is_provable_prime_with_cert($f);
-    if ($isp != 2) {
-      carp "could not prove primality of $n.\n";
-      return (1, []);
-    }
-    push @fac_proofs, (scalar @$fproof == 1) ? $fproof->[0] : $fproof;
-  }
-  # Put n, B back to non-bigints if possible.
-  $n = int($n->bstr) if ref($n) eq 'Math::BigInt' && $n <= ''.~0;
-  $B = int($B->bstr) if ref($B) eq 'Math::BigInt' && $B <= ''.~0;
-  if ($theorem == 5) {
-    return (2, [$n, "n-1", [@fac_proofs], [@as]]);
-  } else {
-    my $t7a = 0;
-    my $f = $B;
-    foreach my $a (2 .. 10000) {
-      my $ap = Math::BigInt->new($a);
-      next unless $ap->copy->bmodpow($nm1, $n) == 1;
-      next unless Math::BigInt::bgcd($ap->copy->bmodpow($nm1/$f, $n)->bsub(1), $n) == 1;
-      return (2, [$n, "n-1", ["B", $trial_B, $B, $a], [@fac_proofs], [@as]]);
-    }
-  }
-  return @composite;
-}
-
 
 my $_const_euler = 0.57721566490153286060651209008240243104215933593992;
 my $_const_li2 = 1.045163780117492784844588889194613136522615578151;
@@ -2402,7 +2351,7 @@ sub RiemannZeta {
   my $tol = 1.11e-16;
 
   # Series based on (2n)! / B_2n.
-  # This is a simplication of the Cephes zeta function.
+  # This is a simplification of the Cephes zeta function.
   my @A = (
       12.0,
      -720.0,
@@ -2656,8 +2605,9 @@ functions.  Alternately, L<Math::Pari> has a lot of these types of functions.
   print "$n is prime" if is_prime($n);
 
 Returns 2 if the number is prime, 0 if not.  For numbers larger than C<2^64>
-it will return 0 for composite and 1 for probably prime, using a strong BPSW
-test.  Also note there are probabilistic prime testing functions available.
+it will return 0 for composite and 1 for probably prime, using an
+extra-strong BPSW test.  Also note there are probabilistic prime testing
+functions available.
 
 
 =head2 primes
@@ -2774,25 +2724,49 @@ L<Grantham 2000|http://www.ams.org/mathscinet-getitem?mr=1680879>).
 This has slightly more restrictive conditions than the strong Lucas test,
 but uses different starting parameters so is not directly comparable.
 
+=head2 is_almost_extra_strong_lucas_pseudoprime
+
+Takes a positive number as input, and returns 1 if the input passes the extra
+strong Lucas test, ignoring the C<U_n = 0> condition.  This produces about 5%
+more pseudoprimes than the extra strong test, but 66% fewer than the strong
+test.
+
+An optional second argument (an integer between 1 and 256) indicates the
+increment used when selecting the C<P> parameter.  A default value of 1
+creates the same parameters as the extra strong test, so the pseudoprime
+sequence from this function will contain all the extra strong Lucas
+pseudoprimes.  A value of 2 yields the method used by
+L<Pari|http://pari.math.u-bordeaux.fr/faq.html#primetest>.
+
+=head2 is_frobenius_underwood_pseudoprime
+
+Takes a positive number as input, and returns 1 if the input passes the minimal
+lambda+2 test (see Underwood 2012 "Quadratic Compositeness Tests"), where
+C<(L+2)^(n-1) = 5 + 2x mod (n, L^2 - Lx + 1)>.  The computational cost for this
+is between the cost of 2 and 3 strong pseudoprime tests.  There are no known
+counterexamples, but this is not a well studied test.
+
 =head2 is_aks_prime
 
 Takes a positive number as input, and returns 1 if the input can be proven
 prime using the AKS primality test.  This code is included for completeness
 and as an example, but is impractically slow.
 
-=head2 primality_proof_lucas
+=head2 lucas_sequence
 
-Given a positive number C<n> as input, performs a full factorization of C<n-1>,
-then attempts a Lucas test on the result.  A Pratt-style certificate is
-returned.  Note that if the input is composite, this will take a B<very> long
-time to return.
+  my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $k)
 
-=head2 primality_proof_bls75
+Computes C<U_k>, C<V_k>, and C<Q_k> for the Lucas sequence defined by
+C<P>,C<Q>, modulo C<n>.  The modular Lucas sequence is used in a
+number of primality tests and proofs.
 
-Given a positive number C<n> as input, performs a partial factorization of
-C<n-1>, then attempts a proof using theorem 5 of Brillhart, Lehmer, and
-Selfridge's 1975 paper.  This can take a long time to return if given a
-composite, though it should not be anywhere near as long as the Lucas test.
+The following conditions must hold:
+  - C<< D = P*P - 4*Q  !=  0 >>
+  - C<< P > 0 >>
+  - C<< P < n >>
+  - C<< Q < n >>
+  - C<< k >= 0 >>
+  - C<< n >= 2 >>
 
 
 =head1 UTILITY FUNCTIONS

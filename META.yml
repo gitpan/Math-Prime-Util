@@ -22,7 +22,7 @@ no_index:
 recommends:
   Math::BigInt::GMP: 0
   Math::MPFR: 2.03
-  Math::Prime::Util::GMP: 0.06
+  Math::Prime::Util::GMP: 0.13
 requires:
   Bytes::Random::Secure: 0.23
   Carp: 0
@@ -37,4 +37,4 @@ requires:
 resources:
   homepage: https://github.com/danaj/Math-Prime-Util
   repository: https://github.com/danaj/Math-Prime-Util
-version: 0.29
+version: 0.30

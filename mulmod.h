@@ -38,7 +38,7 @@
          :"%rax", "%rdx"         /* clobbered registers */
         );
     /* A version for _MSC_VER:
-     *  
+     *
      *    __asm { mov rax, qword ptr a
      *            mul qword ptr b
      *            div qword ptr c
@@ -49,12 +49,32 @@
   #define mulmod(a,b,m) _mulmod(a,b,m)
   #define sqrmod(n,m)   _mulmod(n,n,m)
 
-#elif 0
+  /* addmod from Kruppa 2010 page 67 */
+  static INLINE UV _addmod(UV a, UV b, UV m) {
+    UV r = a+b;
+    UV t = a-m;
+    asm ("add %2, %1\n\t"    /* t := t + b */
+         "cmovc %1, %0\n\t"  /* if (carry) r := t */
+         :"+r" (r), "+&r" (t)
+         :"g" (b)
+         :"cc"
+        );
+    return r;
+  }
+  #define addmod(a,b,n) _addmod(a,b,n)
 
-  /* Finding out if these types are supported requires non-trivial
-   * configuration.  They are very fast if they exist. */
-  #define mulmod(a,b,m)  (UV)(((__uint128_t)(a)*(__uint128_t)(b)) % ((__uint128_t)(m)))
-  #define sqrmod(n,m)    (UV)(((__uint128_t)(n)*(__uint128_t)(n)) % ((__uint128_t)(m)))
+#elif BITS_PER_WORD == 64 && __GNUC__ == 4 && __GNUC_MINOR__ >= 4 && (defined(__LP64__) || defined(__x86_64__) || defined(__powerpc64__) || defined(_M_X64) || defined(_M_IX86))
+
+  /* We're 64-bit, using a modern gcc, and the target has some 128-bit type */
+
+  #if __GNUC__ == 4 && __GNUC_MINOR__ >= 4 && __GNUC_MINOR__ < 6
+    typedef unsigned int uint128_t __attribute__ ((__mode__ (TI)));
+  #else
+    typedef unsigned __int128 uint128_t;
+  #endif
+
+  #define mulmod(a,b,m) (UV)(((uint128_t)(a)*(uint128_t)(b)) % ((uint128_t)(m)))
+  #define sqrmod(n,m)   (UV)(((uint128_t)(n)*(uint128_t)(n)) % ((uint128_t)(m)))
 
 #else
 
@@ -63,8 +83,9 @@
   /* Do it by hand */
   static INLINE UV _mulmod(UV a, UV b, UV m) {
     UV r = 0;
-    a %= m;   /* These are wasteful given that careful attention from the */
-    b %= m;   /* caller should make them unnecessary.                     */
+    if (a >= m) a %= m;   /* Careful attention from the caller should make */
+    if (b >= m) b %= m;   /* these unnecessary.                            */
+    if (a < b) { UV t = a; a = b; b = t; }
     while (b > 0) {
       if (b & 1)  r = ((m-r) > a) ? r+a : r+a-m;    /* r = (r + a) % m */
       b >>= 1;
@@ -79,13 +100,22 @@
 #endif
 
 #ifndef addmod
-  #define addmod(n,a,m) ((((m)-(n)) > (a))  ?  ((n)+(a))  :  ((n)+(a)-(m)))
+  #define addmod(a,b,m) ((((m)-(a)) > (b))  ?  ((a)+(b))  :  ((a)+(b)-(m)))
 #endif
+
+/* We need to make sure a and b get evaluated into UVs, then do the
+ * subtract into a UV before the addmod. */
+static INLINE UV submod(UV a, UV b, UV m) {
+  UV t1 = m - b;
+  return addmod(a, t1, m);
+}
 
 /* n^2 + a mod m */
 #define sqraddmod(n, a, m)     addmod(sqrmod(n,m),  a,m)
 /* i*j + a mod m */
 #define muladdmod(i, j, a, m)  addmod(mulmod(i,j,m), a, m)
+/* i*j - a mod m */
+#define mulsubmod(i, j, a, m)  submod(mulmod(i,j,m), a, m)
 
 /* n^power mod m */
 #ifndef HALF_WORD

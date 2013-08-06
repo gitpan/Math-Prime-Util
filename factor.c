@@ -399,158 +399,282 @@ int _SPRP2(UV n)
   return 0;
 }
 
+/* Select M-R bases from http://miller-rabin.appspot.com/, 27 May 2013 */
+#if BITS_PER_WORD == 32
+static const UV mr_bases_small_2[2] = {31, 73};
+static const UV mr_bases_small_3[3] = {2, 7, 61};
+#else
+static const UV mr_bases_large_1[1] = { UVCONST(  9345883071009581737 ) };
+static const UV mr_bases_large_2[2] = { UVCONST(   725270293939359937 ),
+                                        UVCONST(  3569819667048198375 ) };
+static const UV mr_bases_large_3[3] = { UVCONST(  4230279247111683200 ),
+                                        UVCONST( 14694767155120705706 ),
+                                        UVCONST( 16641139526367750375 ) };
+#endif
+
 int _XS_is_prob_prime(UV n)
 {
-  UV bases[12];
-  int nbases;
-  int prob_prime;
+  int ret;
 
-  if (n == 2 || n == 3 || n == 5)           return 2;
-  if (n < 2 || !(n%2) || !(n%3) || !(n%5))  return 0;
-  if (n <   49) /* 7*7 */                   return 2;
-  if (!(n% 7) || !(n%11) || !(n%13) || !(n%17) || !(n%19) || !(n%23)) return 0;
-  if (!(n%29) || !(n%31) || !(n%37) || !(n%41) || !(n%43) || !(n%47)) return 0;
-  if (n < 2809) /* 53*53 */                 return 2;
+  if (n < 11) {
+    if (n == 2 || n == 3 || n == 5 || n == 7)     return 2;
+    else                                          return 0;
+  }
+  if (!(n%2) || !(n%3) || !(n%5) || !(n%7))       return 0;
+  if (n <  121) /* 11*11 */                       return 2;
+  if (!(n%11) || !(n%13) || !(n%17) || !(n%19) ||
+      !(n%23) || !(n%29) || !(n%31) || !(n%37) ||
+      !(n%41) || !(n%43) || !(n%47) || !(n%53))   return 0;
+  if (n < 3481) /* 59*59 */                       return 2;
 
 #if BITS_PER_WORD == 32
-
-  /* These aren't ideal.  Could use 1 when n < 49191, 2 when n < 360018361 */
-  if (n < UVCONST(9080191)) {
-    bases[0] = 31; bases[1] = 73; nbases = 2;
-  } else  {
-    bases[0] = 2; bases[1] = 7; bases[2] = 61; nbases = 3;
-  }
-  prob_prime = _XS_miller_rabin(n, bases, nbases);
-  return 2*prob_prime;
-
+  /* We could use one base when n < 49191, two when n < 360018361. */
+  if (n < UVCONST(9080191))
+    ret = _XS_miller_rabin(n, mr_bases_small_2, 2);
+  else
+    ret = _XS_miller_rabin(n, mr_bases_small_3, 3);
 #else
-
-  /* Verified with Feitsma database.  No counterexamples below 2^64.
-   * This is faster than multiple M-R routines once we're over 32-bit */
-  if (n >= UVCONST(4294967295)) {
-    prob_prime = _SPRP2(n) && _XS_is_extra_strong_lucas_pseudoprime(n);
-    return 2*prob_prime;
-  }
-
-  /* Better bases from http://miller-rabin.appspot.com/, 27 May 2013 */
-  /* Verify with:
-   *  cat /local/share/spsps-below-2-to-64.txt | perl -MMath::Prime::Util=:all
-   *    -nE 'chomp; next unless is_strong_pseudoprime($_, @bases); say;'
-   */
-  if (n < UVCONST(341531)) {
-    bases[0] = UVCONST(  9345883071009581737 );
-    nbases = 1;
-  } else if (n < UVCONST(885594169)) {
-    bases[0] = UVCONST(   725270293939359937 );
-    bases[1] = UVCONST(  3569819667048198375 );
-    nbases = 2;
-  } else if (n < UVCONST(350269456337)) {
-    bases[0] = UVCONST(  4230279247111683200 );
-    bases[1] = UVCONST( 14694767155120705706 );
-    bases[2] = UVCONST( 16641139526367750375 );
-    nbases = 3;
-  } else if (n < UVCONST(55245642489451)) {      /* 38+ bits */
-    bases[0] = 2;
-    bases[1] = UVCONST(      141889084524735 );
-    bases[2] = UVCONST(  1199124725622454117 );
-    bases[3] = UVCONST( 11096072698276303650 );
-    nbases = 4;
-  } else if (n < UVCONST(7999252175582851)) {    /* 45+ bits */
-    bases[0] = 2;
-    bases[1] = UVCONST(        4130806001517 );
-    bases[2] = UVCONST(   149795463772692060 );
-    bases[3] = UVCONST(   186635894390467037 );
-    bases[4] = UVCONST(  3967304179347715805 );
-    nbases = 5;
-  } else if (n < UVCONST(585226005592931977)) {  /* 52+ bits */
-    bases[0] = 2;
-    bases[1] = UVCONST(      123635709730000 );
-    bases[2] = UVCONST(     9233062284813009 );
-    bases[3] = UVCONST(    43835965440333360 );
-    bases[4] = UVCONST(   761179012939631437 );
-    bases[5] = UVCONST(  1263739024124850375 );
-    nbases = 6;
-  } else {                                       /* 59+ bits */
-    bases[0] = 2;
-    bases[1] = UVCONST( 325        );
-    bases[2] = UVCONST( 9375       );
-    bases[3] = UVCONST( 28178      );
-    bases[4] = UVCONST( 450775     );
-    bases[5] = UVCONST( 9780504    );
-    bases[6] = UVCONST( 1795265022 );
-    nbases = 7;
-  }
-  prob_prime = _XS_miller_rabin(n, bases, nbases);
-  return 2*prob_prime;
+  /* AESLSP test costs about 1.5 Selfridges, vs. ~2.2 for strong Lucas.
+   * So it works out to be faster to do AES-BPSW vs. 3 M-R tests. */
+  if (n < UVCONST(341531))
+    ret = _XS_miller_rabin(n, mr_bases_large_1, 1);
+  else if (n < UVCONST(885594169))
+    ret = _XS_miller_rabin(n, mr_bases_large_2, 2);
+  else
+    ret = _SPRP2(n) && _XS_is_almost_extra_strong_lucas_pseudoprime(n,1);
 #endif
+  return 2*ret;
 }
 
-/* Extra Strong Lucas test.
+/* Generic Lucas sequence for any appropriate P and Q */
+void lucas_seq(UV* Uret, UV* Vret, UV* Qkret, UV n, IV P, IV Q, UV k)
+{
+  UV U, V, b, Dmod, Qmod, Pmod, Qk;
+
+  if (k == 0) {
+    *Uret = 0;
+    *Vret = 2;
+    *Qkret = Q;
+    return;
+  }
+
+  Qmod = (Q < 0)  ?  (UV)(Q + (IV)n)  :  (UV)Q;
+  Pmod = (P < 0)  ?  (UV)(P + (IV)n)  :  (UV)P;
+  Dmod = submod( mulmod(Pmod, Pmod, n), mulmod(4, Qmod, n), n);
+  MPUassert(Dmod != 0, "lucas_seq: D is 0");
+  U = 1;
+  V = Pmod;
+  Qk = Qmod;
+  { UV v = k; b = 1; while (v >>= 1) b++; }
+
+  if (Q == 1) {
+    while (b > 1) {
+      U = mulmod(U, V, n);
+      V = mulsubmod(V, V, 2, n);
+      b--;
+      if ( (k >> (b-1)) & UVCONST(1) ) {
+        UV t2 = mulmod(U, Dmod, n);
+        U = muladdmod(U, Pmod, V, n);
+        if (U & 1) { U = (n>>1) + (U>>1) + 1; } else { U >>= 1; }
+        V = muladdmod(V, P, t2, n);
+        if (V & 1) { V = (n>>1) + (V>>1) + 1; } else { V >>= 1; }
+      }
+    }
+  } else if (P == 1 && Q == -1) {
+    /* This is about 30% faster than the generic code below.  Since 50% of
+     * Lucas and strong Lucas tests come here, I think it's worth doing. */
+    int sign = Q;
+    while (b > 1) {
+      U = mulmod(U, V, n);
+      if (sign == 1) V = mulsubmod(V, V, 2, n);
+      else           V = muladdmod(V, V, 2, n);
+      sign = 1;   /* Qk *= Qk */
+      b--;
+      if ( (k >> (b-1)) & UVCONST(1) ) {
+        UV t2 = mulmod(U, Dmod, n);
+        U = addmod(U, V, n);
+        if (U & 1) { U = (n>>1) + (U>>1) + 1; } else { U >>= 1; }
+        V = addmod(V, t2, n);
+        if (V & 1) { V = (n>>1) + (V>>1) + 1; } else { V >>= 1; }
+        sign = -1;  /* Qk *= Q */
+      }
+    }
+    if (sign == 1) Qk = 1;
+  } else {
+    while (b > 1) {
+      U = mulmod(U, V, n);
+      V = mulsubmod(V, V, addmod(Qk,Qk,n), n);
+      Qk = sqrmod(Qk, n);
+      b--;
+      if ( (k >> (b-1)) & UVCONST(1) ) {
+        UV t2 = mulmod(U, Dmod, n);
+        U = muladdmod(U, Pmod, V, n);
+        if (U & 1) { U = (n>>1) + (U>>1) + 1; } else { U >>= 1; }
+        V = muladdmod(V, P, t2, n);
+        if (V & 1) { V = (n>>1) + (V>>1) + 1; } else { V >>= 1; }
+        Qk = mulmod(Qk, Qmod, n);
+      }
+    }
+  }
+  *Uret = U;
+  *Vret = V;
+  *Qkret = Qk;
+}
+
+/* Lucas tests:
+ *  0: Standard
+ *  1: Strong
+ *  2: Extra Strong (Mo/Jones/Grantham)
  *
  * Goal:
  *       (1) no false results when combined with the SPRP-2 test.
  *       (2) fast enough to use SPRP-2 + this in place of 3+ M-R tests.
  *
- * Why the extra strong test?  If we use Q=1, the code is both simpler and
- * faster.  But the Selfridge parameters have P==1 Q!=1.  Once we decide to
- * go with the Q==1, P!=1 method, then we may as well use the extra strong
- * test so we can verify results (e.g. OEIS A217719).  There is no cost to
- * run this vs. the strong or standard test.
+ * For internal purposes, we typically want to use the extra strong test
+ * because it is slightly faster (Q = 1 simplies things).  None of them have
+ * any false positives for the BPSW test.
  *
- * This runs about 7x faster than the GMP strong test, and about 2x slower
- * than our M-R tests.
+ * This runs 4-7x faster than MPU::GMP, which means ~10x faster than most GMP
+ * implementations.  It is about 2x slower than a single M-R test.
  */
-int _XS_is_extra_strong_lucas_pseudoprime(UV n)
+int _XS_is_lucas_pseudoprime(UV n, int strength)
 {
-  UV P, D, Q, U, V, d, s, b;
-  int const _verbose = _XS_get_verbose();
+  IV P, Q, D;
+  UV U, V, Qk, d, s;
 
   if (n == 2 || n == 3) return 1;
   if (n < 5 || (n%2) == 0) return 0;
   if (n == UV_MAX) return 0;
 
+  if (strength < 2) {
+    UV Du = 5;
+    IV sign = 1;
+    while (1) {
+      D = Du * sign;
+      if (gcd_ui(Du, n) > 1 && gcd_ui(Du, n) != n) return 0;
+      if (jacobi_iu(D, n) == -1)
+        break;
+      if (Du == 21 && is_perfect_square(n, 0)) return 0;
+      Du += 2;
+      sign = -sign;
+    }
+    P = 1;
+    Q = (1 - D) / 4;
+  } else {
+    P = 3;
+    Q = 1;
+    while (1) {
+      D = P*P - 4;
+      if (gcd_ui(D, n) > 1 && gcd_ui(D, n) != n) return 0;
+      if (jacobi_iu(D, n) == -1)
+        break;
+      if (P == 21 && is_perfect_square(n, 0)) return 0;
+      P++;
+    }
+  }
+  MPUassert( D == (P*P - 4*Q) , "is_lucas_pseudoprime: incorrect DPQ");
+
+  d = n+1;
+  s = 0;
+  if (strength > 0)
+    while ( (d & 1) == 0 ) {  s++;  d >>= 1; }
+  lucas_seq(&U, &V, &Qk, n, P, Q, d);
+
+  if (strength == 0) {
+    if (U == 0)
+      return 1;
+  } else if (strength == 1) {
+    if (U == 0)
+      return 1;
+    /* Now check to see if V_{d*2^r} == 0 for any 0 <= r < s */
+    while (s--) {
+      if (V == 0)
+        return 1;
+      if (s) {
+        V = mulsubmod(V, V, addmod(Qk,Qk,n), n);
+        Qk = sqrmod(Qk, n);
+      }
+    }
+  } else {
+    if ( U == 0 && (V == 2 || V == (n-2)) )
+      return 1;
+    /* Now check to see if V_{d*2^r} == 0 for any 0 <= r < s-1 */
+    s--;
+    while (s--) {
+      if (V == 0)
+        return 1;
+      if (s)
+        V = mulsubmod(V, V, 2, n);
+    }
+  }
+  return 0;
+}
+
+/* A generalization of Pari's shortcut to the extra-strong Lucas test.
+ * I've added a gcd check at the top, which needs to be done and also results
+ * in fewer pseudoprimes.  Pari always does trial division to 100 first so
+ * is unlikely to come up there.  This only calculate V, which can be done
+ * faster, but that means we have more pseudoprimes than the standard
+ * extra-strong test.
+ *
+ * increment:  1 for Baillie OEIS, 2 for Pari.
+ *
+ * With increment = 1, these results will be a subset of the extra-strong
+ * Lucas pseudoprimes.  With increment = 2, we produce Pari's results.
+ */
+int _XS_is_almost_extra_strong_lucas_pseudoprime(UV n, UV increment)
+{
+  UV P, V, d, s;
+
+  if (n == 2 || n == 3 || n == 5) return 1;
+  if (n < 7 || (n%2) == 0) return 0;
+  if (n == UV_MAX) return 0;
+  if (increment < 1 || increment > 256)
+    croak("Invalid lucas paramater increment: %"UVuf"\n", increment);
+
   P = 3;
-  Q = 1;
   while (1) {
-    D = P*P - 4;
-    if (gcd_ui(D, n) > 1 && gcd_ui(D, n) != n) return 0;
+    UV D = P*P - 4;
+    d = gcd_ui(D, n);
+    if (d > 1 && d < n)
+      return 0;
     if (jacobi_iu(D, n) == -1)
       break;
-    /* Perhaps n is a perfect square? */
-    if (P == 21 && is_perfect_square(n, 0)) return 0;
-    P++;
+    if (P == (3+20*increment) && is_perfect_square(n, 0)) return 0;
+    P += increment;
+    if (P > 65535)
+      croak("lucas_extrastrong_params: P exceeded 65535");
   }
-  if (_verbose>3) printf("N: %lu  D: %ld  P: %lu  Q: %ld\n", n, D, P, Q);
-  MPUassert( D == ((IV)(P*P)) - 4*Q , "incorrect DPQ");
+  if (P >= n)  P %= n;   /* Never happens with increment < 4 */
 
-  U = 1;
-  V = P;
   d = n+1;
   s = 0;
   while ( (d & 1) == 0 ) {  s++;  d >>= 1; }
-  { UV v = d; b = 1; while (v >>= 1) b++; }
 
-  if (_verbose>3) printf("U=%lu  V=%lu\n", U, V);
-  while (b > 1) {
-    U = mulmod(U, V, n);
-    V = muladdmod(V, V, n-2, n);
-    b--;
-    if (_verbose>3) printf("U2k=%lu  V2k=%lu\n", U, V);
-    if ( (d >> (b-1)) & UVCONST(1) ) {
-      UV t2 = mulmod(U, D, n);
-      U = muladdmod(U, P, V, n);
-      if (U & 1) { U = (n>>1) + (U>>1) + 1; } else { U >>= 1; }
-      V = muladdmod(V, P, t2, n);
-      if (V & 1) { V = (n>>1) + (V>>1) + 1; } else { V >>= 1; }
+  {
+    UV W, b;
+    V = P;
+    W = mulsubmod(P, P, 2, n);
+    { UV v = d; b = 1; while (v >>= 1) b++; }
+    while (b-- > 1) {
+      if ( (d >> (b-1)) & UVCONST(1) ) {
+        V = mulsubmod(V, W, P, n);
+        W = mulsubmod(W, W, 2, n);
+      } else {
+        W = mulsubmod(V, W, P, n);
+        V = mulsubmod(V, V, 2, n);
+      }
     }
-    if (_verbose>3) printf("U=%lu  V=%lu\n", U, V);
   }
-  if ( (U == 0 && (V == 2 || V == (n-2))) || (V == 0) )
+
+  if (V == 2 || V == (n-2))
     return 1;
-  while (s--) {
-    V = muladdmod(V, V, n-2, n);
+  while (s-- > 1) {
     if (V == 0)
       return 1;
+    V = mulsubmod(V, V, 2, n);
+    if (V == 2)
+      return 0;
   }
   return 0;
 }
@@ -863,6 +987,69 @@ int pminus1_factor(UV n, UV *factors, UV B1, UV B2)
     } END_DO_FOR_EACH_PRIME
     f = gcd_ui(b, n);
   }
+  if ( (f != 1) && (f != n) ) {
+    factors[0] = f;
+    factors[1] = n/f;
+    MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
+    return 2;
+  }
+  factors[0] = n;
+  return 1;
+}
+
+/* Simple Williams p+1 */
+static void pp1_pow(UV *cX, unsigned long exp, UV n)
+{
+  UV X0 = *cX;
+  UV X  = *cX;
+  UV Y = mulsubmod(X, X, 2, n);
+  unsigned long bit;
+  {
+    unsigned long v = exp;
+    unsigned long b = 1;
+    while (v >>= 1) b++;
+    bit = 1UL << (b-2);
+  }
+  while (bit) {
+    if ( exp & bit ) {
+      X = mulsubmod(X, Y, X0, n);
+      Y = mulsubmod(Y, Y, 2, n);
+    } else {
+      Y = mulsubmod(X, Y, X0, n);
+      X = mulsubmod(X, X, 2, n);
+    }
+    bit >>= 1;
+  }
+  *cX = X;
+}
+int pplus1_factor(UV n, UV *factors, UV B1)
+{
+  UV X1, X2, f;
+  UV sqrtB1 = isqrt(B1);
+  MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in pminus1_factor");
+
+  X1 =  7 % n;
+  X2 = 11 % n;
+  f = 1;
+  START_DO_FOR_EACH_PRIME(2, B1) {
+    UV k = p;
+    if (p < sqrtB1) {
+      UV kmin = B1/p;
+      while (k <= kmin)
+        k *= p;
+    }
+    pp1_pow(&X1, k, n);
+    if (X1 != 2) {
+      f = gcd_ui( submod(X1, 2, n) , n);
+      if (f != 1 && f != n) break;
+    }
+    pp1_pow(&X2, k, n);
+    if (X2 != 2) {
+      f = gcd_ui( submod(X2, 2, n) , n);
+      if (f != 1 && f != n) break;
+    }
+  } END_DO_FOR_EACH_PRIME
+
   if ( (f != 1) && (f != n) ) {
     factors[0] = f;
     factors[1] = n/f;
@@ -1202,36 +1389,43 @@ int racing_squfof_factor(UV n, UV *factors, UV rounds)
  * test from section 9 of "Quadratic Composite Tests" by Paul Underwood.
  *
  * Given the script:
- *  time mpu 'forprimes { Math::Prime::Util::_XS_is_frobenius_underwood_pseudoprime($_); Math::Prime::Util::_XS_is_frobenius_underwood_pseudoprime($_+2); } 100_000_000'
+ *  time mpu 'forprimes { Math::Prime::Util::_XS_is_frobenius_underwood_pseudoprime($_); Math::Prime::Util::_XS_is_frobenius_underwood_pseudoprime($_+2); } 500_000_000'
  * and replacing the tests appropriately, I get these times:
  *
- *   0.57    $_ (cost of empty loop)
- *   6.89    _XS_is_pseudoprime($_,2)
- *   6.82    _XS_miller_rabin($_,2)
- *  11.81    _XS_is_extra_strong_lucas_pseudoprime($_)
- *  13.07    _XS_is_frobenius_underwood_pseudoprime($_)
- *   7.87    _XS_is_prob_prime($_)
- *   8.74    _XS_is_prime($_)
+ *    0.87    $_ (cost of empty loop)
+ *   21.37    _XS_is_pseudoprime($_,2)
+ *   22.42    _XS_miller_rabin($_,2)
+ *   44.53    _XS_is_lucas_pseudoprime($_)
+ *   43.95    _XS_is_strong_lucas_pseudoprime($_)
+ *   40.09    _XS_is_extra_strong_lucas_pseudoprime($_)
+ *   25.86    _XS_is_almost_extra_strong_lucas_pseudoprime($_)
+ *   42.40    _XS_is_frobenius_underwood_pseudoprime($_)
+ *   27.02    _XS_is_prob_prime($_)
+ *   27.24    _XS_is_prime($_)
  *
  * At these sizes is_prob_prime is doing 1-2 M-R tests.  The input validation
  * is adding a noticeable overhead to is_prime.
  *
- * With a set of 10k 64-bit random primes; 'do { die unless ... } for 1..500'
+ * With a set of 100k 64-bit random primes; 'do { die unless ... } for 1..50'
  *
- *   0.36    empty loop
- *  12.38    _XS_is_pseudoprime($_,2)
- *  12.05    _XS_miller_rabin($_,2)
- *  24.95    _XS_is_extra_strong_lucas_pseudoprime($_)
- *  22.35    _XS_is_frobenius_underwood_pseudoprime($_)
- *  36.67    _XS_is_prob_prime($_)
- *  37.24    _XS_is_prime($_)
+ *   0.32    empty loop
+ *  10.25    _XS_is_pseudoprime($_,2)
+ *  10.06    _XS_miller_rabin($_,2)
+ *  22.02    _XS_is_lucas_pseudoprime($_)
+ *  21.81    _XS_is_strong_lucas_pseudoprime($_)
+ *  20.99    _XS_is_extra_strong_lucas_pseudoprime($_)
+ *  14.01    _XS_is_almost_extra_strong_lucas_pseudoprime($_)
+ *  18.44    _XS_is_frobenius_underwood_pseudoprime($_)
+ *  24.11    _XS_is_prob_prime($_)
+ *  24.06    _XS_is_prime($_)
  *
  * At this point is_prob_prime has transitioned to BPSW.
  *
  * Calling a powmod a 'Selfridge' unit, then we see:
- *    1 Selfridge unit    M-R test
- *    2 Selfridge units   Lucas or Frobenius-Underwood
- *    3 Selfridge units   BPSW
+ *    1   Selfridge unit    M-R test
+ *    1.4 Selfridge unit    "almost extra strong" Lucas
+ *    2   Selfridge units   Lucas or Frobenius-Underwood
+ *    3   Selfridge units   BPSW (standard, strong, or extra-strong)
  *
  * We try to structure the primality test like:
  *   1) simple divisibility    very fast       primes and ~10% of composites
@@ -1281,14 +1475,14 @@ int _XS_is_frobenius_underwood_pseudoprime(UV n)
       t2 = addmod(b, b, n);
       na = mulmod(a, t2, n);
       t1 = addmod(b, a, n);
-      t2 = addmod(b, n-a, n);  /* subtract */
+      t2 = submod(b, a, n);
       b = mulmod(t1, t2, n);
       a = na;
       if ( (np1 >> bit) & UVCONST(1) ) {
         t1 = mulmod(a, 2, n);
         na = addmod(t1, b, n);
         t1 = addmod(b, b, n);
-        b = addmod(t1, n-a, n); /* subtract */
+        b = submod(t1, a, n);
         a = na;
       }
     }
@@ -1299,14 +1493,14 @@ int _XS_is_frobenius_underwood_pseudoprime(UV n)
       t1 = addmod(t1, t2, n);
       na = mulmod(a, t1, n);
       t1 = addmod(b, a, n);
-      t2 = addmod(b, n-a, n);  /* subtract */
+      t2 = submod(b, a, n);
       b = mulmod(t1, t2, n);
       a = na;
       if ( (np1 >> bit) & UVCONST(1) ) {
         t1 = mulmod(a, multiplier, n);
         na = addmod(t1, b, n);
         t1 = addmod(b, b, n);
-        b = addmod(t1, n-a, n); /* subtract */
+        b = submod(t1, a, n);
         a = na;
       }
     }

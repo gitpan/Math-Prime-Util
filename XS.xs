@@ -29,7 +29,7 @@
 #endif
 
 /* multicall compatibility stuff */
-#if PERL_VERSION < 7
+#if PERL_REVISION <= 5 && PERL_VERSION < 7
 # define USE_MULTICALL 0   /* Too much trouble to work around it */
 #else
 # define USE_MULTICALL 1
@@ -95,19 +95,21 @@ static int _validate_int(SV* n, int negok)
   return 1;
 }
 
-/* Call a Perl sub with one SV* in and a SV* return value.
- * We use this to foist off big inputs onto Perl.
+/* Call a Perl sub to handle work for us.
+ *   The input is a single SV on the top of the stack.
+ *   The output is a single mortal SV that is on the stack.
  */
-static SV* _callsub(SV* arg, const char* name)
+static void _vcallsub(const char* name)
 {
   dTHX;
   dSP;                               /* Local copy of stack pointer         */
   int count;
-  SV* v;
+  SV* arg;
 
   ENTER;                             /* Start wrapper                       */
   SAVETMPS;                          /* Start (2)                           */
 
+  arg = POPs;                        /* Get argument value from stack       */
   PUSHMARK(SP);                      /* Start args: note our SP             */
   XPUSHs(arg);
   PUTBACK;                           /* End args:   set global SP to ours   */
@@ -118,11 +120,12 @@ static SV* _callsub(SV* arg, const char* name)
   if (count != 1)
     croak("callback sub should return one value");
 
-  v = newSVsv(POPs);                 /* Get the returned value              */
+  TOPs = SvREFCNT_inc(TOPs);         /* Make sure FREETMPS doesn't kill it  */
 
+  PUTBACK;
   FREETMPS;                          /* End wrapper                         */
   LEAVE;                             /* End (2)                             */
-  return v;
+  TOPs = sv_2mortal(TOPs);           /* mortalize it.  refcnt will be 1.    */
 }
 
 #if BITS_PER_WORD == 64
@@ -176,22 +179,32 @@ _XS_prime_count(IN UV low, IN UV high = 0)
     RETVAL
 
 UV
-_XS_legendre_pi(IN UV n)
-
-UV
-_XS_meissel_pi(IN UV n)
-
-UV
-_XS_lehmer_pi(IN UV n)
-
-UV
-_XS_LMO_pi(IN UV n)
-
-UV
 _XS_nth_prime(IN UV n)
-
-int
-_XS_is_aks_prime(IN UV n)
+  ALIAS:
+    _XS_next_prime = 1
+    _XS_prev_prime = 2
+    _XS_legendre_pi = 3
+    _XS_meissel_pi = 4
+    _XS_lehmer_pi = 5
+    _XS_LMO_pi = 6
+    _XS_divisor_sum = 7
+  PREINIT:
+    UV ret;
+  CODE:
+    switch (ix) {
+      case 0: ret = _XS_nth_prime(n); break;
+      case 1: ret = _XS_next_prime(n); break;
+      case 2: ret = _XS_prev_prime(n); break;
+      case 3: ret = _XS_legendre_pi(n); break;
+      case 4: ret = _XS_meissel_pi(n); break;
+      case 5: ret = _XS_lehmer_pi(n); break;
+      case 6: ret = _XS_LMO_pi(n); break;
+      case 7: ret = _XS_divisor_sum(n); break;
+      default: croak("_XS_nth_prime: Unknown function alias"); break;
+    }
+    RETVAL = ret;
+  OUTPUT:
+    RETVAL
 
 
 UV
@@ -417,6 +430,11 @@ pminus1_factor(IN UV n, IN UV B1 = 1*1024*1024, IN UV B2 = 0)
       B2 = 10*B1;
     SIMPLE_FACTOR_2ARG(pminus1_factor, n, B1, B2);
 
+void
+pplus1_factor(IN UV n, IN UV B = 200)
+  PPCODE:
+    SIMPLE_FACTOR(pplus1_factor, n, B);
+
 int
 _XS_is_pseudoprime(IN UV n, IN UV a)
 
@@ -447,17 +465,48 @@ _XS_miller_rabin(IN UV n, ...)
   OUTPUT:
     RETVAL
 
-int
-_XS_is_extra_strong_lucas_pseudoprime(IN UV n)
-
-int
-_XS_is_frobenius_underwood_pseudoprime(IN UV n)
-
-int
-_XS_is_prob_prime(IN UV n)
+void
+_XS_lucas_sequence(IN UV n, IN IV P, IN IV Q, IN UV k)
+  PREINIT:
+    UV U, V, Qk;
+  PPCODE:
+    lucas_seq(&U, &V, &Qk,  n, P, Q, k);
+    XPUSHs(sv_2mortal(newSVuv( U )));
+    XPUSHs(sv_2mortal(newSVuv( V )));
+    XPUSHs(sv_2mortal(newSVuv( Qk )));
 
 int
 _XS_is_prime(IN UV n)
+  ALIAS:
+    _XS_is_prob_prime = 1
+    _XS_is_lucas_pseudoprime = 2
+    _XS_is_strong_lucas_pseudoprime = 3
+    _XS_is_extra_strong_lucas_pseudoprime = 4
+    _XS_is_frobenius_underwood_pseudoprime = 5
+    _XS_is_aks_prime = 6
+  PREINIT:
+    int ret;
+  CODE:
+    switch (ix) {
+      case 0: ret = _XS_is_prime(n); break;
+      case 1: ret = _XS_is_prob_prime(n); break;
+      case 2: ret = _XS_is_lucas_pseudoprime(n, 0); break;
+      case 3: ret = _XS_is_lucas_pseudoprime(n, 1); break;
+      case 4: ret = _XS_is_lucas_pseudoprime(n, 2); break;
+      case 5: ret = _XS_is_frobenius_underwood_pseudoprime(n); break;
+      case 6: ret = _XS_is_aks_prime(n); break;
+      default: croak("_XS_is_prime: Unknown function alias"); break;
+    }
+    RETVAL = ret;
+  OUTPUT:
+    RETVAL
+
+int
+_XS_is_almost_extra_strong_lucas_pseudoprime(IN UV n, IN UV increment = 1)
+  CODE:
+    RETVAL = _XS_is_almost_extra_strong_lucas_pseudoprime(n, increment);
+  OUTPUT:
+    RETVAL
 
 int
 is_prime(IN SV* n)
@@ -465,17 +514,15 @@ is_prime(IN SV* n)
     is_prob_prime = 1
   PREINIT:
     int status;
-  CODE:
+  PPCODE:
     status = _validate_int(n, 1);
-    RETVAL = 0;
     if (status == -1) {
-      /* return 0 */
+      XSRETURN_UV(0);
     } else if (status == 1) {
       UV val;
       set_val_from_sv(val, n);
-      RETVAL = _XS_is_prime(val);
+      XSRETURN_UV(_XS_is_prime(val));
     } else {
-      SV* result;
       const char* sub = 0;
       if (_XS_get_callgmp())
         sub = (ix == 0) ? "Math::Prime::Util::GMP::is_prime"
@@ -483,17 +530,9 @@ is_prime(IN SV* n)
       else
         sub = (ix == 0) ? "Math::Prime::Util::_generic_is_prime"
                         : "Math::Prime::Util::_generic_is_prob_prime";
-      result = _callsub(ST(0), sub);
-      RETVAL = SvIV(result);
+      _vcallsub(sub);
+      XSRETURN(1);
     }
-  OUTPUT:
-    RETVAL
-
-UV
-_XS_next_prime(IN UV n)
-
-UV
-_XS_prev_prime(IN UV n)
 
 void
 next_prime(IN SV* n)
@@ -507,29 +546,46 @@ next_prime(IN SV* n)
       if (ix) XSRETURN_UV(_XS_prev_prime(val));
       else    XSRETURN_UV(_XS_next_prime(val));
     } else {
-      SV* result = _callsub(ST(0), (ix == 0) ?
-                       "Math::Prime::Util::_generic_next_prime" :
-                       "Math::Prime::Util::_generic_prev_prime" );
-      XPUSHs(sv_2mortal(result));
+      _vcallsub((ix == 0) ?  "Math::Prime::Util::_generic_next_prime" :
+                             "Math::Prime::Util::_generic_prev_prime" );
+      XSRETURN(1);
     }
 
-
 double
-_XS_ExponentialIntegral(double x)
-
-double
-_XS_LogarithmicIntegral(double x)
-
-double
-_XS_RiemannZeta(double x)
+_XS_ExponentialIntegral(IN double x)
+  ALIAS:
+    _XS_LogarithmicIntegral = 1
+    _XS_RiemannZeta = 2
+    _XS_RiemannR = 3
+  PREINIT:
+    double ret;
   CODE:
-    RETVAL = (double) ld_riemann_zeta(x);
+    switch (ix) {
+      case 0: ret = _XS_ExponentialIntegral(x); break;
+      case 1: ret = _XS_LogarithmicIntegral(x); break;
+      case 2: ret = (double) ld_riemann_zeta(x); break;
+      case 3: ret = _XS_RiemannR(x); break;
+      default: croak("_XS_ExponentialIntegral: Unknown function alias"); break;
+    }
+    RETVAL = ret;
   OUTPUT:
     RETVAL
 
 double
-_XS_RiemannR(double x)
-
+_XS_chebyshev_theta(IN UV n)
+  ALIAS:
+    _XS_chebyshev_psi = 1
+  PREINIT:
+    double ret;
+  CODE:
+    switch (ix) {
+      case 0: ret = _XS_chebyshev_theta(n); break;
+      case 1: ret = _XS_chebyshev_psi(n); break;
+      default: croak("_XS_chebyshev_theta: Unknown function alias"); break;
+    }
+    RETVAL = ret;
+  OUTPUT:
+    RETVAL
 
 void
 _XS_totient(IN UV lo, IN UV hi = 0)
@@ -628,15 +684,6 @@ _XS_exp_mangoldt(IN UV n)
   OUTPUT:
     RETVAL
 
-double
-_XS_chebyshev_theta(IN UV n)
-
-double
-_XS_chebyshev_psi(IN UV n)
-
-UV
-_XS_divisor_sum(IN UV n)
-
 int
 _validate_num(SV* n, ...)
   CODE:
@@ -707,7 +754,7 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
     SAVESPTR(GvSV(PL_defgv));
     svarg = newSVuv(0);
     /* Handle early part */
-    while (beg < 7) {
+    while (beg < 6) {
       dSP;
       beg = (beg <= 2) ? 2 : (beg <= 3) ? 3 : 5; 
       if (beg <= end) {
@@ -721,9 +768,7 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
     if (beg <= end) {
       ctx = start_segment_primes(beg, end, &segment);
       while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
-        /* I'm getting a memory leak in the MULTICALL and I'm having no luck
-         * finding out why it is happening.  Don't use this for now. */
-        if (0 && !CvISXSUB(cv)) {
+        if (!CvISXSUB(cv)) {
           dMULTICALL;
           I32 gimme = G_VOID;
           PUSH_MULTICALL(cv);

@@ -3,7 +3,7 @@ use warnings;
 use strict;
 use Math::BigInt try=>"GMP,Pari";
 use Math::Prime::Util qw/:all/;
-use Data::Dump qw/dump/;
+use Data::Dump qw/dumpf/;
 my $bifilter = sub { my($ctx, $n) = @_;
                      return {dump=>"$n"} if ref($n) eq "Math::BigInt";
                      undef; };
@@ -13,7 +13,7 @@ my $bifilter = sub { my($ctx, $n) = @_;
 #
 # Example:
 #
-# perl -MMath::Prime::Util -E 'say random_ndigit_prime(60)' | \
+# perl -MMath::Prime::Util=:all -E 'say random_ndigit_prime(60)' | \
 # gmp-ecpp -q | \
 # perl examples/verify-gmp-eccp-cert.pl
 
@@ -64,5 +64,5 @@ while (<>) {
   }
 }
 
-print dump_filtered(\@cert, $bifilter), "\n";
+print dumpf(\@cert, $bifilter), "\n";
 print verify_prime(@cert) ? "SUCCESS\n" : "FAILURE\n";

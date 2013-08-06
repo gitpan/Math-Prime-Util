@@ -30,13 +30,6 @@
 
 - Implement S2 calculation for LMO prime count.
 
-- Adding a Primo certificate parser (see WraithX's code) would
-  be awesome, but may be a lot more work.  It would still be nice to have yet
-  another independent codebase for this.
-
-- Similar to the previous, having a method to convert our certificates into
-  Primo-style ones would be useful for easy independent verification.
-
 - Big features:
    - LMO prime count
    - QS factoring
@@ -46,5 +39,4 @@
 
 - Refactor where functions exist in .c.  Lots of primality tests in factor.c.
 
-- Write a standalone function that demonstrates the memory leak with MULTICALL,
-  so we can use MULTICALL.
+- Rewrite 23-primality-proofs.t for new format (keep some of the old tests?).
