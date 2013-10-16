@@ -14,18 +14,27 @@
 #include "cache.h"
 #include "sieve.h"
 #include "util.h"
+#include "primality.h"
 #include "factor.h"
 #include "lehmer.h"
 #include "aks.h"
 
-/* Workaround perl 5.6 UVs */
+#if BITS_PER_WORD == 64 && defined(_MSC_VER)
+  #include <stdlib.h>
+  #define PSTRTOULL(str, end, base) _strtoui64 (str, end, base)
+#elif BITS_PER_WORD == 64 && (defined(__GNUC__) || QUADKIND==QUAD_IS_LONG_LONG)
+  #define PSTRTOULL(str, end, base) strtoull (str, end, base)
+#else
+  #define PSTRTOULL(str, end, base) strtoul (str, end, base)
+#endif
+
+/* Workaround perl 5.6 UVs and bigints in later */
 #if PERL_REVISION <= 5 && PERL_VERSION <= 6 && BITS_PER_WORD == 64
- /* This could be blown up with a wacky string, but it's just for 5.6 */
  #define set_val_from_sv(val, sv) \
-   { char*ptr = SvPV_nolen(sv); val = Strtoul(ptr, NULL, 10); }
+   val = PSTRTOULL(SvPV_nolen(sv), NULL, 10);
 #else
  #define set_val_from_sv(val, sv) \
-   val = SvUV(sv)
+   val = (!SvROK(sv)) ? SvUV(sv) : PSTRTOULL(SvPV_nolen(sv), NULL, 10);
 #endif
 
 /* multicall compatibility stuff */
@@ -36,7 +45,10 @@
 #endif
 
 #if PERL_VERSION < 13 || (PERL_VERSION == 13 && PERL_SUBVERSION < 9)
-#  define PERL_HAS_BAD_MULTICALL_REFCOUNT
+#  define FIX_MULTICALL_REFCOUNT \
+      if (CvDEPTH(multicall_cv) > 1) SvREFCNT_inc(multicall_cv);
+#else
+#  define FIX_MULTICALL_REFCOUNT
 #endif
 #ifndef CvISXSUB
 #  define CvISXSUB(cv) CvXSUB(cv)
@@ -51,6 +63,14 @@ static int pbrent_factor_a1(UV n, UV *factors, UV maxrounds) {
   return pbrent_factor(n, factors, maxrounds, 1);
 }
 
+#if BITS_PER_WORD == 32
+  static const unsigned int uvmax_maxlen = 10;
+  static const char uvmax_str[] = "4294967295";
+#else
+  static const unsigned int uvmax_maxlen = 20;
+  static const char uvmax_str[] = "18446744073709551615";
+#endif
+
 /* Is this a pedantically valid integer?
  * Croaks if undefined or invalid.
  * Returns 0 if it is an object or a string too large for a UV.
@@ -61,38 +81,33 @@ static int _validate_int(SV* n, int negok)
   dTHX;
   char* ptr;
   STRLEN i, len;
-  UV val;
   int isneg = 0;
 
   if (!SvOK(n))  croak("Parameter must be defined");
-  /* aside: to detect bigint: if ( SvROK(n) && sv_isa(n, "Math::BigInt") ) */
-  if (SvROK(n))  return 0;
-  /* Perhaps SvPVbyte, or other UTF8 stuff? */
-  ptr = SvPV(n, len);
-  if (len == 0)  croak("Parameter '' must be a positive integer");
-  for (i = 0; i < len; i++) {
-    if (!isDIGIT(ptr[i])) {
-      if (i == 0 && ptr[i] == '-' && negok)
-        isneg = 1;
-      else if (i == 0 && ptr[i] == '+')
-        /* Allowed */ ;
-      else
-        croak("Parameter '%s' must be a positive integer", ptr); /* TODO NULL */
-    }
+  if (SvROK(n) && !sv_isa(n, "Math::BigInt"))  return 0;
+  ptr = SvPV(n, len);  /* This will stringify bigints for us, yay */
+  if (len == 0 || ptr == 0)  croak("Parameter '' must be a positive integer");
+  if (ptr[0] == '-') {                 /* Read negative sign */
+    if (negok) { isneg = 1; ptr++; len--; }
+    else       croak("Parameter '%s' must be a positive integer", ptr);
   }
-  if (isneg) return -1;  /* It's a valid negative number */
-  set_val_from_sv(val, n);
-  if (val == UV_MAX) { /* Could be bigger than UV_MAX.  Need to find out. */
-    char vstr[40];
-    sprintf(vstr, "%"UVuf, val);
-    /* Skip possible leading zeros */
-    while (len > 0 && (*ptr == '0' || *ptr == '+'))
-      { ptr++; len--; }
-    for (i = 0; i < len; i++)
-      if (vstr[i] != ptr[i])
-        return 0;
+  if (ptr[0] == '+') { ptr++; len--; } /* Allow a single plus sign */
+  while (len > 0 && *ptr == '0')       /* Strip all leading zeros */
+    { ptr++; len--; }
+  if (len > uvmax_maxlen)              /* Huge number, don't even look at it */
+    return 0;
+  for (i = 0; i < len; i++)            /* Ensure all characters are digits */
+    if (!isDIGIT(ptr[i]))
+      croak("Parameter '%s' must be a positive integer", ptr);
+  if (isneg)                           /* Negative number (ignore overflow) */
+    return -1;
+  if (len < uvmax_maxlen)              /* Valid small integer */
+    return 1;
+  for (i = 0; i < uvmax_maxlen; i++) { /* Check if in range */
+    if (ptr[i] < uvmax_str[i]) return 1;
+    if (ptr[i] > uvmax_str[i]) return 0;
   }
-  return 1;
+  return 1;                            /* value = UV_MAX.  That's ok */
 }
 
 /* Call a Perl sub to handle work for us.
@@ -187,7 +202,6 @@ _XS_nth_prime(IN UV n)
     _XS_meissel_pi = 4
     _XS_lehmer_pi = 5
     _XS_LMO_pi = 6
-    _XS_divisor_sum = 7
   PREINIT:
     UV ret;
   CODE:
@@ -199,12 +213,14 @@ _XS_nth_prime(IN UV n)
       case 4: ret = _XS_meissel_pi(n); break;
       case 5: ret = _XS_lehmer_pi(n); break;
       case 6: ret = _XS_LMO_pi(n); break;
-      case 7: ret = _XS_divisor_sum(n); break;
       default: croak("_XS_nth_prime: Unknown function alias"); break;
     }
     RETVAL = ret;
   OUTPUT:
     RETVAL
+
+UV
+_XS_divisor_sum(IN UV n, IN UV k)
 
 
 UV
@@ -246,7 +262,7 @@ trial_primes(IN UV low, IN UV high)
     if (low <= high) {
       if (low >= 2) low--;   /* Make sure low gets included */
       curprime = _XS_next_prime(low);
-      while (curprime <= high) {
+      while (curprime <= high && curprime != 0) {
         av_push(av,newSVuv(curprime));
         curprime = _XS_next_prime(curprime);
       }
@@ -383,9 +399,13 @@ _XS_factor(IN UV n)
     int i, nfactors;
   PPCODE:
     nfactors = factor(n, factors);
-    EXTEND(SP, nfactors);
-    for (i = 0; i < nfactors; i++) {
-      PUSHs(sv_2mortal(newSVuv( factors[i] )));
+    if (GIMME_V == G_SCALAR) {
+      PUSHs(sv_2mortal(newSVuv(nfactors)));
+    } else if (GIMME_V == G_ARRAY) {
+      EXTEND(SP, nfactors);
+      for (i = 0; i < nfactors; i++) {
+        PUSHs(sv_2mortal(newSVuv( factors[i] )));
+      }
     }
 
 void
@@ -484,6 +504,7 @@ _XS_is_prime(IN UV n)
     _XS_is_extra_strong_lucas_pseudoprime = 4
     _XS_is_frobenius_underwood_pseudoprime = 5
     _XS_is_aks_prime = 6
+    _XS_BPSW = 7
   PREINIT:
     int ret;
   CODE:
@@ -495,6 +516,7 @@ _XS_is_prime(IN UV n)
       case 4: ret = _XS_is_lucas_pseudoprime(n, 2); break;
       case 5: ret = _XS_is_frobenius_underwood_pseudoprime(n); break;
       case 6: ret = _XS_is_aks_prime(n); break;
+      case 7: ret = _XS_BPSW(n); break;
       default: croak("_XS_is_prime: Unknown function alias"); break;
     }
     RETVAL = ret;
@@ -509,19 +531,19 @@ _XS_is_almost_extra_strong_lucas_pseudoprime(IN UV n, IN UV increment = 1)
     RETVAL
 
 int
-is_prime(IN SV* n)
+is_prime(IN SV* svn)
   ALIAS:
     is_prob_prime = 1
   PREINIT:
     int status;
   PPCODE:
-    status = _validate_int(n, 1);
+    status = _validate_int(svn, 1);
     if (status == -1) {
       XSRETURN_UV(0);
     } else if (status == 1) {
-      UV val;
-      set_val_from_sv(val, n);
-      XSRETURN_UV(_XS_is_prime(val));
+      UV n;
+      set_val_from_sv(n, svn);
+      XSRETURN_UV(_XS_is_prime(n));
     } else {
       const char* sub = 0;
       if (_XS_get_callgmp())
@@ -538,18 +560,24 @@ void
 next_prime(IN SV* n)
   ALIAS:
     prev_prime = 1
+  PREINIT:
+    UV val;
   PPCODE:
-    if (_validate_int(n, 0)) {
-      UV val;
-      set_val_from_sv(val, n);
-      if ( (ix && val < 3) || (!ix && val >= _max_prime) )  XSRETURN_UV(0);
-      if (ix) XSRETURN_UV(_XS_prev_prime(val));
-      else    XSRETURN_UV(_XS_next_prime(val));
+    if (ix) {
+      if (_validate_int(n, 0)) {
+        set_val_from_sv(val, n);
+        XSRETURN_UV( (val < 3) ? 0 : _XS_prev_prime(val));
+      }
     } else {
-      _vcallsub((ix == 0) ?  "Math::Prime::Util::_generic_next_prime" :
-                             "Math::Prime::Util::_generic_prev_prime" );
-      XSRETURN(1);
+      if (_validate_int(n, 0)) {
+        set_val_from_sv(val, n);
+        if (val < _max_prime)
+          XSRETURN_UV(_XS_next_prime(val));
+      }
     }
+    _vcallsub((ix == 0) ?  "Math::Prime::Util::_generic_next_prime" :
+                           "Math::Prime::Util::_generic_prev_prime" );
+    XSRETURN(1);
 
 double
 _XS_ExponentialIntegral(IN double x)
@@ -638,21 +666,21 @@ _XS_moebius(IN UV lo, IN UV hi = 0)
       Safefree(mu);
     } else {
       UV factors[MPU_MAX_FACTORS+1];
-      UV nfactors, lastf;
+      UV nfactors;
       UV n = lo;
 
       if (n <= 1)
         XSRETURN_IV(n);
-      if ( (n >= 25) && ( !(n%4) || !(n%9) || !(n%25) ) )
+
+      if ( (!(n% 4) && n >=  4) || (!(n% 9) && n >=  9) ||
+           (!(n%25) && n >= 25) || (!(n%49) && n >= 49) )
         XSRETURN_IV(0);
 
       nfactors = factor(n, factors);
-      lastf = 0;
-      for (i = 0; i < nfactors; i++) {
-        if (factors[i] == lastf)
+      for (i = 1; i < nfactors; i++)
+        if (factors[i] == factors[i-1])
           XSRETURN_IV(0);
-        lastf = factors[i];
-      }
+
       XSRETURN_IV( (nfactors % 2) ? -1 : 1 );
     }
 
@@ -689,6 +717,11 @@ _validate_num(SV* n, ...)
   CODE:
     RETVAL = 0;
     if (_validate_int(n, 0)) {
+      if (SvROK(n)) {  /* Convert small Math::BigInt object into scalar */
+        UV val;
+        set_val_from_sv(val, n);
+        sv_setuv(n, val);
+      }
       if (items > 1 && SvOK(ST(1))) {
         UV val, min, max;
         set_val_from_sv(val, n);
@@ -724,7 +757,7 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
     GV *gv;
     HV *stash;
     CV *cv;
-    SV* svarg;
+    SV* svarg;  /* We use svarg to prevent clobbering $_ outside the block */
     void* ctx;
     unsigned char* segment;
     UV seg_base, seg_low, seg_high;
@@ -756,7 +789,7 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
     /* Handle early part */
     while (beg < 6) {
       dSP;
-      beg = (beg <= 2) ? 2 : (beg <= 3) ? 3 : 5; 
+      beg = (beg <= 2) ? 2 : (beg <= 3) ? 3 : 5;
       if (beg <= end) {
         sv_setuv(svarg, beg);
         GvSV(PL_defgv) = svarg;
@@ -765,7 +798,34 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
       }
       beg += 1 + (beg > 2);
     }
-    if (beg <= end) {
+    /* For small ranges with large bases or tiny ranges, it will be faster
+     * and less memory to just iterate through the primes in range.  The
+     * exact limits will change based on the sieve vs. next_prime speed. */
+    if (beg <= end && !CvISXSUB(cv) && (
+#if BITS_PER_WORD == 64
+          (beg >= UVCONST(10000000000000000000) && end-beg < 100000000) ||
+          (beg >= UVCONST( 1000000000000000000) && end-beg <  25000000) ||
+          (beg >= UVCONST(  100000000000000000) && end-beg <   8000000) ||
+          (beg >= UVCONST(   10000000000000000) && end-beg <   1700000) ||
+          (beg >= UVCONST(    1000000000000000) && end-beg <    400000) ||
+          (beg >= UVCONST(     100000000000000) && end-beg <    130000) ||
+          (beg >= UVCONST(      10000000000000) && end-beg <     40000) ||
+          (beg >= UVCONST(       1000000000000) && end-beg <     17000) ||
+#endif
+          (                                        end-beg <       500) ) ) {
+      dMULTICALL;
+      I32 gimme = G_VOID;
+      PUSH_MULTICALL(cv);
+      beg = _XS_next_prime(beg-1);
+      while (beg <= end && beg != 0) {
+        sv_setuv(svarg, beg);
+        GvSV(PL_defgv) = svarg;
+        MULTICALL;
+        beg = _XS_next_prime(beg);
+      }
+      FIX_MULTICALL_REFCOUNT;
+      POP_MULTICALL;
+    } else if (beg <= end) {
       ctx = start_segment_primes(beg, end, &segment);
       while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
         if (!CvISXSUB(cv)) {
@@ -777,10 +837,7 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
             GvSV(PL_defgv) = svarg;
             MULTICALL;
           } END_DO_FOR_EACH_SIEVE_PRIME
-#ifdef PERL_HAS_BAD_MULTICALL_REFCOUNT
-          if (CvDEPTH(multicall_cv) > 1)
-            SvREFCNT_inc(multicall_cv);
-#endif
+          FIX_MULTICALL_REFCOUNT;
           POP_MULTICALL;
         } else {
           START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {

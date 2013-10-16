@@ -2,11 +2,10 @@ package Math::Prime::Util;
 use strict;
 use warnings;
 use Carp qw/croak confess carp/;
-use Bytes::Random::Secure;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.31';
+  $Math::Prime::Util::VERSION = '0.32';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -24,21 +23,23 @@ our @EXPORT_OK =
       is_almost_extra_strong_lucas_pseudoprime
       is_frobenius_underwood_pseudoprime
       is_aks_prime
-      miller_rabin
+      miller_rabin miller_rabin_random
       lucas_sequence
       primes
-      forprimes prime_iterator
+      forprimes prime_iterator prime_iterator_object
       next_prime  prev_prime
       prime_count
       prime_count_lower prime_count_upper prime_count_approx
       nth_prime nth_prime_lower nth_prime_upper nth_prime_approx
-      random_prime random_ndigit_prime random_nbit_prime
-      random_strong_prime random_maurer_prime random_maurer_prime_with_cert
+      random_prime random_ndigit_prime random_nbit_prime random_strong_prime
+      random_proven_prime random_proven_prime_with_cert
+      random_maurer_prime random_maurer_prime_with_cert
       primorial pn_primorial consecutive_integer_lcm
       factor all_factors
       moebius mertens euler_phi jordan_totient exp_mangoldt
       chebyshev_theta chebyshev_psi
       divisor_sum
+      carmichael_lambda znorder
       ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR
   );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
@@ -61,7 +62,6 @@ sub _import_nobigint {
   undef *nth_prime;       *nth_prime         = \&_XS_nth_prime;
   undef *is_pseudoprime;  *is_pseudoprime    = \&_XS_is_pseudoprime;
   undef *is_strong_pseudoprime;  *is_strong_pseudoprime = \&_XS_miller_rabin;
-  undef *miller_rabin;    *miller_rabin      = \&_XS_miller_rabin;
   undef *moebius;         *moebius           = \&_XS_moebius;
   undef *mertens;         *mertens           = \&_XS_mertens;
   undef *euler_phi;       *euler_phi         = \&_XS_totient;
@@ -125,16 +125,6 @@ BEGIN {
                                   Math::Prime::Util::GMP->import();
                                   1; };
   }
-
-  # Try to figure out a system rand configuration that works for us.
-  # Using something other than the craptastic system rand would be best.
-  use Config;
-  $_Config{'system_randbits'} = $Config{'randbits'};
-  # Keep things in integer range.
-  $_Config{'system_randbits'} = $_Config{'maxbits'}-1 if $_Config{'system_randbits'} >= $_Config{'maxbits'};
-  # drand48 has an alternating last bit on almost every system.
-  $_Config{'system_randbits'}-- if $_Config{'system_randbits'} == 48;
-  no Config;
 
 }
 END {
@@ -219,8 +209,9 @@ sub prime_set_config {
     } elsif ($param eq 'nobigint') {
       $_Config{'nobigint'} = ($value) ? 1 : 0;
     } elsif ($param eq 'irand') {
-      croak "irand must supply a sub" unless ref($value) eq 'CODE';
+      croak "irand must supply a sub" unless (!defined $value) || (ref($value) eq 'CODE');
       $_Config{'irand'} = $value;
+      _clear_randf();  # Force a new randf to be generated
     } elsif ($param =~ /^(assume[_ ]?)?[ge]?rh$/ || $param =~ /riemann\s*h/) {
       $_Config{'assume_rh'} = ($value) ? 1 : 0;
     } elsif ($param eq 'verbose') {
@@ -396,8 +387,8 @@ sub primes {
 
 # For random primes, there are two good papers that should be examined:
 #
-#  "Fast Generation of Prime Numbers and Secure Public-Key Cryptographic Parameters"
-#  by Ueli M. Maurer, 1995
+#  "Fast Generation of Prime Numbers and Secure Public-Key
+#   Cryptographic Parameters" by Ueli M. Maurer, 1995
 #  http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.26.2151
 #  related discussions:
 #      http://www.daimi.au.dk/~ivan/provableprimesproject.pdf
@@ -407,42 +398,42 @@ sub primes {
 #   by Pierre-Alain Fouque and Mehdi Tibouchi, 2011
 #   http://eprint.iacr.org/2011/481
 #
-#
 #  Some things to note:
 #
 #    1) Joye and Paillier have patents on their methods.  Never use them.
 #
-#    2) The easy-peasy method of next_prime(random number) is fast but gives
-#       a terribly distribution, and not only in the obvious positive bias.
-#       The probability for a prime is proportional to its gap, which is
-#       really a bad distribution.
+#    2) The easy method of next_prime(random number), known as PRIMEINC, is
+#       fast but gives a terrible distribution.  It has a positive bias and
+#       most importantly the probability for a prime is proportional to its
+#       gap, which makes a terrible distribution (some numbers in the range
+#       will be thousands of times more likely than others).
 #
-# In this code, for ranges within randbits (typically 48 on UNIX system rand,
-# 31 for user-provided rand, and 16 for most Win32 systems), the results
-# are completely uniform.  For larger ranges it is close.
+# We use:
+#   TRIVIAL range within native integer size (2^32 or 2^64)
+#   FTA1    random_nbit_prime with 65+ bits
+#   INVA1   other ranges with 65+ bit range
+# where
+#   TRIVIAL = monte-carlo method or equivalent, perfect uniformity.
+#   FTA1    = Fouque/Tibouchi A1, very close to uniform
+#   INVA1   = inverted FTA1, less uniform but works with arbitrary ranges
 #
 # The random_maurer_prime function uses Maurer's FastPrime algorithm.
 #
-# These functions are quite fast for native size inputs, and reasonably fast
-# for bigints.  Some factors that make a significant difference:
-#   - Is Math::Prime::Util::GMP installed?
-#   - Using Math::BigInt::GMP or Math::BigInt::Pari?  Very important.
-#   - Which platform?  Typically x86_64 is best optimized.
-#   - If using system rand, is RANDBITS large?
-#   - What RNG?
+# If Math::Prime::Util::GMP is installed, these functions will be many times
+# faster than other methods (e.g. Math::Pari monte-carlo or Crypt::Primes).
 #
-# Timings using Math::BigInt::GMP, x86_64, system rand with 32+ randbits.
+# Timings on x86_64, with Math::BigInt::GMP and Math::Random::ISAAC::XS.
 #
 #                   random_nbit_prime         random_maurer_prime
 #    n-bits       no GMP   w/ MPU::GMP        no GMP   w/ MPU::GMP
 #    ----------  --------  -----------       --------  -----------
-#       24-bit       25uS      same             same       same
-#       64-bit       87uS      same             same       same
-#      128-bit     0.032s      0.0049s         0.098s      0.056s
-#      256-bit     0.062s      0.0097s         0.25s       0.15s
-#      512-bit     0.13s       0.019s          0.65s       0.30s
-#     1024-bit     0.28s       0.058s          1.3s        0.94s
-#     2048-bit     0.91s       0.4s            3.2s        3.1s
+#       24-bit       22uS      same             same       same
+#       64-bit       94uS      same             same       same
+#      128-bit     0.017s      0.0020s         0.098s      0.056s
+#      256-bit     0.033s      0.0033s         0.25s       0.15s
+#      512-bit     0.066s      0.0093s         0.65s       0.30s
+#     1024-bit     0.16s       0.060s          1.3s        0.94s
+#     2048-bit     0.83s       0.5s            3.2s        3.1s
 #     4096-bit     6.6s        4.0s           23s         12.0s
 #
 # Writing these entirely in GMP has a problem, which is that we want to use
@@ -450,15 +441,12 @@ sub primes {
 # possibility is to, if they do not supply a rand function, use the GMP MT
 # function with an appropriate seed.
 #
-# It will generate primes with more bits, but it slows down a lot.  The
-# time variation becomes quite extreme once bit sizes get over 6000 or so.
-#
 # Random timings for 10M calls:
 #    1.92    system rand
 #    2.62    Math::Random::MT::Auto
 #   12.0     Math::Random::Secure           w/ISAAC::XS
-#   12.6     Bytes::Random::Secure OO       w/ISAAC::XS
-#   31.1     Bytes::Random::Secure OO
+#   12.6     Bytes::Random::Secure OO       w/ISAAC::XS     <==== our
+#   31.1     Bytes::Random::Secure OO                       <==== default
 #   44.5     Bytes::Random::Secure function w/ISAAC::XS
 #   44.8     Math::Random::Secure
 #   71.5     Bytes::Random::Secure function
@@ -484,7 +472,17 @@ sub primes {
   my $_big_gcd_top = 20046;
   my $_big_gcd_use = -1;
   sub _make_big_gcds {
+    return if $_big_gcd_use >= 0;
+    if ($_HAVE_GMP) {
+      $_big_gcd_use = 0;
+      return;
+    }
     croak "Internal error: make_big_gcds needs Math::BigInt!" unless defined $Math::BigInt::VERSION;
+    if (Math::BigInt->config()->{lib} !~ /^Math::BigInt::(GMP|Pari)/) {
+      $_big_gcd_use = 0;
+      return;
+    }
+    $_big_gcd_use = 1;
     my $p0 = primorial(Math::BigInt->new( 520));
     my $p1 = primorial(Math::BigInt->new(2052));
     my $p2 = primorial(Math::BigInt->new(6028));
@@ -498,7 +496,9 @@ sub primes {
   # Returns a function that will get a uniform random number
   # between 0 and $max inclusive.  $max can be a bigint.
   my $_BRS;
-  sub _get_rand_func {
+  my $_RANDF;
+  my $_RANDF_NBIT;
+  sub _set_randf {
     # First define a function $irandf that returns a 32-bit integer.  This
     # corresponds to the irand function of many CPAN modules:
     #    Math::Random::MT
@@ -506,52 +506,105 @@ sub primes {
     #    Math::Random::Xorshift
     #    Math::Random::Secure
     # (but not Math::Random::MT::Auto which will return 64-bits)
-    #
-    # See if they passed one in via prime_set_config(irand=> \&irand).
-    # If not, make a Bytes::Random::Secure object with non-blocking seed, and
-    # use its irand method.
-    #
-    # This gives us a good starting point to make arbitrary size random
-    # numbers.  Bytes::Random::Secure will get us excellent quality 32-bit
-    # numbers on any platform, which means we can avoid possible nightmares
-    # with bad system rand functions.
     my $irandf = $_Config{'irand'};
-    if (!defined $irandf) {
+    if (!defined $irandf) {   # Default irand: BRS nonblocking
+      require Bytes::Random::Secure;
       $_BRS = Bytes::Random::Secure->new(NonBlocking=>1) unless defined $_BRS;
-      $irandf = sub { return $_BRS->irand(); };
+      $_RANDF_NBIT = sub {
+        my($bits) = @_;
+        return 0 if $bits <= 0;
+        return ($_BRS->irand() >> (32-$bits))
+          if $bits <= 32;
+        return ((($_BRS->irand() << 32) + $_BRS->irand()) >> (64-$bits))
+          if $bits <= 64 && ~0 > 4294967295;
+        my $bytes = int(($bits+7)/8);
+        my $n = Math::BigInt->from_hex('0x' . $_BRS->bytes_hex($bytes));
+        $n->brsft( 8*$bytes - $bits ) unless ($bits % 8) == 0;
+        return $n;
+      };
+      $_RANDF = sub {
+        my($max) = @_;
+        my $range = $max+1;
+        my $U;
+        if (ref($range) eq 'Math::BigInt') {
+          my $bits = length($range->as_bin) - 2;   # bits in range
+          my $bytes = 1 + int(($bits+7)/8);  # extra byte to reduce ave. loops
+          my $rmax = Math::BigInt->bone->blsft($bytes*8)->bdec();
+          my $overflow = $rmax - ($rmax % $range);
+          do {
+            $U = Math::BigInt->from_hex('0x' . $_BRS->bytes_hex($bytes));
+          } while $U >= $overflow;
+        } elsif ($range <= 4294967295) {
+          my $overflow = 4294967295 - (4294967295 % $range);
+          do {
+            $U = $_BRS->irand();
+          } while $U >= $overflow;
+        } else {
+          croak "randf given max out of bounds: $max" if $range > ~0;
+          my $overflow = 18446744073709551615 - (18446744073709551615 % $range);
+          do {
+            $U = ($_BRS->irand() << 32) + $_BRS->irand();
+          } while $U >= $overflow;
+        }
+        return $U % $range;
+      };
+    } else { # Custom irand
+      $_RANDF_NBIT = sub {
+        my($bits) = @_;
+        return 0 if $bits <= 0;
+        return ($irandf->() >> (32-$bits))
+          if $bits <= 32;
+        return ((($irandf->() << 32) + $irandf->()) >> (64-$bits))
+          if $bits <= 64 && ~0 > 4294967295;
+        my $words = int(($bits+31)/32);
+        my $n = Math::BigInt->from_hex
+          ("0x" . join '', map { sprintf("%08X", $irandf->()) } 1 .. $words );
+        $n->brsft( 32*$words - $bits ) unless ($bits % 32) == 0;
+        return $n;
+      };
+      $_RANDF = sub {
+        my($max) = @_;
+        return 0 if $max <= 0;
+        my $range = $max+1;
+        my $U;
+        if (ref($range) eq 'Math::BigInt') {
+          my $zero = $range->copy->bzero;
+          my $rbits = length($range->as_bin) - 2;   # bits in range
+          my $rwords = int($rbits/32) + (($rbits % 32) ? 1 : 0);
+          my $rmax = Math::BigInt->bone->blsft($rwords*32)->bdec();
+          my $overflow = $rmax - ($rmax % $range);
+          do {
+            $U = $range->copy->from_hex
+              ("0x" . join '', map { sprintf("%08X", $irandf->()) } 1 .. $rwords);
+          } while $U >= $overflow;
+        } elsif ($range <= 4294967295) {
+          my $overflow = 4294967295 - (4294967295 % $range);
+          do {
+            $U = $irandf->();
+          } while $U >= $overflow;
+        } else {
+          croak "randf given max out of bounds: $max" if $range > ~0;
+          my $overflow = 18446744073709551615 - (18446744073709551615 % $range);
+          do {
+            $U = ($irandf->() << 32) + $irandf->();
+          } while $U >= $overflow;
+        }
+        return $U % $range;
+      };
     }
-    # OK, now we have a function irandf.  Use it.
-    my $randf = sub {
-      my($max) = @_;
-      return 0 if $max <= 0;
-      my $range = $max+1;
-      my $U;
-      if (ref($range) eq 'Math::BigInt') {
-        my $zero = $range->copy->bzero;
-        my $rbits = length($range->as_bin) - 2;   # bits in range
-        my $rwords = int($rbits/32) + (($rbits % 32) ? 1 : 0);
-        # Generate more bits so we rarely have to loop.
-        my $rmax = (($zero+2) ** ($rwords*32)) - 1;
-        my $remainder = $rmax % $range;
-        do {
-          $U = $zero;
-          $U = ($U << 32) + $irandf->()  for 1 .. $rwords;
-        } while $U >= ($rmax - $remainder);
-      } elsif ($range <= 4294967295) {
-        my $remainder = 4294967295 % $range;
-        do {
-          $U = $irandf->();
-        } while $U >= (4294967295 - $remainder);
-      } else {
-        croak "randf given max out of bounds: $max" if $range > ~0;
-        my $remainder = 18446744073709551615 % $range;
-        do {
-          $U = ($irandf->() << 32) + $irandf->();
-        } while $U >= (18446744073709551615 - $remainder);
-      }
-      return $U % $range;
-    };
-    return $randf;
+  }
+  sub _clear_randf {
+    undef $_RANDF;
+    undef $_RANDF_NBIT;
+    undef $_BRS;
+  }
+  sub _get_randf {
+    _set_randf() unless defined $_RANDF;
+    return $_RANDF;
+  }
+  sub _get_randf_nbit {
+    _set_randf() unless defined $_RANDF_NBIT;
+    return $_RANDF_NBIT;
   }
 
   # Sub to call with low and high already primes and verified range.
@@ -559,22 +612,21 @@ sub primes {
     my($low,$high) = @_;
     my $prime;
 
-    # irandf->($n) gives numbers in the range [0, $n].
-    my $irandf = _get_rand_func();
+    _set_randf() unless defined $_RANDF;
 
     #{ my $bsize = 100; my @bins; my $counts = 10000000;
     #  for my $c (1..$counts) { $bins[ $irandf->($bsize-1) ]++; }
     #  for my $b (0..$bsize) {printf("%4d %8.5f%%\n", $b, $bins[$b]/$counts);} }
 
-    # low and high are both primes, and low < high.
+    # low and high are both odds, and low < high.
 
-    # This is fast for small values, low memory, perfectly uniform, and consumes
-    # the absolute minimum amount of randomness needed.  But it isn't feasible
-    # with large values.
-    if ($high <= 131072 && $high <= $_XS_MAXVAL) {
+    # This is fast for small values, low memory, perfectly uniform, and
+    # consumes the minimum amount of randomness needed.  But it isn't feasible
+    # with large values.  Also note that low must be a prime.
+    if ($high <= 262144 && $high <= $_XS_MAXVAL) {
       my $li     = _XS_prime_count(2, $low);
       my $irange = _XS_prime_count($low, $high);
-      my $rand = $irandf->($irange-1);
+      my $rand = $_RANDF->($irange-1);
       return _XS_nth_prime($li + $rand);
     }
 
@@ -595,13 +647,13 @@ sub primes {
       my $loop_limit = 2000 * 1000;  # To protect against broken rand
       if ($low > 11) {
         while ($loop_limit-- > 0) {
-          $prime = $low + 2 * $irandf->($oddrange-1);
+          $prime = $low + 2 * $_RANDF->($oddrange-1);
           next if !($prime % 3) || !($prime % 5) || !($prime % 7) || !($prime % 11);
           return $prime if is_prob_prime($prime);
         }
       } else {
         while ($loop_limit-- > 0) {
-          $prime = $low + 2 * $irandf->($oddrange-1);
+          $prime = $low + 2 * $_RANDF->($oddrange-1);
           next if $prime > 11 && (!($prime % 3) || !($prime % 5) || !($prime % 7) || !($prime % 11));
           return 2 if $prime == 1;  # Remember the special case for 2.
           return $prime if is_prob_prime($prime);
@@ -625,7 +677,8 @@ sub primes {
     #   3) iterate choosing random values within the partition.
     #
     # The downside is that we're skewing a _lot_ farther from uniformity than
-    # we'd like.  Imagine we started at 0 with 1e18 partitions of size 100k each.
+    # we'd like.  Imagine we started at 0 with 1e18 partitions of size 100k
+    # each.
     # Probability of '5' being returned =
     #   1.04e-22 = 1e-18 (chose first partition) * 1/9592 (chose '5')
     # Probability of '100003' being returned =
@@ -640,11 +693,12 @@ sub primes {
     # partition (uniform with respect to all other primes in the same
     # partition, but each partition is different and skewed).
     #
-    # When selecting n-bit or n-digit primes, this effect is _much_ smaller, as
+    # Partitions are typically much larger than 100k, but with a huge range
+    # we still see this (e.g. ~3x from 0-10^30, ~10x from 0-10^100).
+    #
+    # When selecting n-bit or n-digit primes, this effect is MUCH smaller, as
     # the skew becomes approx lg(2^n) / lg(2^(n-1)) which is pretty close to 1.
-    # Note that we really want big partitions to even out any local skews, which
-    # worries me on systems with randbits of 16.  In fact, we should probably
-    # just get two numbers on those systems.
+    #
     #
     # Another idea I'd like to try sometime is:
     #  pclo = prime_count_lower(low);
@@ -680,7 +734,7 @@ sub primes {
     }
     $nparts-- if ($nparts * $binsize) == $oddrange;
 
-    my $rpart = $irandf->($nparts);
+    my $rpart = $_RANDF->($nparts);
 
     my $primelow = $low + 2 * $binsize * $rpart;
     my $partsize = ($rpart < $nparts) ? $binsize
@@ -697,7 +751,7 @@ sub primes {
     # Simply things for non-bigints.
     if (ref($low) ne 'Math::BigInt') {
       while ($loop_limit-- > 0) {
-        my $rand = $irandf->($partsize-1);
+        my $rand = $_RANDF->($partsize-1);
         $prime = $primelow + $rand + $rand;
         croak "random prime failure, $prime > $high" if $prime > $high;
         if ($prime <= 23) {
@@ -720,15 +774,10 @@ sub primes {
     $primelow30 = int($primelow30->bstr) if ref($primelow30) eq 'Math::BigInt';
 
     # Big GCD's are hugely fast with GMP or Pari, but super slow with Calc.
-    if ($_big_gcd_use < 0) {
-      $_big_gcd_use = 0;
-      my $lib = Math::BigInt->config()->{lib};
-      $_big_gcd_use = 1 if $lib =~ /^Math::BigInt::(GMP|Pari)/;
-      _make_big_gcds() if $_big_gcd_use;
-    }
+    _make_big_gcds() if $_big_gcd_use < 0;
 
     while ($loop_limit-- > 0) {
-      my $rand = $irandf->($partsize-1);
+      my $rand = $_RANDF->($partsize-1);
       # Check wheel-30 mod
       my $rand30 = $rand % 30;
       next if $w30[($primelow30 + 2*$rand30) % 30]
@@ -741,7 +790,12 @@ sub primes {
         next unless (0,0,1,1,0,1,0,1,0,0,0,1,0,1,0,0,0,1,0,1,0,0,0,1)[$prime];
         return $prime;
       }
-      # Perform quick trial division
+      # With GMP, the fastest thing to do is check primality.
+      if ($_HAVE_GMP) {
+        next unless Math::Prime::Util::GMP::is_prime($prime);
+        return $prime;
+      }
+      # No MPU:GMP, so primality checking is slow.  Skip some composites here.
       next unless Math::BigInt::bgcd($prime, 7436429) == 1;
       if ($_big_gcd_use && $prime > $_big_gcd_top) {
         next unless Math::BigInt::bgcd($prime, $_big_gcd[0]) == 1;
@@ -759,6 +813,25 @@ sub primes {
   # Cache of tight bounds for each digit.  Helps performance a lot.
   my @_random_ndigit_ranges = (undef, [2,7], [11,97] );
   my @_random_nbit_ranges   = (undef, undef, [2,3],[5,7] );
+  my %_random_cache_small;
+
+  # For fixed small ranges with XS, e.g. 6-digit, 18-bit
+  sub _random_xscount_prime {
+    my($low,$high) = @_;
+    my($istart, $irange);
+    my $cachearef = $_random_cache_small{$low,$high};
+    if (defined $cachearef) {
+      ($istart, $irange) = @$cachearef;
+    } else {
+      my $beg = ($low <= 2)  ?  2  :  next_prime($low-1);
+      my $end = ($high < ~0)  ?  prev_prime($high + 1)  :  prev_prime($high);
+      ($istart, $irange) = ( _XS_prime_count(2, $beg), _XS_prime_count($beg, $end) );
+      $_random_cache_small{$low,$high} = [$istart, $irange];
+    }
+    _set_randf() unless defined $_RANDF;
+    my $rand = $_RANDF->($irange-1);
+    return _XS_nth_prime($istart + $rand);
+  }
 
   sub random_prime {
     my $low = (@_ == 2)  ?  shift  :  2;
@@ -779,6 +852,9 @@ sub primes {
   sub random_ndigit_prime {
     my($digits) = @_;
     _validate_num($digits, 1) || _validate_positive_integer($digits, 1);
+
+    return _random_xscount_prime( int(10 ** ($digits-1)), int(10 ** $digits) )
+      if $digits <= 6 && int(10**$digits) <= $_XS_MAXVAL;
 
     my $bigdigits = $digits >= $_Config{'maxdigits'};
     croak "Large random primes not supported on old Perl" if $] < 5.008 && $_Config{'maxbits'} > 32 && !$bigdigits && $digits > 15;
@@ -815,18 +891,130 @@ sub primes {
     return $_random_prime->($low, $high);
   }
 
+  my @_random_nbit_m;
+  my @_random_nbit_lambda;
+  my @_random_nbit_arange;
+
   sub random_nbit_prime {
     my($bits) = @_;
     _validate_num($bits, 2) || _validate_positive_integer($bits, 2);
 
-    if (!defined $_random_nbit_ranges[$bits]) {
-      my $bigbits = $bits > $_Config{'maxbits'};
-      croak "Large random primes not supported on old Perl" if $] < 5.008 && $_Config{'maxbits'} > 32 && !$bigbits && $bits > 49;
-      if ($bigbits) {
-        if (!defined $Math::BigInt::VERSION) {
-          eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-          or do { croak "Cannot load Math::BigInt"; };
+    _set_randf() unless defined $_RANDF_NBIT;
+
+    # Very small size, use the nth-prime method
+    if ($bits <= 18 && int(2**$bits) <= $_XS_MAXVAL) {
+      if ($bits <= 4) {
+        return (2,3)[$_RANDF_NBIT->(1)] if $bits == 2;
+        return (5,7)[$_RANDF_NBIT->(1)] if $bits == 3;
+        return (11,13)[$_RANDF_NBIT->(1)] if $bits == 4;
+      }
+      return _random_xscount_prime( 1 << ($bits-1), 1 << $bits );
+    }
+
+    croak "Mid-size random primes not supported on broken old Perl"
+      if $] < 5.008 && $bits > 49
+      && $_Config{'maxbits'} > 32 && $bits <= $_Config{'maxbits'};
+    if ($bits > $_Config{'maxbits'}) {
+      if (!defined $Math::BigInt::VERSION) {
+        eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
+        or do { croak "Cannot load Math::BigInt"; };
+      }
+    }
+
+    # Fouque and Tibouchi (2011) Algorithm 1 (basic)
+    # Modified to make sure the nth bit is always set.
+    #
+    # Example for random_nbit_prime(512) on 64-bit Perl:
+    # p:  1aaaaaaaabbbbbbbbbbbbbbbbbbbb1
+    #     ^^       ^                   ^--- Trailing 1 so p is odd
+    #     ||       +--- 512-63-2 = 447 lower bits selected before loop
+    #     |+--- 63 upper bits selected in loop, repeated until p is prime
+    #     +--- upper bit is 1 so we generate an n-bit prime
+    # total: 1 + 63 + 447 + 1 = 512 bits
+    #
+    # Algorithm 2 is implemented in a previous commit on github.  The problem
+    # is that it doesn't set the nth bit, and making that change requires a
+    # modification of the algorithm.  It was not a lot faster than this A1
+    # with the native int trial division.  If the irandf function was very
+    # slow, then A2 would look more promising.
+    #
+    if (1 && $bits > 64) {
+      my $l = ($_Config{'maxbits'} > 32 && $bits > 79)  ?  63  :  31;
+      $l = 49 if $l == 63 && $] < 5.008;  # Fix for broken Perl 5.6
+      $l = $bits-2 if $bits-2 < $l;
+
+      my $brand = $_RANDF_NBIT->($bits-$l-2);
+      $brand = Math::BigInt->new("$brand") unless ref($brand) eq 'Math::BigInt';
+      my $b = $brand->blsft(1)->binc();
+
+      # Precalculate some modulii so we can do trial division on native int
+      # 9699690 = 2*3*5*7*11*13*17*19, so later operations can be native ints
+      my @premod;
+      my $bpremod = int($b->copy->bmod(9699690)->bstr);
+      my $twopremod = int(Math::BigInt->new(2)->bmodpow($bits-$l-1, 9699690)->bstr);
+      foreach my $zi (0 .. 19-1) {
+        foreach my $pm (3, 5, 7, 11, 13, 17, 19) {
+          next if $zi >= $pm || defined $premod[$pm];
+          $premod[$pm] = $zi if ( ($twopremod*$zi+$bpremod) % $pm) == 0;
         }
+      }
+      _make_big_gcds() if $_big_gcd_use < 0;
+      my $loop_limit = 1_000_000;
+      while ($loop_limit-- > 0) {
+        my $a = (1 << $l) + $_RANDF_NBIT->($l);
+        # $a % s == $premod[s]  =>  $p % s == 0  =>  p will be composite
+        next if $a %  3 == $premod[ 3] || $a %  5 == $premod[ 5]
+             || $a %  7 == $premod[ 7] || $a % 11 == $premod[11]
+             || $a % 13 == $premod[13] || $a % 17 == $premod[17]
+             || $a % 19 == $premod[19];
+        my $p = Math::BigInt->new("$a")->blsft($bits-$l-1)->badd($b);
+        #die " $a $b $p" if $a % 11 == $premod[11] && $p % 11 != 0;
+        #die "!$a $b $p" if $a % 11 != $premod[11] && $p % 11 == 0;
+        if ($_HAVE_GMP) {
+          next unless Math::Prime::Util::GMP::is_prime($p);
+        } else {
+          next unless Math::BigInt::bgcd($p, 1348781387) == 1; # 23-43
+          if ($_big_gcd_use && $p > $_big_gcd_top) {
+            next unless Math::BigInt::bgcd($p, $_big_gcd[0]) == 1;
+            next unless Math::BigInt::bgcd($p, $_big_gcd[1]) == 1;
+            next unless Math::BigInt::bgcd($p, $_big_gcd[2]) == 1;
+            next unless Math::BigInt::bgcd($p, $_big_gcd[3]) == 1;
+          }
+          # We know we don't have GMP and are > 2^64, so skip all the middle.
+          #next unless is_prob_prime($p);
+          next unless Math::Prime::Util::PP::miller_rabin($p, 2);
+          next unless Math::Prime::Util::PP::is_extra_strong_lucas_pseudoprime($p);
+        }
+        return $p;
+      }
+      croak "Random function broken?";
+    }
+
+    # The Trivial method.  Great uniformity, and fine for small sizes.  It
+    # gets very slow as the bit size increases, but that is why we have the
+    # method above for bigints.
+    if (1) {
+      my $loop_limit = 2_000_000;
+      if ($bits > $_Config{'maxbits'}) {
+        my $p = Math::BigInt->bone->blsft($bits-1)->binc();
+        while ($loop_limit-- > 0) {
+          my $n = Math::BigInt->new(''.$_RANDF_NBIT->($bits-2))->blsft(1)->badd($p);
+          return $n if is_prob_prime($n);
+        }
+      } else {
+        my $p = (1 << ($bits-1)) + 1;
+        while ($loop_limit-- > 0) {
+          my $n = $p + ($_RANDF_NBIT->($bits-2) << 1);
+          return $n if is_prob_prime($n);
+        }
+      }
+      croak "Random function broken?";
+    }
+
+    # Send through the generic random_prime function.  Decently fast, but
+    # quite a bit slower than the F&T A1 method above.
+    if (!defined $_random_nbit_ranges[$bits]) {
+      if ($bits > $_Config{'maxbits'}) {
         my $low  = Math::BigInt->new('2')->bpow($bits-1);
         my $high = Math::BigInt->new('2')->bpow($bits);
         # Don't pull the range in to primes, just odds
@@ -870,9 +1058,7 @@ sub primes {
       croak "Random Maurer not supported on old Perl";
     }
 
-    # Results for random_nbit_prime are proven for all native bit sizes.  We
-    # could go even higher if we used is_provable_prime or looked for is_prime
-    # returning 2.  This should be reasonably fast to ~128 bits with MPU::GMP.
+    # Results for random_nbit_prime are proven for all native bit sizes.
     my $p0 = $_Config{'maxbits'};
 
     if ($k <= $p0) {
@@ -898,13 +1084,13 @@ sub primes {
     # Ignore Maurer's g and c that controls how much trial division is done.
     my $r = Math::BigFloat->new("0.5");   # relative size of the prime q
     my $m = 20;                           # makes sure R is big enough
-    my $irandf = _get_rand_func();
+    _set_randf() unless defined $_RANDF;
 
     # Generate a random prime q of size $r*$k, where $r >= 0.5.  Try to
     # cleverly select r to match the size of a typical random factor.
     if ($k > 2*$m) {
       do {
-        my $s = Math::BigFloat->new($irandf->(2147483647))->bdiv(2147483648);
+        my $s = Math::BigFloat->new($_RANDF->(2147483647))->bdiv(2147483648);
         $r = Math::BigFloat->new(2)->bpow($s-1);
       } while ($k*$r >= $k-$m);
     }
@@ -918,33 +1104,31 @@ sub primes {
              ? "" : _strip_proof_header($qcert);
 
     # Big GCD's are hugely fast with GMP or Pari, but super slow with Calc.
-    if ($_big_gcd_use < 0) {
-      $_big_gcd_use = 0;
-      my $lib = Math::BigInt->config()->{lib};
-      $_big_gcd_use = 1 if $lib =~ /^Math::BigInt::(GMP|Pari)/;
-      _make_big_gcds() if $_big_gcd_use;
-    }
+    _make_big_gcds() if $_big_gcd_use < 0;
 
     my $loop_limit = 1_000_000 + $k * 1_000;
     while ($loop_limit-- > 0) {
       # R is a random number between $I+1 and 2*$I
-      my $R = $I + 1 + $irandf->( $I - 1 );
+      my $R = $I + 1 + $_RANDF->( $I - 1 );
       #my $n = 2 * $R * $q + 1;
-      my $n = Math::BigInt->new(2)->bmul($R)->bmul($q)->badd(1);
+      my $n = Math::BigInt->new(2)->bmul($R)->bmul($q)->binc();
       # We constructed a promising looking $n.  Now test it.
       print "." if $verbose > 2;
-      # Trial divisions, trying to quickly weed out non-primes.
-      next unless Math::BigInt::bgcd($n, 111546435) == 1;
-      if ($_big_gcd_use && $n > $_big_gcd_top) {
-        next unless Math::BigInt::bgcd($n, $_big_gcd[0]) == 1;
-        next unless Math::BigInt::bgcd($n, $_big_gcd[1]) == 1;
-        if (!$_HAVE_GMP) {
+      if ($_HAVE_GMP) {
+        # MPU::GMP::is_prob_prime has fast tests built in.
+        next unless Math::Prime::Util::GMP::is_prob_prime($n);
+      } else {
+        # No GMP, so first do trial divisions, then a SPSP test.
+        next unless Math::BigInt::bgcd($n, 111546435) == 1;
+        if ($_big_gcd_use && $n > $_big_gcd_top) {
+          next unless Math::BigInt::bgcd($n, $_big_gcd[0]) == 1;
+          next unless Math::BigInt::bgcd($n, $_big_gcd[1]) == 1;
           next unless Math::BigInt::bgcd($n, $_big_gcd[2]) == 1;
           next unless Math::BigInt::bgcd($n, $_big_gcd[3]) == 1;
         }
+        print "+" if $verbose > 2;
+        next unless Math::Prime::Util::is_strong_pseudoprime($n, 3);
       }
-      print "+" if $verbose > 2;
-      next unless Math::Prime::Util::is_strong_pseudoprime($n, 3);
       print "*" if $verbose > 2;
 
       # We could set r = 0.3333 earlier, then use BLS75 theorem 5 here.
@@ -965,7 +1149,7 @@ sub primes {
       foreach my $trya (2, 3, 5, 7, 11, 13) {
         my $a = Math::BigInt->new($trya);
         # m/2 = R    (n-1)/2 = (2*R*q)/2 = R*q
-        next unless $a->copy->bmodpow($R,$n) != $n-1;
+        next unless $a->copy->bmodpow($R, $n) != $n-1;
         next unless $a->copy->bmodpow($R*$q, $n) == $n-1;
         print "($k)" if $verbose > 2;
         croak "Maurer prime $n=2*$R*$q+1 failed BPSW" unless is_prob_prime($n);
@@ -990,7 +1174,7 @@ sub primes {
       eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
       or do { croak "Cannot load Math::BigInt"; };
     }
-    my $irandf = _get_rand_func();
+    _set_randf() unless defined $_RANDF;
 
     my $l   = (($t+1) >> 1) - 2;
     my $lp  = int($t/2) - 20;
@@ -1000,26 +1184,47 @@ sub primes {
       my $qpp = random_nbit_prime($lpp);
       $qp  = Math::BigInt->new("$qp")  unless ref($qp)  eq 'Math::BigInt';
       $qpp = Math::BigInt->new("$qpp") unless ref($qpp) eq 'Math::BigInt';
-      my ($il, $rem) = Math::BigInt->new(2)->bpow($l-1)->bsub(1)->bdiv(2*$qpp);
+      my ($il, $rem) = Math::BigInt->new(2)->bpow($l-1)->bdec()->bdiv(2*$qpp);
       $il++ if $rem > 0;
       $il = $il->as_int();
       my $iu = Math::BigInt->new(2)->bpow($l)->bsub(2)->bdiv(2*$qpp)->as_int();
-      my $istart = $il + $irandf->($iu - $il);
+      my $istart = $il + $_RANDF->($iu - $il);
       for (my $i = $istart; $i <= $iu; $i++) {  # Search for q
         my $q = 2 * $i * $qpp + 1;
         next unless is_prob_prime($q);
-        my $pp = $qp->copy->bmodpow($q-2, $q)->bmul(2)->bmul($qp)->bsub(1);
+        my $pp = $qp->copy->bmodpow($q-2, $q)->bmul(2)->bmul($qp)->bdec();
         my ($jl, $rem) = Math::BigInt->new(2)->bpow($t-1)->bsub($pp)->bdiv(2*$q*$qp);
         $jl++ if $rem > 0;
         $jl = $jl->as_int();
-        my $ju = Math::BigInt->new(2)->bpow($t)->bsub(1)->bsub($pp)->bdiv(2*$q*$qp)->as_int();
-        my $jstart = $jl + $irandf->($ju - $jl);
+        my $ju = Math::BigInt->new(2)->bpow($t)->bdec()->bsub($pp)->bdiv(2*$q*$qp)->as_int();
+        my $jstart = $jl + $_RANDF->($ju - $jl);
         for (my $j = $jstart; $j <= $ju; $j++) {  # Search for p
           my $p = $pp + 2 * $j * $q * $qp;
           return $p if is_prob_prime($p);
         }
       }
     }
+  }
+
+  sub random_proven_prime {
+    my $k = shift;
+    my ($n, $cert) = random_proven_prime_with_cert($k);
+    croak "maurer prime $n failed certificate verification!"
+          unless verify_prime($cert);
+    return $n;
+  }
+
+  sub random_proven_prime_with_cert {
+    my $k = shift;
+    _validate_num($k, 2) || _validate_positive_integer($k, 2);
+
+    if ($_HAVE_GMP && $k <= 450) {
+      my $n = random_nbit_prime($k);
+      my ($isp, $cert) = is_provable_prime_with_cert($n);
+      croak "small nbit prime could not be proven" if $isp != 2;
+      return ($n, $cert);
+    }
+    return random_maurer_prime_with_cert($k);
   }
 
 } # end of the random prime section
@@ -1041,7 +1246,7 @@ sub primorial {
 
   if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::primorial) {
     if (ref($pn) eq 'Math::BigInt') {
-      $pn->bzero->badd( Math::Prime::Util::GMP::primorial($n) );
+      $pn->bzero->badd( ''.Math::Prime::Util::GMP::primorial($n) );
     } else {
       $pn = int( Math::Prime::Util::GMP::primorial($n) );
     }
@@ -1053,7 +1258,18 @@ sub primorial {
 
 sub pn_primorial {
   my($n) = @_;
-  return primorial(nth_prime($n));
+  return primorial(nth_prime($n))
+    unless $_HAVE_GMP && defined &Math::Prime::Util::GMP::pn_primorial;
+
+  _validate_num($n) || _validate_positive_integer($n);
+  my $pn = Math::Prime::Util::GMP::pn_primorial($n);
+  return int($pn) if $n < (($_Config{'maxbits'} == 32) ? 10 : 16);
+  return $_[0]->copy->bzero->badd("$pn") if ref($_[0]) eq 'Math::BigInt';
+  if (!defined $Math::BigInt::VERSION) {
+    eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
+    or do { croak "Cannot load Math::BigInt"; };
+  }
+  return Math::BigInt->new("$pn");
 }
 
 sub consecutive_integer_lcm {
@@ -1139,7 +1355,8 @@ sub moebius {
     my @mu = map { 1 } $lo .. $hi;
     $mu[0] = 0 if $lo == 0;
     my $sqrtn = int(sqrt($hi)+0.5);
-    foreach my $p ( @{ primes($sqrtn) } ) {
+    forprimes {
+      my $p = $_;
       my $i = $p * $p;
       $i = $i * int($lo/$i) + (($lo % $i)  ? $i : 0)  if $i < $lo;
       while ($i <= $hi) {
@@ -1152,7 +1369,7 @@ sub moebius {
         $mu[$i-$lo] *= -$p;
         $i += $p;
       }
-    }
+    } $sqrtn;
     foreach my $i ($lo .. $hi) {
       my $m = $mu[$i-$lo];
       $m *= -1 if abs($m) != $i;
@@ -1165,10 +1382,8 @@ sub moebius {
   # Quick check for small replicated factors
   return 0 if ($n >= 25) && (!($n % 4) || !($n % 9) || !($n % 25));
   my @factors = factor($n);
-  my $lastf = 0;
-  foreach my $factor (@factors) {
-    return 0 if $factor == $lastf;
-    $lastf = $factor;
+  foreach my $i (1 .. $#factors) {
+    return 0 if $factors[$i] == $factors[$i-1];
   }
   return (((scalar @factors) % 2) == 0) ? 1 : -1;
 }
@@ -1238,28 +1453,21 @@ sub euler_phi {
   return $n if $n <= 1;
   my @factors = factor($n);
 
+  my $totient = $n - $n + 1;
+  my $lastf = 0;
+
   if (ref($n) ne 'Math::BigInt') {
-    my $totient = 1;
-    my $lastf = 0;
     foreach my $f (@factors) {
       if ($f == $lastf) { $totient *= $f;                 }
       else              { $totient *= $f-1;  $lastf = $f; }
     }
-    return $totient;
-  }
-
-  my $totient = $n->copy->bone;
-  my $lastf = 0;
-  foreach my $factor (@factors) {
-    # This screwball line is here to solve some issues with the GMP backend,
-    # which has a weird bug.  Results of the multiply can turn negative (!)
-    # if we don't do this.  Perhaps related to RT 71548?
-    #  perl -le 'use Math::BigInt lib=>'GMP'; my $a = 2931542417; my $n = Math::BigInt->new("49754396241690624"); my $x = $n*$a; print $x;'
-    #  perl -le 'use Math::BigInt lib=>'GMP'; my $a = Math::BigInt->bone; $a *= 2931542417; $a *= 49754396241690624; print $a;'
-    # TODO: more work reproducing this
-    my $f = $n->copy->bzero->badd("$factor");
-    if ($f == $lastf) { $totient->bmul($f);                              }
-    else              { $totient->bmul($f->copy->bsub(1));  $lastf = $f; }
+  } else {
+    my $zero = $n->copy->bzero;
+    foreach my $factor (@factors) {
+      my $f = $zero->copy->badd("$factor");  # Math::BigInt::GMP RT 71548
+      if ($f == $lastf) { $totient->bmul($f);                             }
+      else              { $totient->bmul($f->copy->bdec());  $lastf = $f; }
+    }
   }
   return $totient;
 }
@@ -1290,46 +1498,92 @@ sub jordan_totient {
     my $zero = $n->copy->bzero;
     foreach my $factor (@factors) {
       my $fmult = $zero->copy->badd("$factor")->bpow($k);
-      $totient->bmul($fmult->copy->bsub(1));
+      $totient->bmul($fmult->copy->bdec());
       $totient->bmul($fmult) for (2 .. $factor_mult{$factor});
     }
   }
   return $totient;
 }
 
-# Mathematica and Pari both have functions like this.
+my @_ds_overflow =  # We'll use BigInt math if the input is larger than this.
+  (~0 > 4294967295)
+   ? (0, 3000000000000000000, 3000000000, 2487240, 64260, 7026)
+   : (0,           845404560,      52560,    1548,   252,   84);
 sub divisor_sum {
-  my($n, $sub) = @_;
-  # I really need to get cracking on an XS validator.
-  #return _XS_divisor_sum($n) if !defined $sub && defined $n && $n <= $_XS_MAXVAL && $_Config{'nobigint'};
+  my($n, $k) = @_;
   return (0,1)[$n] if defined $n && $n <= 1;
   _validate_num($n) || _validate_positive_integer($n);
 
-  if (!defined $sub) {
-    return _XS_divisor_sum($n) if $n <= $_XS_MAXVAL;
-    my $bone = (ref($n) eq 'Math::BigInt') ? $n->copy->bone : 1;
-    my $product = $bone;
-    my @factors = factor($n);
-    while (@factors) {
-      if (@factors > 1 && $factors[0] == $factors[1]) {
-        my $fmult = $bone * $factors[0] * $factors[0];
-        $fmult *= shift @factors while @factors > 1 && $factors[0] == $factors[1];
-        $product *= ($fmult -1) / ($factors[0] - 1);
-      } else {
-        $product *= $factors[0]+1;
-      }
-      shift @factors;
+  # With no argument, call the XS routine for k=1 immediately if possible.
+  return _XS_divisor_sum($n, 1)
+    if !defined $k && $n <= $_XS_MAXVAL && $n < $_ds_overflow[1];
+
+  if (defined $k && ref($k) eq 'CODE') {
+    my $sum = $k->(1);
+    return $sum if $n == 1;
+    foreach my $f (all_factors($n), $n ) {
+      $sum += $k->($f);
     }
-    return $product;
+    return $sum;
   }
 
-  croak "Second argument must be a code ref" unless ref($sub) eq 'CODE';
-  my $sum = $sub->(1);
-  return $sum if $n == 1;
-  foreach my $f (all_factors($n), $n ) {
-    $sum += $sub->($f);
+  croak "Second argument must be a code ref or number"
+    unless !defined $k || _validate_num($k) || _validate_positive_integer($k);
+  $k = 1 if !defined $k;
+
+  my $will_overflow = ($k == 0) ? 0
+                    : ($k  > 5) ? 1
+                    : $n >= $_ds_overflow[$k];
+
+  return _XS_divisor_sum($n, $k) if $n <= $_XS_MAXVAL && !$will_overflow;
+
+  if ($will_overflow) {
+    if (!defined $Math::BigInt::VERSION) {
+      eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
+      or do { croak "Cannot load Math::BigInt"; };
+    }
   }
-  return $sum;
+
+  # The standard way is:
+  #    my $pk = $f ** $k;  $product *= ($pk ** ($e+1) - 1) / ($pk - 1);
+  # But we get less overflow using:
+  #    my $pk = $f ** $k;  $product *= $pk**E for E in 0 .. e
+  # Also separate BigInt and do fiddly bits for better performance.
+
+  my $product = 1;
+  my @factors = ($n <= $_XS_MAXVAL) ? _XS_factor($n) : factor($n);
+
+  if (!$will_overflow) {
+    while (@factors) {
+      my ($e, $f) = (1, shift @factors);
+      while (@factors && $factors[0] == $f) { $e++; shift @factors; }
+      if ($k == 0) {
+        $product *= ($e+1);
+      } else {
+        my $pk = $f ** $k;
+        my $fmult = $pk + 1;
+        foreach my $E (2 .. $e) { $fmult += $pk**$E }
+        $product *= $fmult;
+      }
+    }
+  } else {
+    $product = Math::BigInt->bone;
+    my $bik = Math::BigInt->new("$k");
+    while (@factors) {
+      my ($e, $f) = (1, shift @factors);
+      while (@factors && $factors[0] == $f) { $e++; shift @factors; }
+      my $pk = Math::BigInt->new("$f")->bpow($bik);
+      if    ($e == 1) { $pk->binc(); $product->bmul($pk); }
+      elsif ($e == 2) { $pk->badd($pk*$pk)->binc(); $product->bmul($pk); }
+      else {
+        my $fmult = $pk;
+        foreach my $E (2 .. $e) { $fmult += $pk->copy->bpow($E) }
+        $fmult->binc();
+        $product *= $fmult;
+      }
+    }
+  }
+  return $product;
 }
 
                                    # Need proto for the block
@@ -1338,11 +1592,14 @@ sub _generic_forprimes (&$;$) {    ## no critic qw(ProhibitSubroutinePrototypes)
   if (!defined $end) { $end = $beg; $beg = 2; }
   _validate_num($beg) || _validate_positive_integer($beg);
   _validate_num($end) || _validate_positive_integer($end);
-  my $p = ($beg <= 2) ? 2 : next_prime($beg-1);
-  while ($p <= $end) {
-    local *_ = \$p;
-    $sub->();
-    $p = next_prime($p);
+  $beg = 2 if $beg < 2;
+  {
+    my $pp;
+    local *_ = \$pp;
+    for (my $p = next_prime($beg-1);  $p <= $end;  $p = next_prime($p)) {
+      $pp = $p;
+      $sub->();
+    }
   }
 }
 
@@ -1358,6 +1615,13 @@ sub prime_iterator {
   } else {
     return sub { $p = Math::Prime::Util::PP::next_prime($p); return $p; }
   }
+}
+
+sub prime_iterator_object {
+  my($start) = @_;
+  eval { require Math::Prime::Util::PrimeIterator; 1; }
+  or do { croak "Cannot load Math::Prime::Util::PrimeIterator"; };
+  return Math::Prime::Util::PrimeIterator->new($start);
 }
 
 # Omega function A001221.  Just an example.
@@ -1411,6 +1675,84 @@ sub chebyshev_psi {
   return $sum;
 }
 
+sub carmichael_lambda {
+  my($n) = @_;
+  _validate_num($n) || _validate_positive_integer($n);
+  # lambda(n) = phi(n) for n < 8
+  return euler_phi($n) if $n < 8;
+  # lambda(n) = phi(n)/2 for powers of two greater than 4
+  return euler_phi($n)/2 if ($n & ($n-1)) == 0;
+
+  my %factor_mult;
+  my @factors = grep { !$factor_mult{$_}++ }
+                ($n <= $_XS_MAXVAL) ? _XS_factor($n) : factor($n);
+  $factor_mult{2}-- if defined $factor_mult{2} && $factor_mult{2} > 2;
+
+  if (!defined $Math::BigInt::VERSION) {
+    eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
+    or do { croak "Cannot load Math::BigInt"; };
+  }
+  @factors = map { Math::BigInt->new("$_") } @factors;
+  my $lcm = Math::BigInt::blcm(
+    map { $_->copy->bpow($factor_mult{$_}-1)->bmul($_-1) } @factors
+  );
+  $lcm = int($lcm->bstr) if $lcm->bacmp(''.~0) <= 0;
+  return $lcm;
+}
+
+sub znorder {
+  my($a, $n) = @_;
+  _validate_num($a) || _validate_positive_integer($a);
+  _validate_num($n) || _validate_positive_integer($n);
+  return if $n <= 0;
+  return (undef,1)[$a] if $a <= 1;
+  return 1 if $n == 1;
+  if (!defined $Math::BigInt::VERSION) {
+    eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
+    or do { croak "Cannot load Math::BigInt"; };
+  }
+  # Sadly, Calc/FastCalc are horrendously slow for this function.
+  return if Math::BigInt::bgcd($a, $n) > 1;
+  # Method 1:  check all a^k 1 .. $n-1.
+  #            Naive and terrible slow.
+  # Method 2:  check all k in (all_factors(euler_phi($n), $n).
+  # Method 3:  check all k in (all_factors(carmichael_lambda($n), $n).
+  #            Good for most cases, but slow when factor quantity is large.
+  # Method 4:  Das algorithm 1.7, just enough multiples of p
+  #            Fastest.
+  #
+  # Most of the time is spent factoring $n and $phi.  We could do the phi
+  # construction here and build its factors to save a little more time.
+
+  $a = Math::BigInt->new("$a") unless ref($a) eq 'Math::BigInt';
+  my $phi = Math::BigInt->new('' . euler_phi($n));
+  my %e;
+  my @p = grep { !$e{$_}++ }
+          ($phi <= $_XS_MAXVAL) ? _XS_factor($phi) : factor($phi);
+  my $k = Math::BigInt->bone;
+  foreach my $i (0 .. $#p) {
+    my($pi, $ei, $enum) = (Math::BigInt->new("$p[$i]"), $e{$p[$i]}, 0);
+    my $phidiv = $phi / ($pi**$ei);
+    my $b = $a->copy->bmodpow($phidiv, $n);
+    while ($b != 1) {
+      return if $enum++ >= $ei;
+      $b = $b->copy->bmodpow($pi, $n);
+      $k *= $pi;
+    }
+  }
+  return $k;
+
+  # Method 3:
+  # my $cl = carmichael_lambda($n);
+  # foreach my $k (all_factors($cl), $cl) {
+  #   my $t = $a->copy->bmodpow("$k", $n);
+  #   return $k if $t->is_one;
+  # }
+  # return;
+}
+
+
+
 
 
 #############################################################################
@@ -1438,15 +1780,15 @@ sub _generic_is_prime {
   return 0 if defined $n && $n < 2;
   if (!_validate_num($n)) {
     $n = Math::BigInt->new("$n")
-       if defined $Math::BigInt::VERSION && ref($n) ne 'Math::BigInt';
+       if defined $Math::BigInt::VERSION && ref($_[0]) ne 'Math::BigInt';
     _validate_positive_integer($n);
   }
 
-  return _XS_is_prime("$n") if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+  return _XS_is_prime($n)
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_prime($n) if $_HAVE_GMP;
 
-  return 2 if ($n == 2) || ($n == 3) || ($n == 5);  # 2, 3, 5 are prime
-  return 0 if $n < 7;             # everything else below 7 is composite
+  if ($n < 7) { return ($n == 2) || ($n == 3) || ($n == 5) ? 2 : 0; }
   return 0 if !($n % 2) || !($n % 3) || !($n % 5);
   return Math::Prime::Util::PP::_is_prime7($n);
 }
@@ -1456,15 +1798,15 @@ sub _generic_is_prob_prime {
   return 0 if defined $n && $n < 2;
   if (!_validate_num($n)) {
     $n = Math::BigInt->new("$n")
-       if defined $Math::BigInt::VERSION && ref($n) ne 'Math::BigInt';
+       if defined $Math::BigInt::VERSION && ref($_[0]) ne 'Math::BigInt';
     _validate_positive_integer($n);
   }
 
-  return _XS_is_prob_prime($n) if ref($n) ne 'Math::BigInt' && $n<=$_XS_MAXVAL;
+  return _XS_is_prob_prime($n)
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_prob_prime($n) if $_HAVE_GMP;
 
-  return 2 if ($n == 2) || ($n == 3) || ($n == 5);  # 2, 3, 5 are prime
-  return 0 if $n < 7;             # everything else below 7 is composite
+  if ($n < 7) { return ($n == 2) || ($n == 3) || ($n == 5) ? 2 : 0; }
   return 0 if !($n % 2) || !($n % 3) || !($n % 5);
   return Math::Prime::Util::PP::_is_prime7($n);
 }
@@ -1474,8 +1816,9 @@ sub _generic_next_prime {
   _validate_num($n) || _validate_positive_integer($n);
 
   # If we have XS and n is either small or bigint is unknown, then use XS.
-  return _XS_next_prime($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL
-             && (!defined $bigint::VERSION || $n < $_Config{'maxprime'} );
+  return _XS_next_prime($n)
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL
+    && (!defined $bigint::VERSION || $n < $_Config{'maxprime'});
 
   # Try to stick to the plan with respect to maximum return values.
   return 0 if ref($_[0]) ne 'Math::BigInt' && $n >= $_Config{'maxprime'};
@@ -1483,21 +1826,23 @@ sub _generic_next_prime {
   if ($_HAVE_GMP) {
     # If $n is a bigint object, try to make the return value the same
     return (ref($_[0]) eq 'Math::BigInt')
-        ?  $_[0]->copy->bzero->badd(Math::Prime::Util::GMP::next_prime($n))
+        ?  $_[0]->copy->bzero->badd(''.Math::Prime::Util::GMP::next_prime($n))
         :  Math::Prime::Util::GMP::next_prime($n);
   }
-  return Math::Prime::Util::PP::next_prime($n);
+  # Pass original argument to preserve bigint status
+  return Math::Prime::Util::PP::next_prime($_[0]);
 }
 
 sub _generic_prev_prime {
   my($n) = @_;
   _validate_num($n) || _validate_positive_integer($n);
 
-  return _XS_prev_prime($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+  return _XS_prev_prime($n)
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   if ($_HAVE_GMP) {
     # If $n is a bigint object, try to make the return value the same
-    return (ref($n) eq 'Math::BigInt')
-        ?  $n->copy->bzero->badd(Math::Prime::Util::GMP::prev_prime($n))
+    return (ref($_[0]) eq 'Math::BigInt')
+        ?  $n->copy->bzero->badd(''.Math::Prime::Util::GMP::prev_prime($n))
         :  Math::Prime::Util::GMP::prev_prime($n);
   }
   return Math::Prime::Util::PP::prev_prime($n);
@@ -1523,13 +1868,15 @@ sub prime_count {
       #                 + 0.0000000057 * $low**0.72;
       #if ($est_lehmer < $est_segment) {
       if ( ($high / ($high-$low+1)) < 100 ) {
-        $low = 2 if $low < 2;
-        return _XS_lehmer_pi($high) - _XS_lehmer_pi($low-1);
+        my $count;
+        $count  = _XS_LMO_pi($high);
+        $count -= _XS_LMO_pi($low-1) if $low > 2;
+        return $count;
       }
     }
     return _XS_prime_count($low,$high);
   }
-  # We can relax these constraints if MPU::GMP gets a Lehmer implementation.
+  # We can relax these constraints if MPU::GMP gets a fast implementation.
   return Math::Prime::Util::GMP::prime_count($low,$high) if $_HAVE_GMP
                        && defined &Math::Prime::Util::GMP::prime_count
                        && (   (ref($high) eq 'Math::BigInt')
@@ -1554,8 +1901,8 @@ sub factor {
 
   if ($_HAVE_GMP) {
     my @factors = Math::Prime::Util::GMP::factor($n);
-    if (ref($n) eq 'Math::BigInt') {
-      @factors = map { ($_ > ~0) ? $n->copy->bzero->badd($_) : $_ } @factors;
+    if (ref($_[0]) eq 'Math::BigInt') {
+      @factors = map { ($_ > ~0) ? $n->copy->bzero->badd(''.$_) : $_ } @factors;
     }
     return @factors;
   }
@@ -1593,7 +1940,7 @@ sub is_pseudoprime {
   _validate_num($n) || _validate_positive_integer($n);
   _validate_num($a) || _validate_positive_integer($a);
   return _XS_is_pseudoprime($n, $a)
-    if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_pseudoprime($n, $a)
     if $_HAVE_GMP && defined &Math::Prime::Util::GMP::is_pseudoprime;
   return Math::Prime::Util::PP::is_pseudoprime($n, $a);
@@ -1603,7 +1950,8 @@ sub is_strong_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   # validate bases?
-  return _XS_miller_rabin($n, @_) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+  return _XS_miller_rabin($n, @_)
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_strong_pseudoprime($n, @_) if $_HAVE_GMP;
   return Math::Prime::Util::PP::miller_rabin($n, @_);
 }
@@ -1612,7 +1960,7 @@ sub is_lucas_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   return _XS_is_lucas_pseudoprime($n)
-    if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_lucas_pseudoprime("$n")
     if $_HAVE_GMP && defined &Math::Prime::Util::GMP::is_lucas_pseudoprime;
   return Math::Prime::Util::PP::is_lucas_pseudoprime($n);
@@ -1622,7 +1970,7 @@ sub is_strong_lucas_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   return _XS_is_strong_lucas_pseudoprime($n)
-    if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_strong_lucas_pseudoprime("$n")
     if $_HAVE_GMP;
   return Math::Prime::Util::PP::is_strong_lucas_pseudoprime($n);
@@ -1632,7 +1980,7 @@ sub is_extra_strong_lucas_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   return _XS_is_extra_strong_lucas_pseudoprime($n)
-    if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_extra_strong_lucas_pseudoprime("$n")
     if $_HAVE_GMP
     && defined &Math::Prime::Util::GMP::is_extra_strong_lucas_pseudoprime;
@@ -1644,11 +1992,12 @@ sub is_almost_extra_strong_lucas_pseudoprime {
   _validate_num($n) || _validate_positive_integer($n);
   if (!defined $inc) {
     $inc = 1;
-  } else {
-    _validate_positive_integer($inc, 1, 256);
+  } elsif ($inc ne '1' && $inc ne '2') {
+    (_validate_num($inc) && $inc > 0 && $inc < 257)
+    || _validate_positive_integer($inc, 1, 256);
   }
   return _XS_is_almost_extra_strong_lucas_pseudoprime($n, $inc)
-    if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_almost_extra_strong_lucas_pseudoprime("$n", $inc)
     if $_HAVE_GMP
     && defined &Math::Prime::Util::GMP::is_almost_extra_strong_lucas_pseudoprime;
@@ -1659,7 +2008,7 @@ sub is_frobenius_underwood_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   return _XS_is_frobenius_underwood_pseudoprime($n)
-    if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_frobenius_underwood_pseudoprime("$n")
     if $_HAVE_GMP
     && defined &Math::Prime::Util::GMP::is_frobenius_underwood_pseudoprime;
@@ -1680,38 +2029,72 @@ sub lucas_sequence {
   { my $testQ = (!defined $Q || $Q >= 0) ? $Q : -$Q;
     _validate_num($testQ) || _validate_positive_integer($testQ); }
   return _XS_lucas_sequence($n, $P, $Q, $k)
-    if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL
-    && ref($k) ne 'Math::BigInt' && $k <= $_XS_MAXVAL;
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL
+    && ref($_[3]) ne 'Math::BigInt' && $k <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::lucas_sequence($n, $P, $Q, $k)
     if $_HAVE_GMP
     && defined &Math::Prime::Util::GMP::lucas_sequence;
   return Math::Prime::Util::PP::lucas_sequence($n, $P, $Q, $k);
 }
 
+sub miller_rabin_random {
+  my($n, $k, $seed) = @_;
+  _validate_num($n) || _validate_positive_integer($n);
+  _validate_num($k) || _validate_positive_integer($k);
+
+  return 1 if $k <= 0;
+  return (is_prob_prime($n) > 0) if $n < 100;
+  return 0 unless $n & 1;
+  return Math::Prime::Util::GMP::miller_rabin_random($n, $k)
+    if $_HAVE_GMP
+    && defined &Math::Prime::Util::GMP::miller_rabin_random;
+
+  # Testing this many bases is silly, but let's pretend they have some
+  # good reason.  A composite n > 9 must have at least n/4 witnesses,
+  # hence we need to check only floor(3/4)+1 at most.  We could improve
+  # this is $_Config{'assume_rh'} is true, to 1 .. 2(logn)^2.
+  if ($k >= int(3*$n/4)) {
+    return is_strong_pseudoprime($n, 2 .. int(3*$n/4)+1+2 );
+  }
+
+  my $brange = $n-3;
+  my $irandf = _get_randf();
+  # Do one first before doing batches
+  return 0 unless is_strong_pseudoprime($n, $irandf->($brange)+2 );
+  $k--;
+  while ($k > 0) {
+    my $nbases = ($k >= 20) ? 20 : $k;
+    my @bases = map { $irandf->($brange)+2 } 1..$nbases;
+    if ($n <= $_XS_MAXVAL) {
+      return 0 unless _XS_miller_rabin($n, @bases);
+    } else {
+      return 0 unless is_strong_pseudoprime($n, @bases);
+    }
+    $k -= $nbases;
+  }
+  1;
+}
+
 
 #############################################################################
 
-  # Oct 2012 note:  these numbers are old.
+  # Simple timings, with 0.32 code (Montgomery Reduction for 64-bit)
+  # my $n=2**20+1;  do { is_strong_pseudoprime($n,2); $n+=2 } for 1..1000000;
+  # my $n=2**47+1;  do { is_strong_pseudoprime($n,2); $n+=2 } for 1..1000000;
   #
-  # Timings for various combinations, given the current possibilities of:
-  #    1) XS MR optimized (either x86-64, 32-bit on 64-bit mach, or half-word)
-  #    2) XS MR non-optimized (big input not on 64-bit machine)
-  #    3) PP MR with small input (non-bigint Perl)
-  #    4) PP MR with large input (using functions for mulmod)
-  #    5) PP MR with full bigints
-  #    6) PP Lucas with small input
-  #    7) PP Lucas with large input
-  #    8) PP Lucas with full bigints
+  #      1.0 uS  XS 32-bit input, is_strong_pseudoprime
+  #      1.8 uS  XS 64-bit input, is_strong_pseudoprime
+  #      1.3 uS  XS 32-bit input, is_strong_lucas_pseudoprime
+  #      1.9 uS  XS 64-bit input, is_strong_lucas_pseudoprime
+  #      1.2 uS  XS 32-bit input, is_almost_extra_strong_lucas_pseudoprime
+  #      1.8 uS  XS 64-bit input, is_almost_extra_strong_lucas_pseudoprime
   #
-  # Time for one test:
-  #       0.5uS  XS MR with small input
-  #       0.8uS  XS MR with large input
-  #       7uS    PP MR with small input
-  #     400uS    PP MR with large input
-  #    5000uS    PP MR with bigint
-  #    2700uS    PP LP with small input
-  #    6100uS    PP LP with large input
-  #    7400uS    PP LP with bigint
+  #     13 uS  Perl 32-bit input, is_strong_pseudoprime
+  #    945 uS  Perl 64-bit input, is_strong_pseudoprime
+  #   1700 uS  Perl 32-bit input, is_strong_lucas_pseudoprime
+  #   3000 uS  Perl 64-bit input, is_strong_lucas_pseudoprime
+  #   1500 uS  Perl 32-bit input, is_almost_extra_strong_lucas_pseudoprime
+  #   3400 uS  Perl 64-bit input, is_almost_extra_strong_lucas_pseudoprime
 
 sub is_aks_prime {
   my($n) = @_;
@@ -1737,7 +2120,8 @@ sub is_provable_prime {
   return 0 if defined $n && $n < 2;
   _validate_num($n) || _validate_positive_integer($n);
 
-  return _XS_is_prime("$n") if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+  return _XS_is_prime($n)
+    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_provable_prime($n)
          if $_HAVE_GMP && defined &Math::Prime::Util::GMP::is_provable_prime;
 
@@ -1759,7 +2143,7 @@ sub is_provable_prime_with_cert {
   _validate_num($n) || _validate_positive_integer($n);
   my $header = "[MPU - Primality Certificate]\nVersion 1.0\n\nProof for:\nN $n\n\n";
 
-  if (ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL) {
+  if (ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL) {
     my $isp = _XS_is_prime("$n");
     return ($isp, '') unless $isp == 2;
     return (2, "[MPU - Primality Certificate]\nVersion 1.0\n\nProof for:\nN $n\n\nType Small\nN $n\n");
@@ -1852,7 +2236,7 @@ sub prime_count_approx {
   }
 
   # Turn on high precision FP if they gave us a big number.
-  $x = _upgrade_to_float($x) if ref($x) eq 'Math::BigInt';
+  $x = _upgrade_to_float($x) if ref($_[0]) eq 'Math::BigInt';
 
   #    Method             10^10 %error  10^19 %error
   #    -----------------  ------------  ------------
@@ -1892,7 +2276,7 @@ sub prime_count_lower {
 
   return $_prime_count_small[$x] if $x <= $#_prime_count_small;
 
-  $x = _upgrade_to_float($x) if ref($x) eq 'Math::BigInt';
+  $x = _upgrade_to_float($x) if ref($_[0]) eq 'Math::BigInt';
 
   my $flogx = log($x);
 
@@ -1938,7 +2322,7 @@ sub prime_count_upper {
 
   return $_prime_count_small[$x] if $x <= $#_prime_count_small;
 
-  $x = _upgrade_to_float($x) if ref($x) eq 'Math::BigInt';
+  $x = _upgrade_to_float($x) if ref($_[0]) eq 'Math::BigInt';
 
   # Chebyshev:            1.25506*x/logx       x >= 17
   # Rosser & Schoenfeld:  x/(logx-3/2)         x >= 67
@@ -2009,7 +2393,7 @@ sub nth_prime_approx {
 
   return $_primes_small[$n] if $n <= $#_primes_small;
 
-  $n = _upgrade_to_float($n) if ref($n) eq 'Math::BigInt';
+  $n = _upgrade_to_float($n) if ref($_[0]) eq 'Math::BigInt';
 
   my $flogn  = log($n);
   my $flog2n = log($flogn);
@@ -2063,7 +2447,7 @@ sub nth_prime_lower {
 
   return $_primes_small[$n] if $n <= $#_primes_small;
 
-  $n = _upgrade_to_float($n) if ref($n) eq 'Math::BigInt';
+  $n = _upgrade_to_float($n) if ref($_[0]) eq 'Math::BigInt';
 
   my $flogn  = log($n);
   my $flog2n = log($flogn);  # Note distinction between log_2(n) and log^2(n)
@@ -2088,7 +2472,7 @@ sub nth_prime_upper {
 
   return $_primes_small[$n] if $n <= $#_primes_small;
 
-  $n = _upgrade_to_float($n) if ref($n) eq 'Math::BigInt';
+  $n = _upgrade_to_float($n) if ref($_[0]) eq 'Math::BigInt';
 
   my $flogn  = log($n);
   my $flog2n = log($flogn);  # Note distinction between log_2(n) and log^2(n)
@@ -2181,7 +2565,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords forprimes Möbius Deléglise totient moebius mertens irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M
+=for stopwords forprimes Möbius Deléglise totient moebius mertens znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath
 
 
 =head1 NAME
@@ -2191,7 +2575,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.31
+Version 0.32
 
 
 =head1 SYNOPSIS
@@ -2275,8 +2659,10 @@ Version 0.31
   say "lamba(49) = ", log(exp_mangoldt(49));
 
   # divisor sum
-  $sigma  = divisor_sum( $n );
-  $sigma2 = divisor_sum( $n, sub { $_[0]*$_[0] } );
+  $sigma  = divisor_sum( $n );       # sum of divisors
+  $sigma0 = divisor_sum( $n, 0 );    # count of divisors
+  $sigmak = divisor_sum( $n, $k );
+  $sigmaf = divisor_sum( $n, sub { log($_[0]) } ); # arbitrary func
 
   # primorial n#, primorial p(n)#, and lcm
   say "The product of primes below 47 is ",     primorial(47);
@@ -2432,6 +2818,21 @@ and earlier with bignums.
 =back
 
 
+=head1 PRIMALITY TESTING
+
+This module provides three functions for general primality testing, as
+well as numerous specialized functions.  The three main functions are:
+L</is_prob_prime> and L</is_prime> for general use, and L</is_provable_prime>
+for proofs.  For inputs below C<2^64> the functions are identical and
+fast deterministic testing is performed.  That is, the results will always
+be correct and should take at most a few microseconds for any input.  This
+is hundreds to thousands of times faster than other CPAN modules.  For
+inputs larger than C<2^64>, an extra-strong
+L<BPSW test|http://en.wikipedia.org/wiki/Baillie-PSW_primality_test>
+is used.  See the L</PRIMALITY TESTING NOTES> section for more
+discussion.
+
+
 =head1 FUNCTIONS
 
 =head2 is_prime
@@ -2457,6 +2858,14 @@ L</is_prime> return probable prime results using the extra-strong
 Baillie-PSW test, which has had no counterexample found since it was
 published in 1980.
 
+For cryptographic key generation, you may want even more testing for probable
+primes (NIST recommends some additional M-R tests).  This can be done using
+additional random bases with L</is_strong_pseudoprime>, or a different test
+such as L</is_frobenius_underwood_pseudoprime>.  Even better, make sure
+L<Math::Prime::Util::GMP> is installed and use L</is_provable_prime> which
+should be reasonably fast for sizes under 2048 bits.
+Another possibility is to use L<Math::Prime::Util/random_maurer_prime> which
+constructs a random provable prime.
 
 
 =head2 primes
@@ -2500,7 +2909,7 @@ strictly less than the input).  0 is returned if the input is C<2> or lower.
 
 =head2 forprimes
 
-  forprimes { say } 100,200;                  # print primes from 100-200
+  forprimes { say } 100,200;                  # print primes from 100 to 200
 
   $sum=0;  forprimes { $sum += $_ } 100000;   # sum primes to 100k
 
@@ -2509,8 +2918,19 @@ strictly less than the input).  0 is returned if the input is C<2> or lower.
 Given a block and either an end count or a start and end pair, calls the
 block for each prime in the range.  Compared to getting a big array of primes
 and iterating through it, this is more memory efficient and perhaps more
-convenient.  There is no way to exit the loop early, so the iterator may
-be more appropriate for those uses.
+convenient.  This will almost always be the fastest way to loop over a range
+of primes.  Nesting and using in threads are allowed.
+
+Math::BigInt objects may be used for the range.
+
+For some uses an iterator (L</prime_iterator>, L</prime_iterator_object>)
+or a tied array (L<Math::Prime::Util::PrimeArray>) may be more convenient.
+Objects can be passed to functions, and allow early loop exits without
+exceptions.  Here is a clumsy L</forprimes> exception example:
+
+  use bigint;
+  eval { forprimes { die "$_\n" if $_ % 123 == 1 } 2**100, 2**101 };
+  my $n = 0+$@;
 
 
 =head2 prime_iterator
@@ -2529,8 +2949,22 @@ will return 211 followed by 223, as those are the next primes E<gt>= 200.
 On each call, the iterator returns the current value and increments to
 the next prime.
 
-In general, L</forprimes> will be more efficient, but the generic iterator has
-more flexibility (e.g. exiting a loop early, or passing the iterator around).
+Other options include L</forprimes> (more efficiency, less flexibility),
+L<Math::Prime::Util::PrimeIterator> (an iterator with more functionality),
+or L<Math::Prime::Util::PrimeArray> (a tied array).
+
+
+=head2 prime_iterator_object
+
+  my $it = prime_iterator_object;
+  while ($it->value < 100) { say $it->value; $it->next; }
+  $sum += $it->iterate for 1..100000;
+
+Returns a L<Math::Prime::Util::PrimeIterator> object.  A shortcut that loads
+the package if needed, calls new, and returns the object.  See the
+documentation for that package for details.  This object has more features
+than the simple one above (e.g. the iterator is bi-directional), and also
+handles iterating across bigints.
 
 
 =head2 prime_count
@@ -2544,7 +2978,7 @@ count of primes between the ranges (e.g. C<(13,17)> returns 2, C<14,17>
 and C<13,16> return 1, and C<14,16> returns 0).
 
 The current implementation decides based on the ranges whether to use a
-segmented sieve with a fast bit count, or Lehmer's algorithm.  The former
+segmented sieve with a fast bit count, or the LMO algorithm.  The former
 is preferred for small sizes as well as small ranges.  The latter is much
 faster for large ranges.
 
@@ -2554,7 +2988,7 @@ where the first term is typically negligible below C<~ 10^11>.  Memory use
 is proportional only to C<sqrt(a)>, with total memory use under 1MB for any
 base under C<10^14>.
 
-Lehmer's method has complexity approximately C<O(b^0.7) + O(a^0.7)>.  It
+The LMO method has complexity approximately C<O(b^0.7) + O(a^0.7)>.  It
 does use more memory however.  A calculation of C<Pi(10^14)> completes in
 under 1 minute, C<Pi(10^15)> in under 5 minutes, and C<Pi(10^16)> in under
 20 minutes, however using about 500MB of peak memory for the last.
@@ -2625,9 +3059,9 @@ another way, this returns the smallest C<p> such that C<Pi(p) E<gt>= n>.
 For relatively small inputs (below 2 million or so), this does a sieve over
 a range containing the nth prime, then counts up to the number.  This is fairly
 efficient in time and memory.  For larger values, a binary search is performed
-between the Dusart 2010 bounds using Riemann's R function, then Lehmer's fast
+between the Dusart 2010 bounds using Riemann's R function, then a fast
 prime counting method is used to calculate the count up to that point, then
-sieving is done in the typically small error zone.
+sieving is done in the typically small difference zone.
 
 While this method is hundreds of times faster than generating primes, and
 doesn't involve big tables of precomputed values, it still can take a fair
@@ -2769,6 +3203,19 @@ lambda+2 test (see Underwood 2012 "Quadratic Compositeness Tests"), where
 C<(L+2)^(n-1) = 5 + 2x mod (n, L^2 - Lx + 1)>.  The computational cost for this
 is between the cost of 2 and 3 strong pseudoprime tests.  There are no known
 counterexamples, but this is not a well studied test.
+
+=head2 miller_rabin_random
+
+Takes a positive number (C<n>) as input and a positive number (C<k>) of bases
+to use.  Performs C<k> Miller-Rabin tests using uniform random bases
+between 2 and C<n-2>.
+
+This should not be used in place of L</is_prob_prime>, L</is_prime>,
+or L</is_provable_prime>.  Those functions will be faster and provide
+better results than running C<k> Miller-Rabin tests.  This function can
+be used if one wants more assurances for non-proven primes, such as for
+cryptographic uses where the size is large enough that proven primes are
+not desired.
 
 
 
@@ -3239,36 +3686,28 @@ yield similar results, albeit slower and using more memory.
 
   say "Sum of divisors of $n:", divisor_sum( $n );
 
-This function takes a positive integer as input and returns the sum of all
-the divisors of the input, including 1 and itself.  This is known as the
-sigma function (see Hardy and Wright section 16.7, or OEIS A000203).
+This function takes a positive integer as input and returns the sum of the
+k-th powers of the divisors of the input, including 1 and itself.  If the
+second argument (C<k>) is omitted it is assumed to be 1.  This is known as
+the sigma function (see Hardy and Wright section 16.7, or OEIS A000203).
+The API is identical to Pari/GP's C<sigma> function.
 
-The more general form takes a code reference as a second parameter, which
-is applied to each divisor before the summation.  This allows computation
-of numerous functions such as OEIS A000005 [d(n), sigma_0(n), tau(n)]:
+The second argument can be a code reference, which is called for each divisor
+and the results are summed.  This allows computation of other functions,
+but will be less efficient than using the numeric second argument.
 
-  divisor_sum( $n, sub { 1 } );
-
-OEIS A001157 [sigma_2(n)]:
-
-  divisor_sum( $n, sub { $_[0]*$_[0] } )
-
-the general sigma_k (OEIS A00005, A000203, A001157, A001158, etc.):
-
-  divisor_sum( $n, sub { $_[0] ** $k } );
-
-the 5th Jordan totient (OEIS A059378):
+An example of the 5th Jordan totient (OEIS A059378):
 
   divisor_sum( $n, sub { my $d=shift; $d**5 * moebius($n/$d); } );
 
-though in the last case we have a function L</jordan_totient> to compute
-it more efficiently.
+though we have a function L</jordan_totient> which is more efficient.
 
 This function is useful for calculating things like aliquot sums, abundant
 numbers, perfect numbers, etc.
 
-The summation is done as a bigint if the input was a bigint object.  You may
-need to ensure the result of the subroutine does not overflow a native int.
+For numeric second arguments (sigma computations), the result will be a bigint
+if necessary.  For the code reference case, the user must take care to return
+bigints if overflow will be a concern.
 
 
 =head2 primorial
@@ -3321,6 +3760,24 @@ to C<n>, resulting in much faster and memory-friendly results than using
 a factorial.
 
 
+=head2 carmichael_lambda
+
+Returns the Carmichael function (also called the reduced totient function,
+or Carmichael λ(n)) of a positive integer argument.  It is the smallest
+positive integer m such that a^m = 1 mod n for every integer a coprime to n.
+This is L<OEIS series A002322|http://oeis.org/A002322>.
+
+
+=head2 znorder
+
+  $order = znorder(2, next_prime(10**19)-6);
+
+Given two positive integers C<a> and C<n>, returns the multiplicative order
+of C<a> modulo <n>.  This is the smallest positive integer C<k> such that
+C<a^k ≡ 1 mod n>.  Returns 1 if C<a = 1>.  Return undef if C<a = 0> or if
+C<a> and C<n> are not coprime, since no value will result in 1 mod n.
+
+
 =head2 random_prime
 
   my $small_prime = random_prime(1000);      # random prime <= limit
@@ -3334,12 +3791,17 @@ range.
 The goal is to return a uniform distribution of the primes in the range,
 meaning for each prime in the range, the chances are equally likely that it
 will be seen.  This is removes from consideration such algorithms as
-C<PRIMEINC>, which although efficient, gives very non-random output.
+C<PRIMEINC>, which although efficient, gives very non-random output.  This
+also implies that the numbers will not be evenly distributed, since the
+primes are not evenly distributed.  Stated again, the random prime functions
+return a uniformly selected prime from the set of primes within the range.
+Hence given C<random_prime(1000)>, the numbers 2, 3, 487, 631, and 997 all
+have the same probability of being returned.
 
 For small numbers, a random index selection is done, which gives ideal
 uniformity and is very efficient with small inputs.  For ranges larger than
 this ~16-bit threshold but within the native bit size, a Monte Carlo method
-is used (multiple calls to C<rand> may be made if necessary).  This also
+is used (multiple calls to C<irand> will be made if necessary).  This also
 gives ideal uniformity and can be very fast for reasonably sized ranges.
 For even larger numbers, we partition the range, choose a random partition,
 then select a random prime from the partition.  This gives some loss of
@@ -3350,7 +3812,7 @@ If an C<irand> function has been set via L</prime_set_config>, it will be
 used to construct any ranged random numbers needed.  The function should
 return a uniformly random 32-bit integer, which is how the irand functions
 exported by L<Math::Random::Secure>, L<Math::Random::MT>,
-L<Math::Random::ISAAC> and most other modules behave.
+L<Math::Random::ISAAC>, and most other modules behave.
 
 If no C<irand> function was set, then L<Bytes::Random::Secure> is used with
 a non-blocking seed.  This will create good quality random numbers, so there
@@ -3407,13 +3869,18 @@ between 2 and the maximum representable bits (32, 64, or 100000 for native
 set will be uniformly selected, with randomness supplied via calls to the
 C<irand> function as described above.
 
-Since this uses the random_prime function, all uniformity properties of that
-function apply to this.  The n-bit range is partitioned into nearly equal
-segments less than C<2^32>, a segment is randomly selected, then the trivial
-Monte Carlo algorithm is used to select a prime from within the segment.
-This gives a reasonably uniform distribution, doesn't use excessive random
-source, and can be very fast.
+For bit sizes of 64 and lower, L</random_prime> is used, which gives completely
+uniform results in this range.  For sizes larger than 64, Algorithm 1 of
+Fouque and Tibouchi (2011) is used, wherein we select a random odd number
+for the lower bits, then loop selecting random upper bits until the result
+is prime.  This allows a more uniform distribution than the general
+L</random_prime> case while running slightly faster (in contrast, for large
+bit sizes L</random_prime> selects a random upper partition then loops
+on the values within the partition, which very slightly skews the results
+towards smaller numbers).
 
+The C<irand> function is used for randomness, so all the discussion in
+L</random_prime> about that applies here.
 The result will be a BigInt if the number of bits is greater than the native
 bit size.  For better performance with large bit sizes, install
 L<Math::Prime::Util::GMP>.
@@ -3452,6 +3919,26 @@ number of bits is greater than the native bit size.  For better performance
 with large bit sizes, install L<Math::Prime::Util::GMP>.
 
 
+=head2 random_proven_prime
+
+  my $bigprime = random_proven_prime(512);
+
+Constructs an n-bit random proven prime.  Internally this may use
+L</is_provable_prime>(L</random_nbit_prime>) or
+L</random_maurer_prime> depending on the platform and bit size.
+
+
+=head2 random_proven_prime_with_cert
+
+  my($n, $cert) = random_proven_prime_with_cert(512)
+
+Similar to L</random_proven_prime>, but returns a two-element array containing
+the n-bit provable prime along with a primality certificate.  The certificate
+is the same as produced by L</prime_certificate> or
+L</is_provable_prime_with_cert>, and can be parsed by L</verify_prime> or
+any other software that understands MPU primality certificates.
+
+
 =head2 random_maurer_prime
 
   my $bigprime = random_maurer_prime(512);
@@ -3467,8 +3954,16 @@ described in the L</"SEE ALSO"> section.
 
 Internally this additionally runs the BPSW probable prime test on every
 partial result, and constructs a primality certificate for the final
-result, which is verified.  These add additional checks that the resulting
+result, which is verified.  These provide additional checks that the resulting
 value has been properly constructed.
+
+An alternative to this function is to run L</is_provable_prime> on the
+result of L</random_nbit_prime>, which will provide more diversity and
+will be faster up to 512 or so bits.  Maurer's method should be much
+faster for large bit sizes (larger than 2048).  If you don't need absolutely
+proven results, then using L</random_nbit_prime> followed by additional
+tests (L</is_strong_pseudoprime> and/or L</is_frobenius_underwood_pseudoprime>)
+should be much faster.
 
 
 =head2 random_maurer_prime_with_cert
@@ -3479,7 +3974,7 @@ As with L</random_maurer_prime>, but returns a two-element array containing
 the n-bit provable prime along with a primality certificate.  The certificate
 is the same as produced by L</prime_certificate> or
 L</is_provable_prime_with_cert>, and can be parsed by L</verify_prime> or
-any other software that can parse MPU primality certificates.
+any other software that understands MPU primality certificates.
 The proof construction consists of a single chain of C<BLS3> types.
 
 
@@ -3575,6 +4070,10 @@ The special cases of C<n = 0> and C<n = 1> will return C<n>, which
 guarantees multiplying the factors together will always result in the
 input value, though those are the only cases where the returned factors
 are not prime.
+
+In scalar context, returns the number of prime factors with multiplicity
+(L<OEIS A001222|http://oeis.org/A001222>).  This is the expected result,
+as if we put the result into an array and then took the scalar result.
 
 The current algorithm for non-bigints is a sequence of small trial division,
 a few rounds of Pollard's Rho, SQUFOF, Pollard's p-1, Hart's OLF, a long
@@ -3805,11 +4304,11 @@ is 40 by default).  Accuracy without MPFR should be 35 digits.
 
 Print strong pseudoprimes to base 17 up to 10M:
 
+    # Similar to A001262's isStrongPsp function, but over 4x faster
     perl -MMath::Prime::Util=:all -E 'my $n=3; while($n <= 10000000) { print "$n " if is_strong_pseudoprime($n,$base) && !is_prime($n); $n+=2; } BEGIN {$|=1; $base=17}'
 
 or, slightly faster, use forprimes and loop over the odds between primes:
 
-   # Runs about 5x faster than Pari using A001262's isStrongPsp function
    perl -MMath::Prime::Util=:all -E '$|=1; $base=17; my $prev = 1; forprimes { $prev += 2; while ($prev < $_) { print "$prev " if is_strong_pseudoprime($prev,$base); $prev += 2; } } 3,10000000'
 
 Print some primes above 64-bit range:
@@ -3879,7 +4378,7 @@ Project Euler, problem 21 (Amicable numbers):
 
 Project Euler, problem 41 (Pandigital prime), brute force command line:
 
-  perl -MMath::Prime::Util=:all -E 'my @p = grep { /1/&&/2/&&/3/&&/4/&&/5/&&/6/&&/7/} @{primes(1000000,9999999)}; say $p[-1];
+  perl -MMath::Prime::Util=:all -E 'my @p = grep { /1/&&/2/&&/3/&&/4/&&/5/&&/6/&&/7/} @{primes(1000000,9999999)}; say $p[-1];'
 
 Project Euler, problem 47 (Distinct primes factors):
 
@@ -3890,7 +4389,7 @@ Project Euler, problem 47 (Distinct primes factors):
   $n++ while (nfactors($n) != 4 || nfactors($n+1) != 4 || nfactors($n+2) != 4 || nfactors($n+3) != 4);
   say $n;
 
-Project Euler, problem 69, stupid brute force solution (about 5 seconds):
+Project Euler, problem 69, stupid brute force solution (about 2 seconds):
 
   use Math::Prime::Util qw/euler_phi/;
   my ($n, $max) = (0,0);
@@ -3900,24 +4399,24 @@ Project Euler, problem 69, stupid brute force solution (about 5 seconds):
   } for 1..1000000;
   say "$n  $max";
 
-Here's the right way to do PE problem 69 (under 0.03s):
+Here is the right way to do PE problem 69 (under 0.03s):
 
   use Math::Prime::Util qw/pn_primorial/;
   my $n = 0;
   $n++ while pn_primorial($n+1) < 1000000;
-  say pn_primorial($n);'
+  say pn_primorial($n);
 
-Project Euler, problem 187, stupid brute force solution, ~3 minutes:
+Project Euler, problem 187, stupid brute force solution, ~4 minutes:
 
   use Math::Prime::Util qw/factor -nobigint/;
   my $nsemis = 0;
-  do { my @f = factor($_); $nsemis++ if scalar @f == 2; }
+  do { $nsemis++ if scalar factor($_) == 2; }
      for 1 .. int(10**8)-1;
   say $nsemis;
 
-Here's the best way for PE187.  Under 30 milliseconds from the command line:
+Here is the best way for PE187.  Under 30 milliseconds from the command line:
 
-  use Math::Prime::Util qw/primes prime_count -nobigint/;
+  use Math::Prime::Util qw/primes prime_count/;
   use List::Util qw/sum/;
   my $limit = shift || int(10**8);
   my @primes = @{primes(int(sqrt($limit)))};
@@ -3925,10 +4424,79 @@ Here's the best way for PE187.  Under 30 milliseconds from the command line:
                1 .. scalar @primes );
 
 
-=head1 LIMITATIONS
+=head1 PRIMALITY TESTING NOTES
 
-I have not completed testing all the functions near the word size limit
-(e.g. C<2^32> for 32-bit machines).  Please report any problems you find.
+Above C<2^64>, L</is_prob_prime> performs an extra-strong
+L<BPSW test|http://en.wikipedia.org/wiki/Baillie-PSW_primality_test>
+which is fast (a little less than the time to perform 3 Miller-Rabin
+tests) and has no known counterexamples.  If you believe the primality
+testing done by Pari, Maple, SAGE, FLINT, etc., then this function
+should be appropriate for you.  L</is_prime> will do the same BPSW
+test as well as some additional testing, making it slightly more time
+consuming but less likely to produce a false result.  This is a little
+more stringent than Mathematica.  L</is_provable_prime> constructs a
+primality proof.  If a certificate is requested, then either BLS75
+theorem 5 or ECPP is performed.  Without a certificate, the method
+is implementation specific (currently it is identical, but later
+releases may use APRCL).  With L<Math::Prime::Util::GMP> installed,
+this is quite fast through 300 or so digits.
+
+Math systems 30 years ago used to use Miller-Rabin tests with C<k>
+bases (typically fixed bases, sometimes random) for primality
+testing, but these have generally been replaced by some form of BPSW
+as used in this module.  See Pinch's 1993 paper for examples of why
+using C<k> M-R tests leads to poor results.  The three exceptions in
+common contemporary use I am aware of are:
+
+=over 4
+
+=item libtommath
+
+Uses the first C<k> prime bases.  This is unacceptable for
+cryptographic use, as there are known methods (e.g. Arnault 1994) for
+constructing counterexamples.  The number of bases required to avoid
+false results is unreasonably high, hence performance is slow even
+if one ignores counterexamples.  Unfortunately this is the
+multi-precision math library used for Perl 6 and at least one CPAN
+Crypto module.
+
+=item GMP/MPIR
+
+Uses a set of C<k> static-random bases.  The bases are randomly chosen
+using a PRNG that is seeded identically each call (the seed changes
+with each release).  This offers a very slight advantage over using
+the first C<k> prime bases, but not much.  See, for example, Nicely's
+L<mpz_probab_prime_p pseudoprimes|http://www.trnicely.net/misc/mpzspsp.html>
+page.
+
+=item L<Math::Pari>
+
+Pari 2.1.7 is the default version installed with the L<Math::Pari>
+module.  It uses 10 random M-R bases (the PRNG uses a fixed seed
+set at compile time).  Pari 2.3.0 was released in May 2006 and it,
+like all later releases through at least 2.6.1, use BPSW / APRCL,
+after complaints of false results from using M-R tests.
+
+=back
+
+Basically the problem is that it is just too easy to get counterexamples
+from running C<k> M-R tests, forcing one to use a very large number of
+tests (at least 20) to avoid frequent false results.  Using the BPSW test
+results in no known counterexamples after 30+ years and runs much faster.
+It can be enhanced with one or more random bases if one desires, and
+will I<still> be much faster.
+
+Using C<k> fixed bases has another problem, which is that in any
+adversarial situation we can assume the inputs will be selected such
+that they are one of our counterexamples.  Now we need absurdly large
+numbers of tests.  This is like playing "pick my number" but the
+number is fixed forever at the start, the guesser gets to know
+everyone else's guesses and results who has every played, and can
+keep playing as long as they like.  It's only valid if the players
+are completely oblivious to what is happening.
+
+
+=head1 LIMITATIONS
 
 Perl versions earlier than 5.8.0 have a rather broken 64-bit implementation,
 in that the values are accessed as doubles.  Hence any value larger
@@ -3965,7 +4533,8 @@ functionality with small integers.  It's fast and simple, and has a good
 set of features.
 
 =item * L<Math::Primality> is the alternative module I use for primality
-testing on bigints.
+testing on bigints.  The downside is that it can be slow, and the functions
+other than primality tests are I<very> slow.
 
 =item * L<Math::Pari> if you want the kitchen sink and can install it and
 handle using it.  There are still some functions it doesn't do well
@@ -3974,13 +4543,17 @@ handle using it.  There are still some functions it doesn't do well
 =back
 
 
-L<Math::Prime::XS> has C<is_prime> and C<primes> functionality.  There is no
-bigint support.  The C<is_prime> function uses well-written trial division,
-meaning it is very fast for small numbers, but terribly slow for large
-64-bit numbers.  With the latest release, MPU should be faster for all sizes.
-The prime sieve is an unoptimized non-segmented SoE which returns an
-array.  It works well for 32-bit values, but speed and memory are problematic
-for larger values.
+L<Math::Prime::XS> has C<is_prime> and C<primes> functionality.  There is
+no bigint support.  The C<is_prime> function uses well-written trial
+division, meaning it is very fast for small numbers, but terribly slow for
+large 64-bit numbers.  Because MPU does input validation and bigint
+conversion, there is about 20 microseconds of additional overhead making
+MPXS a little faster for tiny inputs, but once over 700k MPU is faster
+for all values.  MPXS's prime sieve is an unoptimized non-segmented SoE
+which returns an array.  Sieve bases larger than C<10^7> start taking
+inordinately long and using a lot of memory (gigabytes beyond C<10^10>).
+E.g. C<primes(10**9, 10**9+1000)> takes 36 seconds with MPXS, but only
+0.00015 seconds with MPU.
 
 L<Math::Prime::FastSieve> supports C<primes>, C<is_prime>, C<next_prime>,
 C<prev_prime>, C<prime_count>, and C<nth_prime>.  The caveat is that all
@@ -3988,12 +4561,12 @@ functions only work within the sieved range, so are limited to about C<10^10>.
 It uses a fast SoE to generate the main sieve.  The sieve is 2-3x slower than
 the base sieve for MPU, and is non-segmented so cannot be used for
 larger values.  Since the functions work with the sieve, they are very fast.
-All this functionality is present in MPU as well, though not required.
+The fast bit-vector-lookup functionality can be replicated in MPU using
+C<prime_precalc> but is not required.
 
 L<Bit::Vector> supports the C<primes> and C<prime_count> functionality in a
 somewhat similar way to L<Math::Prime::FastSieve>.  It is the slowest of all
-the XS sieves, and has the most memory use.  It is, however, faster than
-the pure Perl code in MPU or elsewhere.
+the XS sieves, and has the most memory use.  It is faster than pure Perl code.
 
 L<Crypt::Primes> supports C<random_maurer_prime> functionality.  MPU has
 more options for random primes (n-digit, n-bit, ranged, and strong) in
@@ -4007,7 +4580,7 @@ Having L<Math::Prime::Util::GMP> installed also helps performance for MPU.
 Crypt::Primes is hardcoded to use L<Crypt::Random>, while MPU uses
 L<Bytes::Random::Secure>, and also allows plugging in a random function.
 This is more flexible, faster, has fewer dependencies, and uses a CSPRNG
-for security.
+for security.  MPU can return a primality certificate.
 What Crypt::Primes has that MPU does not is support for returning a generator.
 
 L<Math::Factor::XS> calculates prime factors and factors, which correspond to
@@ -4016,7 +4589,7 @@ not support bigints.  Both are implemented with trial division, meaning they
 are very fast for really small values, but quickly become unusably slow
 (factoring 19 digit semiprimes is over 700 times slower).  It has additional
 functions C<count_prime_factors> (possible in MPU using C<scalar factor($n)>)
-and C<matches> which has no direct equivalent.
+and C<matches> which has no equivalent.
 
 L<Math::Big> version 1.12 includes C<primes> functionality.  The current
 code is only usable for very tiny inputs as it is incredibly slow and uses
@@ -4078,7 +4651,7 @@ Some of the highlights:
 
 =item C<isprime>
 
-Similar to MPU's L<is_prob_prime> or L<is_prime> functions.
+Similar to MPU's L</is_prob_prime> or L</is_prime> functions.
 MPU is deterministic for native integers, and uses a strong
 BPSW test for bigints (with a quick primality proof tried as well).  The
 default version of Pari used by L<Math::Pari> (2.1.7) uses 10 random M-R
@@ -4099,7 +4672,7 @@ function will perform a BPSW test similar to L</is_prob_prime>.
 
 =item C<primepi>
 
-Only available with version 2.3 of Pari.  Similar to MPU's L<prime_count>
+Only available with version 2.3 of Pari.  Similar to MPU's L</prime_count>
 function in API, but uses a naive counting algorithm with its precalculated
 primes, so is not of practical use.  Incidently, Pari 2.6 (not usable from
 Perl) has fixed the pre-calculation requirement so it is more useful, but is
@@ -4115,7 +4688,7 @@ doesn't support segmenting.
 
 =item C<factorint>
 
-Similar to MPU's L<factor> though with a different return (I
+Similar to MPU's L</factor> though with a different return (I
 find the result value quite inconvenient to work with, but others may like
 its vector of factor/exponent format).  Slower than MPU for all 64-bit inputs
 on an x86_64 platform, it may be faster for large values on other platforms.
@@ -4124,28 +4697,27 @@ faster in MPU.
 
 =item C<eulerphi>
 
-Similar to MPU's L<euler_phi>.  MPU is 2-20x faster for native integers.
+Similar to MPU's L</euler_phi>.  MPU is 2-20x faster for native integers.
 There is also support for a range, which can be much more efficient.
 Without L<Math::Prime::Util::GMP> installed, MPU is very slow with bigints.
 With it installed, it is about 2x slower than Math::Pari.
 
 =item C<moebius>
 
-Similar to MPU's L<moebius>.  Comparisons are similar to C<eulerphi>.
+Similar to MPU's L</moebius>.  Comparisons are similar to C<eulerphi>.
 
-=item C<sumdiv>
+=item C<sigma>
 
-Similar to MPU's L<divisor_sum>.  The standard sum (sigma_1) is
-very fast in MPU.  Giving it a sub makes it much slower, and for numbers
-with very many factors, Pari is I<much> faster.
+Similar to MPU's L</divisor_sum>.  MPU is ~10x faster for native integers
+and about 2x slower for bigints.
 
 =item C<eint1>
 
-Similar to MPU's L<ExponentialIntegral>.
+Similar to MPU's L</ExponentialIntegral>.
 
 =item C<zeta>
 
-A more feature-rich version MPU's L<RiemannZeta> function (supports negative
+A more feature-rich version MPU's L</RiemannZeta> function (supports negative
 and complex inputs).
 
 =back
@@ -4153,16 +4725,75 @@ and complex inputs).
 Overall, L<Math::Pari> supports a huge variety of functionality and has a
 sophisticated and mature code base behind it (noting that the default version
 of Pari used is about 10 years old now).
-For native integers sometimes
-the functions can be slower, but bigints are often superior and it rarely
-has any performance surprises.  Some of the unique features MPU offers include
-super fast prime counts, nth_prime, ECPP primality proofs with certificates,
-approximations and limits for both, random primes, fast Mertens calculations,
-Chebyshev theta and psi functions, and the logarithmic integral and Riemann R
-functions.  All with fairly minimal installation requirements.
+For native integers often using Math::Pari will be slower, but bigints are
+often superior and it rarely has any performance surprises.  Some of the
+unique features MPU offers include super fast prime counts, nth_prime,
+ECPP primality proofs with certificates, approximations and limits for both,
+random primes, fast Mertens calculations, Chebyshev theta and psi functions,
+and the logarithmic integral and Riemann R functions.  All with fairly
+minimal installation requirements.
 
 
 =head1 PERFORMANCE
+
+First, for those looking for the state of the art non-Perl solutions:
+
+=over 4
+
+=item Primality testing
+
+L<PFGW|http://sourceforge.net/projects/openpfgw/> is the fastest primality
+testing software I'm aware of once past 2000 or so digits, has fast trial
+division, and is especially fast on many special forms.  It does not have
+a BPSW test however, and there are quite a few counterexamples for a given
+base of its PRP test, so for primality testing it is most useful for fast
+filtering of very large candidates.  A test such as the BPSW test in this
+module is then recommended.
+
+=item Primality proofs
+
+L<Primo|http://www.ellipsa.eu/> is the best method for open source primality
+proving for inputs over 1000 digits.  Primo also does well below that size,
+but other good alternatives are
+L<WraithX APRCL|http://sourceforge.net/projects/mpzaprcl/>,
+the APRCL from the modern L<Pari|http://pari.math.u-bordeaux.fr/> package,
+or the standalone ECPP from this module with large polynomial set.
+
+=item Factoring
+
+L<yafu|http://sourceforge.net/projects/yafu/>,
+L<msieve|http://sourceforge.net/projects/msieve/>, and
+L<gmp-ecm|http://ecm.gforge.inria.fr/> are all good choices for large
+inputs.  The factoring code in this module (and all other CPAN modules) is
+very limited compared to those.
+
+=item Primes
+
+L<primesieve|http://code.google.com/p/primesieve/> is the fastest publically
+available code I am aware of.  It is much faster than any of the alternatives,
+and even more so when run multi-threaded.  Tomás Oliveira e Silva's private
+code may be faster for very large values, but it isn't available for testing.
+
+Note that the Sieve of Atkin is I<not> faster than the Sieve of Eratosthenes
+when both are well implemented.  The only Sieve of Atkin that is even
+competitive is Bernstein's super optimized I<primegen>, which runs about
+10% faster than the simple SoE in this module, slower than Pari and yafu's
+SoE implementations, and 2x slower than primesieve.
+
+=item Prime Counts and Nth Prime
+
+Up to a limit, extensive use of tables plus a good segmented sieve will
+produce the fastest results, but the number of tables needed to maintain
+good performance grows exponentially.  The code in this module approaches
+the best publically available results, with the notable exception of
+Christian Bau's L-M-O implementation.  The author of primesieve is also
+working on an L-M-O implementation.  None of these are state of the art
+compared to private research methods.
+
+=back
+
+
+=head2 PRIME COUNTS
 
 Counting the primes to C<10^10> (10 billion), with time in seconds.
 Pi(10^10) = 455,052,511.
@@ -4213,6 +4844,7 @@ and 25+ GB of RAM.  SymPy 0.7.1 C<primepi> takes 292.2s.  However there are
 very fast solutions written by Robert William Hanks (included in the xt/
 directory of this distribution): pure Python in 12.1s and NUMPY in 2.8s.
 
+=head2 PRIMALITY TESTING
 
 C<is_prime>: my impressions for various sized inputs:
 
@@ -4228,7 +4860,7 @@ C<is_prime>: my impressions for various sized inputs:
    (2) Trial division only.  Very fast if every factor is tiny.
    (3) Too much memory to hold the sieve (11dig = 6GB, 12dig = ~50GB)
    (4) By default L<Math::Pari> installs Pari 2.1.7, which uses 10 M-R tests
-       for is_prime and is not fast.  See notes below for 2.3.5.
+       for isprime and is not fast.  See notes below for 2.3.5.
 
 
 The differences are in the implementations:
@@ -4287,6 +4919,7 @@ it is still much, much slower than a BPSW probable prime test for large inputs.
 
 =back
 
+=head2 FACTORING
 
 Factoring performance depends on the input, and the algorithm choices used
 are still being tuned.  L<Math::Factor::XS> is very fast when given input with
@@ -4318,19 +4951,75 @@ and L<Pari|http://pari.math.u-bordeaux.fr/>.  The latest yafu should cover most
 uses, with GGNFS likely only providing a benefit for numbers large enough to
 warrant distributed processing.
 
+=head2 PRIMALITY PROVING
 
 The C<n-1> proving algorithm in L<Math::Prime::Util::GMP> compares well to
 the version including in Pari.  Both are pretty fast to about 60 digits, and
 work reasonably well to 80 or so before starting to take over many minutes per
 number on a fast computer.  Version 0.09 and newer of MPU::GMP contain an
-ECPP implementation that works quite well, though is certainly not state of
-the art.  It averages less than a second for proving 200-digit primes,
+ECPP implementation that, while not state of the art compared to closed source
+solutions, works quite well.
+It averages less than a second for proving 200-digit primes
 including creating a certificate.  Times below 200 digits are faster than
 Pari 2.3.5's APR-CL proof.  For larger inputs the bottleneck is a limited set
 of discriminants, and time becomes more variable.  There is a larger set of
 discriminants on github that help, with 300-digit primes taking ~5 seconds on
-average and typically under a minute for 500-digits.  For serious primality
-proving, I recommend L<Primo|http://www.ellipsa.eu/>.
+average and typically under a minute for 500-digits.  For primality proving
+with very large numbers, I recommend L<Primo|http://www.ellipsa.eu/>.
+
+=head2 RANDOM PRIME GENERATION
+
+Seconds per prime for random prime generation on a circa-2009 workstation,
+with L<Math::BigInt::GMP>, L<Math::Prime::Util::GMP>, and
+L<Math::Random::ISAAC::XS> installed.
+
+  bits    random   +testing  rand_prov   Maurer   CPMaurer
+  -----  --------  --------  ---------  --------  --------
+     64    0.0001  +0.000008   0.0002     0.0001    0.022
+    128    0.0020  +0.00023    0.011      0.063     0.057
+    256    0.0034  +0.0004     0.058      0.13      0.16
+    512    0.0097  +0.0012     0.28       0.28      0.41
+   1024    0.060   +0.0060     0.65       0.65      2.19
+   2048    0.57    +0.039      4.8        4.8      10.99
+   4096    6.24    +0.25      31.9       31.9      79.71
+   8192   58.6     +1.61     234.0      234.0     947.3
+
+  random    = random_nbit_prime  (results pass BPSW)
+  random+   = additional time for 3 M-R and a frobenius test
+  rand_prov = random_proven_prime
+  maurer    = random_maurer_prime
+  CPMaurer  = Crypt::Primes::maurer
+
+L</random_nbit_prime> is reasonably fast, and for most purposes should
+suffice.  For cryptographic purposes, one may want additional tests or a
+proven prime.  Additional tests are quite cheap, as shown by the time for
+three extra M-R and a Frobenius test.  At these bit sizes, the chances a
+composite number passes BPSW, three more M-R tests, and a Frobenius test
+is I<extraordinarily> small.
+
+L</random_proven_prime> provides a randomly selected prime with an optional
+certificate, without specifying the particular method.  Below 512 bits,
+using L</is_provable_prime>(L</random_nbit_prime>) is typically faster
+than Maurer's algorithm, but becomes quite slow as the bit size increases.
+This leaves the decision of the exact method of proving the result to the
+implementation.
+
+L</random_maurer_prime> constructs a provable prime.  A primality test is
+run on each intermediate, and it also constructs a complete primality
+certificate which is verified at the end (and can be returned).  While the
+result is uniformly distributed, only about 10% of the primes in the range
+are selected for output.  This is a result of the FastPrime algorithm and
+is usually unimportant.
+
+L<Crypt::Primes/maurer> times are included for comparison.  It is pretty
+fast for small sizes but gets slow as the size increases.  It does not
+perform any primality checks on the intermediate results or the final
+result (I highly recommended you run a primality test on the output).
+Additionally important for servers, L<Crypt::Primes/maurer> uses excessive
+system entropy and can grind to a halt if C</dev/random> is exhausted
+(it can take B<days> to return).  The times above are on a machine running
+L<HAVEGED|http://www.issihosts.com/haveged/>
+so never waits for entropy.  Without this, the times would be much higher.
 
 
 =head1 AUTHORS
@@ -4424,6 +5113,10 @@ Marc Deléglise and Joöl Rivat, "Computing the summation of the Möbius functio
 =item *
 
 Manuel Benito and Juan L. Varona, "Recursive formulas related to the summation of the Möbius function", I<The Open Mathematics Journal>, v1, pp 25-34, 2007.  Among many other things, shows a simple formula for computing the Mertens functions with only n/3 Möbius values (not as fast as Deléglise and Rivat, but really simple).  L<http://www.unirioja.es/cu/jvarona/downloads/Benito-Varona-TOMATJ-Mertens.pdf>
+
+=item *
+
+John Brillhart, D. H. Lehmer, and J. L. Selfridge, "New Primality Criteria and Factorizations of 2^m +/- 1", Mathematics of Computation, v29, n130, Apr 1975, pp 620-647.  L<http://www.ams.org/journals/mcom/1975-29-130/S0025-5718-1975-0384673-1/S0025-5718-1975-0384673-1.pdf>
 
 =back
 

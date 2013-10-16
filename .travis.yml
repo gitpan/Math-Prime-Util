@@ -22,7 +22,8 @@ env:
 
 
 install:
-    - cpanm -v --installdeps --notest --mirror http://cpan.mirrors.travis-ci.org .
+    #- cpanm -v --installdeps --notest --mirror http://cpan.mirrors.travis-ci.org --mirror http://dl.ambiweb.de/mirrors/ftp.cpan.org --mirror http://cpan.cse.msu.edu .
+    - cpanm -v --installdeps --notest .
 
 script: "perl Makefile.PL; make test"
 # branches:

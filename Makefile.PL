@@ -7,20 +7,20 @@ WriteMakefile1(
     LICENSE      => 'perl',
     AUTHOR       => 'Dana A Jacobsen <dana@acm.org>',
 
-    OBJECT       => 'cache.o '  .
-                    'factor.o ' .
-                    'aks.o '    .
-                    'lehmer.o ' .
-                    'sieve.o '  .
-                    'util.o '   .
+    OBJECT       => 'cache.o '    .
+                    'factor.o '   .
+                    'primality.o '.
+                    'aks.o '      .
+                    'lehmer.o '   .
+                    'sieve.o '    .
+                    'util.o '     .
                     'XS.o',
     LIBS         => ['-lm'],
 
     EXE_FILES    => ['bin/primes.pl', 'bin/factor.pl'],
 
-    BUILD_REQUIRES=>{
+    TEST_REQUIRES=> {
                       'Test::More'       => '0.45',
-                      'Test::Warn'       => 0,
                       'bignum'           => '0.22',   # 'use bigint' in tests
                     },
     PREREQ_PM    => {
@@ -35,14 +35,30 @@ WriteMakefile1(
                       'Bytes::Random::Secure' => '0.23',
                     },
     META_MERGE   => {
-               resources => {
-                  homepage   => 'https://github.com/danaj/Math-Prime-Util',
-                  repository => 'https://github.com/danaj/Math-Prime-Util',
+               'meta-spec'  => {
+                  version => '2',
+                  url     => 'http://search.cpan.org/perldoc?CPAN::Meta::Spec',
                },
-               recommends => {
-                 'Math::Prime::Util::GMP' => 0.13,
-                 'Math::BigInt::GMP'      => 0,
-                 'Math::MPFR'             => 2.03,
+               resources    => {
+                  license    => [ 'http://dev.perl.org/licenses/' ],
+                  homepage   => 'https://github.com/danaj/Math-Prime-Util',
+                  repository => {
+                    url  => 'https://github.com/danaj/Math-Prime-Util',
+                  },
+               },
+               prereqs => {
+                 runtime => {
+                   recommends => {
+                     'Math::Prime::Util::GMP' => 0.14,
+                     'Math::BigInt::GMP'      => 0,
+                     'Math::MPFR'             => 2.03,
+                   },
+                 },
+                 test  => {
+                   suggests => {
+                     'Test::Warn' => 0,
+                   },
+                 },
                },
              },
 
@@ -54,6 +70,10 @@ sub WriteMakefile1 {   # Cribbed from eumm-upgrade by Alexandr Ciornii
   my $eumm_version = $ExtUtils::MakeMaker::VERSION;
   $eumm_version = eval $eumm_version;
 
+  if ($params{TEST_REQUIRES} and $eumm_version < 6.6303) {
+      $params{BUILD_REQUIRES}={ %{$params{BUILD_REQUIRES} || {}} , %{$params{TEST_REQUIRES}} };
+      delete $params{TEST_REQUIRES};
+  }
   if ($params{BUILD_REQUIRES} and $eumm_version < 6.5503) {
       #EUMM 6.5502 has problems with BUILD_REQUIRES
       $params{PREREQ_PM}={ %{$params{PREREQ_PM} || {}} , %{$params{BUILD_REQUIRES}} };

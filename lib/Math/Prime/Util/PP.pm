@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.30';
+  $Math::Prime::Util::PP::VERSION = '0.32';
 }
 
 # The Pure Perl versions of all the Math::Prime::Util routines.
@@ -198,8 +198,10 @@ sub _is_prime7 {  # n must not be divisible by 2, 3, or 5
   # Slow since it's all in PP and uses bigints.
 
   return 0 unless miller_rabin($n, 2);
-  return 0 unless is_extra_strong_lucas_pseudoprime($n);
-  return ($n <= 18446744073709551615)  ?  2  :  1;
+  if ($n <= 18446744073709551615) {
+    return is_almost_extra_strong_lucas_pseudoprime($n) ? 2 : 0;
+  }
+  return is_extra_strong_lucas_pseudoprime($n) ? 1 : 0;
 }
 
 sub is_prime {
@@ -662,17 +664,21 @@ sub _mulmod {
   my($a, $b, $m) = @_;
   return (($a * $b) % $m) if ($a|$b) < $_half_word;
   my $r = 0;
-  while ($b > 0) {
-    if ($b & 1) {
-      if ($r == 0) {
-        $r = $a;
-      } else {
-        $r = $m - $r;
-        $r = ($a >= $r)  ?  $a - $r  :  $m - $r + $a;
-      }
+  $a %= $m if $a >= $m;
+  $b %= $m if $b >= $m;
+  ($a,$b) = ($b,$a) if $a < $b;
+  if ($m <= (~0 >> 1)) {
+    while ($b > 0) {
+      if ($b & 1) { $r += $a;  $r -= $m if $r >= $m; }
+      $b >>= 1;
+      if ($b)     { $a += $a;  $a -= $m if $a >= $m; }
     }
-    $a = ($a > ($m - $a))  ?  ($a - $m) + $a  :  $a + $a;
-    $b >>= 1;
+  } else {
+    while ($b > 0) {
+      if ($b & 1) { $r = $m-$r;  $r = ($a >= $r) ? $a-$r : $m-$r+$a; }
+      $b >>= 1;
+      if ($b)     { $a = ($a > ($m - $a))  ?  ($a - $m) + $a  :  $a + $a; }
+    }
   }
   $r;
 }
@@ -721,6 +727,11 @@ sub _gcd_ui {
     $x = $t;
   }
   $x;
+}
+
+sub _lcm_ui {
+  my($x, $y) = @_;
+  return (abs($x) / _gcd_ui($x, $y)) * abs($y);
 }
 
 sub _is_perfect_power {
@@ -773,7 +784,7 @@ sub is_pseudoprime {
   my $x = (ref($n) eq 'Math::BigInt')
         ? $n->copy->bzero->badd($base)->bmodpow($n-1,$n)
         : _native_powmod($base, $n-1, $n);
-  return ($x == 1);
+  return ($x == 1) ? 1 : 0;
 }
 
 sub miller_rabin {
@@ -792,13 +803,18 @@ sub miller_rabin {
 
   if ( ref($n) eq 'Math::BigInt' ) {
 
+    my $nminus1 = $n->copy->bdec();
     my $s = 0;
-    my $nminus1 = $n->copy->bsub(1);
     my $d = $nminus1->copy;
     while ($d->is_even) {
       $s++;
       $d->brsft(1);
     }
+    # Different way of doing the above.  Fewer function calls, slower on ave.
+    #my $dbin = $nminus1->as_bin;
+    #my $last1 = rindex($dbin, '1');
+    #my $s = length($dbin)-2-$last1+1;
+    #my $d = $nminus1->copy->brsft($s);
 
     foreach my $a (@bases) {
       my $x = $n->copy->bzero->badd($a)->bmodpow($d,$n);
@@ -952,9 +968,6 @@ sub lucas_sequence {
   croak "lucas_sequence: P out of range" if $P < 0 || $P >= $n;
   croak "lucas_sequence: Q out of range" if $Q >= $n;
 
-  my $D = $P*$P - 4*$Q;
-  croak "lucas_sequence: D is zero" if $D == 0;
-
   if (ref($n) ne 'Math::BigInt') {
     if (!defined $Math::BigInt::VERSION) {
       eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
@@ -964,9 +977,15 @@ sub lucas_sequence {
   }
 
   my $ZERO = $n->copy->bzero;
-  my $U = $ZERO + 1;
-  my $V = $ZERO + $P;
-  my $Qk = $ZERO + $Q;
+  my $ONE = $ZERO + 1;
+  my $TWO = $ZERO + 2;
+  $P = $ZERO+$P unless ref($P) eq 'Math::BigInt';
+  $Q = $ZERO+$Q unless ref($Q) eq 'Math::BigInt';
+  my $D = $P*$P - 4*$Q;
+  croak "lucas_sequence: D is zero" if $D == 0;
+  my $U = $ONE->copy;
+  my $V = $P->copy;
+  my $Qk = $Q->copy;
 
   return ($ZERO, $ZERO+2) if $k == 0;
   $k = Math::BigInt->new("$k") unless ref($k) eq 'Math::BigInt';
@@ -974,53 +993,60 @@ sub lucas_sequence {
   my $bpos = 0;
 
   if ($Q == 1) {
-    my $Dinverse = ($ZERO+$D)->bmodinv($n);
-    if ($P > 2 && !$Dinverse->is_nan) {
+    my $Dinverse = $D->copy->bmodinv($n);
+    if ($P > $TWO && !$Dinverse->is_nan) {
       # Calculate V_k with U=V_{k+1}
-      $U = $ZERO + ($P*$P - 2);
+      $U = $P->copy->bmul($P)->bsub($TWO)->bmod($n);
       while (++$bpos < length($kstr)) {
         if (substr($kstr,$bpos,1)) {
-          $V->bmul($U)->bsub($P)->bmod($n);
-          $U->bmul($U)->bsub( 2)->bmod($n);
+          $V->bmul($U)->bsub($P  )->bmod($n);
+          $U->bmul($U)->bsub($TWO)->bmod($n);
         } else {
-          $U->bmul($V)->bsub($P)->bmod($n);
-          $V->bmul($V)->bsub( 2)->bmod($n);
+          $U->bmul($V)->bsub($P  )->bmod($n);
+          $V->bmul($V)->bsub($TWO)->bmod($n);
         }
       }
       # Crandall and Pomerance eq 3.13: U_n = D^-1 (2V_{n+1} - PV_n)
-      $U = $Dinverse * (2*$U - $P*$V);
+      $U = $Dinverse * ($TWO*$U - $P*$V);
     } else {
       while (++$bpos < length($kstr)) {
-        $U = ($U * $V) % $n;
-        $V = ($V * $V - 2) % $n;
+        $U->bmul($V)->bmod($n);
+        $V->bmul($V)->bsub($TWO)->bmod($n);
         if (substr($kstr,$bpos,1)) {
           my $T1 = $U->copy->bmul($D);
-          $U->bmul($P)->badd( $V)->badd( $U->is_odd ? $n : 0 )->brsft(1);
-          $V->bmul($P)->badd($T1)->badd( $V->is_odd ? $n : 0 )->brsft(1);
+          $U->bmul($P)->badd( $V)->badd( $U->is_odd ? $n : $ZERO )->brsft(1);
+          $V->bmul($P)->badd($T1)->badd( $V->is_odd ? $n : $ZERO )->brsft(1);
         }
       }
     }
   } else {
+    my $qsign = ($Q == -1) ? -1 : 0;
     while (++$bpos < length($kstr)) {
-      $U = ($U * $V) % $n;
-      $V = ($V * $V - 2*$Qk) % $n;
-      $Qk->bmul($Qk);
+      $U->bmul($V)->bmod($n);
+      if    ($qsign ==  1) { $V->bmul($V)->bsub($TWO)->bmod($n); }
+      elsif ($qsign == -1) { $V->bmul($V)->badd($TWO)->bmod($n); }
+      else { $V->bmul($V)->bsub($Qk->copy->blsft($ONE))->bmod($n); }
       if (substr($kstr,$bpos,1)) {
         my $T1 = $U->copy->bmul($D);
         $U->bmul($P);
         $U->badd($V);
         $U->badd($n) if $U->is_odd;
-        $U->brsft(1);
+        $U->brsft($ONE);
 
         $V->bmul($P);
         $V->badd($T1);
         $V->badd($n) if $V->is_odd;
-        $V->brsft(1);
+        $V->brsft($ONE);
 
-        $Qk->bmul($Q);
+        if ($qsign != 0) { $qsign = -1; }
+        else             { $Qk->bmul($Qk)->bmul($Q)->bmod($n); }
+      } else {
+        if ($qsign != 0) { $qsign = 1; }
+        else             { $Qk->bmul($Qk)->bmod($n); }
       }
-      $Qk->bmod($n);
     }
+    if    ($qsign ==  1) { $Qk->bneg; }
+    elsif ($qsign == -1) { $Qk = $n->copy->bdec; }
   }
   $U->bmod($n);
   $V->bmod($n);
@@ -1092,6 +1118,15 @@ sub is_extra_strong_lucas_pseudoprime {
     $s++;
     $k >>= 1;
   }
+  # We have to convert n to a bigint or Math::BigInt::GMP's stupid set_si bug
+  # (RT 71548) will hit us and make the test $V == $n-2 always return false.
+  if (ref($n) ne 'Math::BigInt') {
+    if (!defined $Math::BigInt::VERSION) {
+      eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
+      or do { croak "Cannot load Math::BigInt "; }
+    }
+    $n = Math::BigInt->new("$n");
+  }
   my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $k);
 
   return 1 if $U->is_zero && ($V == 2 || $V == ($n-2));
@@ -1116,13 +1151,6 @@ sub is_almost_extra_strong_lucas_pseudoprime {
   return 0 if $D == 0;  # We found a divisor in the sequence
   die "Lucas parameter error: $D, $P, $Q\n" if ($D != $P*$P - 4*$Q);
 
-  my $m = $n+1;
-  my($s, $k) = (0, $m);
-  while ( $k > 0 && !($k % 2) ) {
-    $s++;
-    $k >>= 1;
-  }
-
   if (ref($n) ne 'Math::BigInt') {
     if (!defined $Math::BigInt::VERSION) {
       eval { require Math::BigInt;  Math::BigInt->import(try=>'GMP,Pari'); 1; }
@@ -1134,8 +1162,9 @@ sub is_almost_extra_strong_lucas_pseudoprime {
   my $ZERO = $n->copy->bzero;
   my $V = $ZERO + $P;        # V_{k}
   my $W = $ZERO + $P*$P-2;   # V_{k+1}
-  $k = Math::BigInt->new("$k") unless ref($k) eq 'Math::BigInt';
-  my $kstr = substr($k->as_bin, 2);
+  my $kstr = substr($n->copy->binc()->as_bin, 2);
+  $kstr =~ s/(0*)$//;
+  my $s = length($1);
   my $bpos = 0;
   while (++$bpos < length($kstr)) {
     if (substr($kstr,$bpos,1)) {
@@ -1320,11 +1349,11 @@ sub is_aks_prime {
   return 1 if $r >= $n;
 
   # Since r is a prime, phi(r) = r-1
-  my $rlimit = int( Math::BigFloat->new("$r")->bsub(1)
+  my $rlimit = int( Math::BigFloat->new("$r")->bdec()
                     ->bsqrt->bmul($log2n)->bfloor->bstr);
 
   $_poly_bignum = 1;
-  if ( $n < ( (~0 == 4294967295) ? 65535 : 4294967295 ) ) {
+  if ( $n < ($_half_word-1) ) {
     $_poly_bignum = 0;
     $n = int($n->bstr) if ref($n) eq 'Math::BigInt';
   }
@@ -1373,10 +1402,12 @@ sub trial_factor {
   _validate_positive_integer($n);
   $maxlim = $n unless defined $maxlim && _validate_positive_integer($maxlim);
 
-  # Don't use _basic factor here -- they want a trial forced.
-  #my @factors = _basic_factor($n);
-  return ($n) if $n < 4;
+  # Don't use _basic_factor here -- they want a trial forced.
   my @factors;
+  if ($n < 4) {
+    @factors = ($n);
+    return @factors;
+  }
   while ( !($n % 2) ) { push @factors, 2;  $n = int($n / 2); }
   while ( !($n % 3) ) { push @factors, 3;  $n = int($n / 3); }
   while ( !($n % 5) ) { push @factors, 5;  $n = int($n / 5); }
@@ -1431,10 +1462,11 @@ sub factor {
 
   return trial_factor($n) if $n < 1_000_000;
 
-  my @factors = _basic_factor($n);
-  return @factors if $n < 4;
-
-  # Use 'n = int($n/7)' instead of 'n/=7' to not "upgrade" n to a Math::BigFloat.
+  my @factors;
+  # Use 'n=int($n/7)' instead of 'n/=7' to not "upgrade" n to a Math::BigFloat.
+  while (($n %  2) == 0) { push @factors,  2;  $n = int($n /  2); }
+  while (($n %  3) == 0) { push @factors,  3;  $n = int($n /  3); }
+  while (($n %  5) == 0) { push @factors,  5;  $n = int($n /  5); }
   while (($n %  7) == 0) { push @factors,  7;  $n = int($n /  7); }
   while (($n % 11) == 0) { push @factors, 11;  $n = int($n / 11); }
   while (($n % 13) == 0) { push @factors, 13;  $n = int($n / 13); }
@@ -1474,7 +1506,8 @@ sub factor {
     }
     push @factors, $n  if $n != 1;
   }
-  sort {$a<=>$b} @factors;
+  @factors = sort {$a<=>$b} @factors;
+  return @factors;
 }
 
 sub _found_factor {
@@ -1701,7 +1734,7 @@ sub pminus1_factor {
   my $one = $n->copy->bone;
   my ($j, $q, $saveq) = (32, 2, 2);
   my $t = $one->copy;
-  my $a = $one->copy->badd(1);
+  my $a = $one->copy->binc();
   my $savea = $a->copy;
   my $f = 1;
   my($pc_beg, $pc_end, @bprimes);
@@ -1958,7 +1991,7 @@ sub ecm_factor {
     $q = $k;
   }
   my @b2primes = ($B2 > $B1) ? @{primes($B1+1, $B2)} : ();
-  my $irandf = Math::Prime::Util::_get_rand_func();
+  my $irandf = Math::Prime::Util::_get_randf();
 
   foreach my $curve (1 .. $ncurves) {
     my $sigma = $irandf->($n-1-6) + 6;
@@ -2498,7 +2531,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.29
+Version 0.32
 
 
 =head1 SYNOPSIS

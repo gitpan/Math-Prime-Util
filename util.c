@@ -58,7 +58,7 @@
 #include "ptypes.h"
 #include "util.h"
 #include "sieve.h"
-#include "factor.h"
+#include "primality.h"
 #include "cache.h"
 #include "lehmer.h"
 
@@ -147,36 +147,36 @@ static const unsigned char prime_sieve30[] =
 /* Return of 2 if n is prime, 0 if not.  Do it fast. */
 int _XS_is_prime(UV n)
 {
-  UV d, m;
-  unsigned char mtab;
-  const unsigned char* sieve;
-  int isprime;
+  if (n < UVCONST(2000000000)) {
+    UV d, m;
+    unsigned char mtab;
+    const unsigned char* sieve;
+    int isprime = -1;
 
-  if (n <= 10) {
-    switch (n) {
-      case 2: case 3: case 5: case 7:   return 2;  break;
-      default:                          break;
-    }
-    return 0;
+    if (n <= 10)  return (n == 2 || n == 3 || n == 5 || n == 7) ? 2 : 0;
+
+    d = n/30;
+    m = n - d*30;
+    mtab = masktab30[m];  /* Bitmask in mod30 wheel */
+
+    /* Return 0 if a multiple of 2, 3, or 5 */
+    if (mtab == 0)
+      return 0;
+
+    /* Check static tiny sieve */
+    if (d < NPRIME_SIEVE30)
+      return (prime_sieve30[d] & mtab) ? 0 : 2;
+
+    if (!(n%7) || !(n%11) || !(n%13)) return 0;
+
+    /* Check primary cache */
+    if (n <= get_prime_cache(0, &sieve))
+      isprime = 2*((sieve[d] & mtab) == 0);
+    release_prime_cache(sieve);
+    if (isprime >= 0)
+      return isprime;
   }
-  d = n/30;
-  m = n - d*30;
-  mtab = masktab30[m];  /* Bitmask in mod30 wheel */
-
-  /* Return 0 if a multiple of 2, 3, or 5 */
-  if (mtab == 0)
-    return 0;
-
-  if (d < NPRIME_SIEVE30)
-    return (prime_sieve30[d] & mtab) ? 0 : 2;
-
-  isprime = (n <= get_prime_cache(0, &sieve))
-            ?  2*((sieve[d] & mtab) == 0)
-            :  -1;
-  release_prime_cache(sieve);
-
-  /* return (isprime >= 0)  ?  isprime  :  _is_prime7(n); */
-  return (isprime >= 0)  ?  isprime  :  _XS_is_prob_prime(n);
+  return _XS_is_prob_prime(n);
 }
 
 
@@ -666,7 +666,7 @@ UV _XS_nth_prime(UV n)
       /* Calculate lower limit, get count, sieve to that */
       segment_size = lower_limit / 30;
       lower_limit = 30 * segment_size - 1;
-      count = _XS_lehmer_pi(lower_limit) - 3;
+      count = _XS_LMO_pi(lower_limit) - 3;
       MPUassert(count <= target, "Pi(nth_prime_lower(n))) > n");
     } else {
       /* Compute approximate nth prime via binary search on R(n) */
@@ -684,7 +684,7 @@ UV _XS_nth_prime(UV n)
       lower_limit = (UV) (double)(0.9999999*(lo-1));
       segment_size = lower_limit / 30;
       lower_limit = 30 * segment_size - 1;
-      count = _XS_lehmer_pi(lower_limit);
+      count = _XS_LMO_pi(lower_limit);
       /*
         printf("We've estimated %lu too %s.\n", (count>n)?count-n:n-count, (count>n)?"FAR":"little");
         printf("Our limit %lu %s a prime\n", lower_limit, _XS_is_prime(lower_limit) ? "is" : "is not");
@@ -806,7 +806,7 @@ signed char* _moebius_range(UV lo, UV hi)
     croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
   A = (unsigned char*) mu;
   if (sqrtn*sqrtn != hi) sqrtn++;  /* ceil sqrtn */
-  
+
   logp = 1; nextlog = 3; /* 2+1 */
   START_DO_FOR_EACH_PRIME(2, sqrtn) {
     UV p2 = p*p;

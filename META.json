@@ -4,7 +4,7 @@
       "Dana A Jacobsen <dana@acm.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "ExtUtils::MakeMaker version 6.68, CPAN::Meta::Converter version 2.132661",
    "license" : [
       "perl_5"
    ],
@@ -22,13 +22,6 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "Test::More" : "0.45",
-            "Test::Warn" : "0",
-            "bignum" : "0.22"
-         }
-      },
-      "configure" : {
-         "requires" : {
             "ExtUtils::MakeMaker" : "0"
          }
       },
@@ -36,7 +29,7 @@
          "recommends" : {
             "Math::BigInt::GMP" : "0",
             "Math::MPFR" : "2.03",
-            "Math::Prime::Util::GMP" : "0.13"
+            "Math::Prime::Util::GMP" : "0.14"
          },
          "requires" : {
             "Bytes::Random::Secure" : "0.23",
@@ -50,14 +43,26 @@
             "base" : "0",
             "perl" : "5.006002"
          }
+      },
+      "test" : {
+         "requires" : {
+            "Test::More" : "0.45",
+            "bignum" : "0.22"
+         },
+         "suggests" : {
+            "Test::Warn" : "0"
+         }
       }
    },
    "release_status" : "stable",
    "resources" : {
       "homepage" : "https://github.com/danaj/Math-Prime-Util",
+      "license" : [
+         "http://dev.perl.org/licenses/"
+      ],
       "repository" : {
          "url" : "https://github.com/danaj/Math-Prime-Util"
       }
    },
-   "version" : "0.31"
+   "version" : "0.32"
 }

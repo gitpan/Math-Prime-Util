@@ -40,6 +40,9 @@ $| = 1;
 #
 # A006794  p      where p#-1   prime     3,5,11,13,41,89,317,337
 # A057704  n      where p_n#-1 prime     2,3,5,6,13,24,66,68,167
+#
+# As an aside, the 18th p#-1 is 15877, but the 19th is 843301.
+# The p#+1's are a bit denser, with the 22nd at 392113.
 
 
 # There are a few of these prime filters that Math::NumSeq supports, and in
@@ -116,6 +119,8 @@ die_usage() unless @ARGV == 2;
 my ($start, $end) = @ARGV;
 # Allow some expression evaluation on the input, but don't just eval it.
 $end = "($start)$end" if $end =~ /^\+/;
+$start =~ s/\s*$//;  $start =~ s/^\s*//;
+$end   =~ s/\s*$//;  $end   =~ s/^\s*//;
 $start = eval_expr($start) unless $start =~ /^\d+$/;
 $end   = eval_expr($end  ) unless $end   =~ /^\d+$/;
 die "$start isn't a positive integer" if $start =~ tr/0123456789//c;
@@ -158,6 +163,9 @@ if ($start > $end) {
     $segment_size = 10000 if $start > ~0;   # small if doing bigints
     if (exists $opts{'pillai'}) {
       $segment_size = ($start < 10000) ? 100 : 1000;  # very small for Pillai
+    }
+    if (exists $opts{'pnp1'} || exists $opts{'pnm1'}) {
+      $segment_size = 500;
     }
     if (exists $opts{'palindromic'}) {
       $segment_size = 10**length($start) - $start - 1; # all n-digit numbers
