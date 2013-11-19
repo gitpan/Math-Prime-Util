@@ -82,6 +82,7 @@ t/20-primorial.t
 t/21-conseq-lcm.t
 t/22-aks-prime.t
 t/23-primality-proofs.t
+t/24-partitions.t
 t/30-relations.t
 t/31-threading.t
 t/32-iterators.t
@@ -102,6 +103,7 @@ xt/primality-proofs.pl
 xt/small-is-next-prev.pl
 xt/factor-holf.pl
 xt/make-script-test-data.pl
+xt/measure_zeta_accuracy.pl
 xt/pari-totient-moebius.pl
 xt/primes-edgecases.pl
 xt/rwh_primecount.py

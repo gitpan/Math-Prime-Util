@@ -222,6 +222,9 @@ _XS_nth_prime(IN UV n)
 UV
 _XS_divisor_sum(IN UV n, IN UV k)
 
+UV
+_XS_legendre_phi(IN UV x, IN UV a)
+
 
 UV
 _get_prime_cache_size()
@@ -405,6 +408,40 @@ _XS_factor(IN UV n)
       EXTEND(SP, nfactors);
       for (i = 0; i < nfactors; i++) {
         PUSHs(sv_2mortal(newSVuv( factors[i] )));
+      }
+    }
+
+void
+_XS_factor_exp(IN UV n)
+  PREINIT:
+    UV factors[MPU_MAX_FACTORS+1];
+    int i, j, nfactors;
+  PPCODE:
+    nfactors = factor(n, factors);
+    if (GIMME_V == G_SCALAR) {
+      /* Count unique prime factors and return the scalar */
+      for (i = 1, j = 1; i < nfactors; i++)
+        if (factors[i] != factors[i-1])
+          j++;
+      PUSHs(sv_2mortal(newSVuv(j)));
+    } else {
+      /* Return ( [p1,e1], [p2,e2], [p3,e3], ... ) */
+      UV exponents[MPU_MAX_FACTORS+1];
+      exponents[0] = 1;
+      for (i = 1, j = 1; i < nfactors; i++) {
+        if (factors[i] != factors[i-1]) {
+          exponents[j] = 1;
+          factors[j++] = factors[i];
+        } else {
+          exponents[j-1]++;
+        }
+      }
+      nfactors = j;
+      for (i = 0; i < nfactors; i++) {
+        AV* av = newAV();
+        av_push(av, newSVuv(factors[i]));
+        av_push(av, newSVuv(exponents[i]));
+        XPUSHs( sv_2mortal(newRV_noinc( (SV*) av )) );
       }
     }
 
@@ -687,30 +724,39 @@ _XS_moebius(IN UV lo, IN UV hi = 0)
 IV
 _XS_mertens(IN UV n)
 
-UV
-_XS_exp_mangoldt(IN UV n)
-  CODE:
-    if (n <= 1)
-      RETVAL = 1;
-    else if ((n & (n-1)) == 0)  /* Power of 2 */
-      RETVAL = 2;
-    else if ((n & 1) == 0)      /* Even number */
-      RETVAL = 1;
-    /* else if (_XS_is_prime(n))  RETVAL = n; */
-    else {
-      UV factors[MPU_MAX_FACTORS+1];
-      UV nfactors, i;
-      /* We could try a partial factor, e.g. looking for two small factors */
-      /* We could also check powers of primes searching for n */
-      nfactors = factor(n, factors);
-      for (i = 1; i < nfactors; i++) {
-        if (factors[i] != factors[0])
-          XSRETURN_UV(1);
+void
+exp_mangoldt(IN SV* svn)
+  PREINIT:
+    int status;
+    UV n;
+  PPCODE:
+    status = _validate_int(svn, 1);
+    if (status == -1) {
+      XSRETURN_UV(1);
+    } else if (status == 1) {
+      set_val_from_sv(n, svn);
+      if (n <= 1)
+        XSRETURN_UV(1);
+      else if ((n & (n-1)) == 0)  /* Power of 2 */
+        XSRETURN_UV(2);
+      else if ((n & 1) == 0)      /* Even number */
+        XSRETURN_UV(1);
+      else {
+        UV factors[MPU_MAX_FACTORS+1];
+        UV nfactors, i;
+        /* We could try a partial factor, e.g. looking for two small factors */
+        /* We could also check powers of primes searching for n */
+        nfactors = factor(n, factors);
+        for (i = 1; i < nfactors; i++) {
+          if (factors[i] != factors[0])
+            XSRETURN_UV(1);
+        }
+        XSRETURN_UV(factors[0]);
       }
-      RETVAL = factors[0];
+    } else {
+      _vcallsub("Math::Prime::Util::_generic_exp_mangoldt");
+      XSRETURN(1);
     }
-  OUTPUT:
-    RETVAL
 
 int
 _validate_num(SV* n, ...)

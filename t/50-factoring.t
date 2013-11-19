@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use Test::More;
-use Math::Prime::Util qw/factor all_factors is_prime/;
+use Math::Prime::Util qw/factor factor_exp all_factors is_prime/;
 
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
 my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
@@ -50,31 +50,40 @@ push @testn, @testn64 if $use64;
 push @testn, qw/9999986200004761 99999989237606677 999999866000004473/
       if $use64 && $extra;
 
+# For time savings, trim these if we're pure Perl.
+if (    !$extra
+     && !Math::Prime::Util::prime_get_config->{'xs'}
+     && !Math::Prime::Util::prime_get_config->{'gmp'} ) {
+  @testn = grep {    $_ != 10023859281455311421
+                  && $_ != 3369738766071892021
+                } @testn;
+}
+
 my %all_factors = (
-1234567890 => [2,3,5,6,9,10,15,18,30,45,90,3607,3803,7214,7606,10821,11409,18035,19015,21642,22818,32463,34227,36070,38030,54105,57045,64926,68454,108210,114090,162315,171135,324630,342270,13717421,27434842,41152263,68587105,82304526,123456789,137174210,205761315,246913578,411522630,617283945],
-1032924637 => [6469,159673],
-4567890 => [2,3,5,6,10,15,30,43,86,129,215,258,430,645,1290,3541,7082,10623,17705,21246,35410,53115,106230,152263,304526,456789,761315,913578,1522630,2283945],
- 456789 => [3,43,129,3541,10623,152263],
- 123456 => [2,3,4,6,8,12,16,24,32,48,64,96,192,643,1286,1929,2572,3858,5144,7716,10288,15432,20576,30864,41152,61728],
- 115553 => [],
-  30107 => [7,11,17,23,77,119,161,187,253,391,1309,1771,2737,4301],
-     42 => [2,3,6,7,14,21],
-     16 => [2,4,8],
-     12 => [2,3,4,6],
-     10 => [2,5],
-      9 => [3],
-      8 => [2,4],
-      7 => [],
-      6 => [2,3],
-      5 => [],
-      4 => [2],
-      3 => [],
-      2 => [],
-      1 => [],
+1234567890 => [1,2,3,5,6,9,10,15,18,30,45,90,3607,3803,7214,7606,10821,11409,18035,19015,21642,22818,32463,34227,36070,38030,54105,57045,64926,68454,108210,114090,162315,171135,324630,342270,13717421,27434842,41152263,68587105,82304526,123456789,137174210,205761315,246913578,411522630,617283945,1234567890],
+1032924637 => [1,6469,159673,1032924637],
+4567890 => [1,2,3,5,6,10,15,30,43,86,129,215,258,430,645,1290,3541,7082,10623,17705,21246,35410,53115,106230,152263,304526,456789,761315,913578,1522630,2283945,4567890],
+ 456789 => [1,3,43,129,3541,10623,152263,456789],
+ 123456 => [1,2,3,4,6,8,12,16,24,32,48,64,96,192,643,1286,1929,2572,3858,5144,7716,10288,15432,20576,30864,41152,61728,123456],
+ 115553 => [1,115553],
+  30107 => [1,7,11,17,23,77,119,161,187,253,391,1309,1771,2737,4301,30107],
+     42 => [1,2,3,6,7,14,21,42],
+     16 => [1,2,4,8,16],
+     12 => [1,2,3,4,6,12],
+     10 => [1,2,5,10],
+      9 => [1,3,9],
+      8 => [1,2,4,8],
+      7 => [1,7],
+      6 => [1,2,3,6],
+      5 => [1,5],
+      4 => [1,2,4],
+      3 => [1,3],
+      2 => [1,2],
+      1 => [1],
       0 => [],
 );
 
-plan tests =>  (2 * scalar @testn) + scalar(keys %all_factors) + 10*9 + 8 + 1;
+plan tests =>  (3 * scalar @testn) + scalar(keys %all_factors) + 10*9 + 8 + 1;
 
 foreach my $n (@testn) {
   my @f = factor($n);
@@ -87,11 +96,14 @@ foreach my $n (@testn) {
   # Are they all prime?
   my $isprime = 1; $isprime *= is_prime($_) for @f;
   if ($n < 2) {
-    ok( !$isprime, "All factors [ $facstring ] of $n are not prime" );
+    ok( !$isprime, "   each factor is not prime" );
   } else {
-    ok( $isprime, "All factors [ $facstring ] of $n are prime" );
+    ok(  $isprime, "   each factor is prime" );
   }
-};
+
+  # Does factor_exp return the appropriate rearrangement?
+  is_deeply( [factor_exp($n)], [linear_to_exp(@f)], "   factor_exp looks right" );
+}
 
 while (my($n, $divisors) = each(%all_factors)) {
   is_deeply( [all_factors($n)], $divisors, "all_factors($n)" );
@@ -136,3 +148,9 @@ is( scalar factor(5), 1, "scalar factor(5) should be 1" );
 is( scalar factor(6), 2, "scalar factor(6) should be 2" );
 is( scalar factor(30107), 4, "scalar factor(30107) should be 4" );
 is( scalar factor(174636000), 15, "scalar factor(174636000) should be 15" );
+
+sub linear_to_exp {
+  my %exponents;
+  my @factors = grep { !$exponents{$_}++ } @_;
+  return (map { [$_, $exponents{$_}] } @factors);
+}

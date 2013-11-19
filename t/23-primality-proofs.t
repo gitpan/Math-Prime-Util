@@ -46,6 +46,7 @@ plan tests => 0
             + 8  # verification failures (Lucas/Pratt)
             + 11 # verification failures (n-1)
             + 7  # verification failures (ECPP)
+            + 3  # Verious other types
             + 0;
 
 is( is_provable_prime(871139809), 0, "871139809 is composite" );
@@ -53,10 +54,10 @@ is( is_provable_prime(1490266103), 2, "1490266103 is provably prime" );
 
 foreach my $p (@plist) {
  
-  ok( is_prime($p), "$p is prime" );
   SKIP: {
-    skip "Broken 64-bit causes trial factor to barf", 5
+    skip "Broken 64-bit causes trial factor to barf", 6
       if $broken64 && $p > 2**48;
+    ok( is_prime($p), "$p is prime" );
     skip "These take a long time on non-64-bit.  Skipping", 5
       if !$use64 && !$extra && $p =~ /^(6778|9800)/;
     my($isp, $cert) = is_provable_prime_with_cert($p);
@@ -94,6 +95,7 @@ SKIP: {
 SKIP: {
   skip "Skipping 2**607-1 verification without Math::BigInt::GMP", 1
        unless Math::BigInt->config()->{lib} eq 'Math::BigInt::GMP';
+  skip "Skipping 2**607-1 verification on broken Perl", 1 if $broken64;
   my @proof = ('531137992816767098689588206552468627329593117727031923199444138200403559860852242739162502265229285668889329486246501015346579337652707239409519978766587351943831270835393219031728127', 'n-1',
   [ 2,3,7,607,'112102729', '341117531003194129', '7432339208719',
     ['845100400152152934331135470251', 'n-1',
@@ -116,7 +118,8 @@ SKIP: {
                                ], 14 );
   ok( verify_prime(@proof), "simple Lucas/Pratt proof verified" );
 }
-{
+SKIP: {
+  skip "Skipping n-1 verification on broken Perl", 1 if $broken64;
   my @proof = ('3364125245431456304736426076174232972735419017865223025179282077503701', 'n-1',
     [2,5,127, ['28432789963853652887491983185920687231739655787', 'n-1',
                 [ 2,3,163,650933, [ '44662634059309451871488121651101494489', 'n-1',
@@ -259,3 +262,39 @@ is( verify_prime([1490266103, "ECPP",
                  [2780369, 2780360, 0, 2777444, 694361, [2481811, 1317449]],
                  [694361, 694358, 0, 695162, [26737, "n-1", [2],[2]], [348008, 638945]]]),
                  0, "ECPP non-prime last q" );
+
+SKIP: {
+  skip "Skipping additional verifications on broken Perl", 3 if $broken64;
+  my $header = "[MPU - Primality Certificate]\nVersion 1.0\nProof for:";
+  {
+  my $cert = join "\n", $header,
+                       "N 2297612322987260054928384863",
+                       "Type Pocklington",
+                       "N  2297612322987260054928384863",
+                       "Q  16501461106821092981",
+                       "A  5";
+  is( verify_prime($cert), 1, "Verify Pocklington");
+  }
+  {
+  my $cert = join "\n", $header,
+                       "N 5659942549665396263282978117",
+                       "Type BLS15",
+                       "N  5659942549665396263282978117",
+                       "Q  42941814754495493",
+                       "LP 2",
+                       "LQ 3";
+  is( verify_prime($cert), 1, "Verify BLS15");
+  }
+  {
+  my $cert = join "\n", $header,
+                       "N 43055019307158602560279",
+                       "Type ECPP3",
+                       "N 43055019307158602560279",
+                       "S 106563369",
+                       "R 404032076977387",
+                       "A 0",
+                       "B 4",
+                       "T 1";
+  is( verify_prime($cert), 1, "Verify ECPP3");
+  }
+}

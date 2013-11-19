@@ -5,13 +5,12 @@ use warnings;
 use Test::More;
 use Math::Prime::Util
    qw/moebius mertens euler_phi jordan_totient divisor_sum exp_mangoldt
-      chebyshev_theta chebyshev_psi carmichael_lambda znorder/;
+      chebyshev_theta chebyshev_psi carmichael_lambda znorder liouville/;
 
 my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
 my $usexs = Math::Prime::Util::prime_get_config->{'xs'};
-my $broken64 = (18446744073709550592 == ~0);
-$use64 = 0 if $broken64;
+$use64 = 0 if $use64 && 18446744073709550592 == ~0;
 
 my @moeb_vals = (qw/ 1 -1 -1 0 -1 1 -1 0 0 1 -1 0 -1 1 1 0 -1 0 -1 0 /);
 my %mertens = (
@@ -41,6 +40,9 @@ my %big_mertens = (
   1000000 =>  212,
  10000000 => 1037,
 );
+if (!$extra && !Math::Prime::Util::prime_get_config->{'xs'}) {
+  delete $big_mertens{10000000};
+}
 if ($extra && $use64) {
   %big_mertens = ( %big_mertens,
           2 =>  0,      # A087987, mertens at primorials
@@ -68,7 +70,7 @@ if ($extra && $use64) {
       2**23 =>  -10,
 
      10**8  => 1928,
-     10**9  => -222,
+#     10**9  => -222,
 #  1*10**10 => -33722,  # From Deleglise and Rivat
 #  2*10**10 => -48723,  # Too slow with current method
   );
@@ -113,6 +115,7 @@ my %sigmak = (
 );
 
 my %mangoldt = (
+-13 => 1,
   0 => 1,
   1 => 1,
   2 => 2,
@@ -143,7 +146,7 @@ my %chebyshev1 = (
        4 =>       1.79175946922805,
        5 =>       3.40119738166216,
      243 =>     226.593507136467,
- 1234567 => 1233272.80087825,
+  123456 =>  123034.091739914,
 );
 my %chebyshev2 = (
        0 =>       0,
@@ -153,8 +156,12 @@ my %chebyshev2 = (
        4 =>       2.484906649788,
        5 =>       4.0943445622221,
      243 =>     245.274469978683,
- 1234567 => 1234515.17962833,
+  123456 =>  123435.148054491
 );
+if ($extra) {
+  $chebyshev1{1234567} = 1233272.80087825;
+  $chebyshev2{1234567} = 1234515.17962833;
+}
 
 my @A002322 = (0,1,1,2,2,4,2,6,2,6,4,10,2,12,6,4,4,16,6,18,4,6,10,22,2,20,12,18,6,28,4,30,8,10,16,12,6,36,18,12,4,40,6,42,10,12,22,46,4,42,20,16,12,52,18,20,6,18,28,58,4,60,30,6,16,12,10,66,16,22,12,70,6,72,36,20,18,30,12,78,4,54,40,82,6,16,42,28,10,88,12,12,22,30,46,36,8,96,42,30,20,100,16,102,12,12,52,106,18,108,20,36,12,112,18,44,28,12,58,48,4,110,60,40,30,100,6,126,32,42,12,130,10,18,66,36,16,136,22,138,12,46,70,60,12,28,72,42,36,148,20,150,18,48,30,60,12,156,78,52,8,66,54,162,40,20,82,166,6,156,16,18,42,172,28,60,20,58,88,178,12,180,12,60,22,36,30,80,46,18,36,190,16,192,96,12,42,196,30,198,20);
 
@@ -190,6 +197,18 @@ if (!$usexs) {
                  keys %big_mertens;
 }
 
+my @liouville_pos = (qw/24 51 94 183 294 629 1488 3684 8006 8510 32539 57240
+   103138 238565 444456 820134 1185666 3960407 4429677 13719505 29191963
+   57736144 134185856 262306569 324235872 563441153 1686170713 2489885844/);
+my @liouville_neg = (qw/23 47 113 163 378 942 1669 2808 8029 9819 23863 39712
+   87352 210421 363671 562894 1839723 3504755 7456642 14807115 22469612
+   49080461 132842464 146060791 279256445 802149183 1243577750 3639860654/);
+if ($use64) {
+  push @liouville_pos, (qw/1260238066729040 10095256575169232896/);
+  push @liouville_neg, (qw/1807253903626380 12063177829788352512/);
+}
+
+
 plan tests => 0 + 1
                 + 1 # Small Moebius
                 + 3*scalar(keys %mertens)
@@ -205,7 +224,8 @@ plan tests => 0 + 1
                 + 1 + 2*scalar(keys %sigmak) + 2
                 + scalar(keys %mangoldt)
                 + scalar(keys %chebyshev1)
-                + scalar(keys %chebyshev2);
+                + scalar(keys %chebyshev2)
+                + scalar(@liouville_pos) + scalar(@liouville_neg);
 
 ok(!eval { moebius(0); }, "moebius(0)");
 
@@ -334,6 +354,13 @@ foreach my $moarg (@mult_orders) {
   my ($a, $n, $exp) = @$moarg;
   my $zn = znorder($a, $n);
   is( $zn, $exp, "znorder($a, $n) = " . ((defined $exp) ? $exp : "<undef>") );
+}
+###### liouville
+foreach my $i (@liouville_pos) {
+  is( liouville($i),  1, "liouville($i) = 1" );
+}
+foreach my $i (@liouville_neg) {
+  is( liouville($i), -1, "liouville($i) = -1" );
 }
 
 sub cmp_closeto {

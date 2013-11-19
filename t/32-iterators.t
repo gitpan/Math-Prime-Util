@@ -6,15 +6,20 @@ use Test::More;
 use Math::Prime::Util qw/primes prev_prime next_prime
                          forprimes prime_iterator prime_iterator_object/;
 use Math::BigInt try => "GMP,Pari";
+use Math::BigFloat;
 
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
+my $broken64 = (18446744073709550592 == ~0);
 
-plan tests => 8 + 5
-            + 12
-            + 3 + 7
-            + 2
-            + 3 + 7
-            + 25
+plan tests => 8        # forprimes errors
+            + 12 + 5   # forprimes simple
+            + 3        # iterator errors
+            + 7        # iterator simple
+            + 2        # forprimes/iterator nesting
+            + 2        # forprimes BigInt/BigFloat
+            + 3        # oo iterator errors
+            + 7        # oo iterator simple
+            + 25       # oo iterator methods
             + 0;
 
 ok(!eval { forprimes { 1 } undef; },   "forprimes undef");
@@ -108,6 +113,16 @@ ok(!eval { prime_iterator(4.5); }, "iterator 4.5");
   is_deeply( [@t], [qw/23 29 31 29 31 37 31 37 41 37 41 43 47 53 59 61 59 61 67 71 73 79 73 79 83 79 83 89/], "triple nested iterator" );
 }
 
+# With BigInt and BigFloat objects
+{ my @t;
+  forprimes { push @t, $_ } Math::BigInt->new("5"), Math::BigInt->new("11");
+  is_deeply( [@t], [5,7,11], "forprimes with BigInt range" );
+}
+{ my @t;
+  forprimes { push @t, $_ } Math::BigFloat->new("5"), Math::BigFloat->new("11");
+  is_deeply( [@t], [5,7,11], "forprimes with BigFloat range" );
+}
+
 # Test new object iterator
 ok(!eval { prime_iterator_object(-2); }, "iterator -2");
 ok(!eval { prime_iterator_object("abc"); }, "iterator abc");
@@ -146,17 +161,20 @@ ok(!eval { prime_iterator_object(4.5); }, "iterator 4.5");
   $it->rewind->next->next->next->prev;
   is( $it->value(), 5, "iterator object rewind and move returns 5");
   # Validate that it automatically handles bigint range traversal.
-  my $top_prime = prev_prime(~0);
-  my $big_prime = next_prime(Math::BigInt->new(''.~0));
-  ok( $big_prime > ~0, "internal check, next_prime on big int works");
-  $it->rewind($top_prime);
-  is( $it->value(), $top_prime, "iterator object can rewind to $top_prime");
-  $it->next;
-  is( $it->value(), $big_prime, "iterator object next is $big_prime");
-  $it->rewind(~0);
-  is( $it->value(), $big_prime, "iterator object rewound to ~0 is $big_prime");
-  $it->prev;
-  is( $it->value(), $top_prime, "iterator object prev goes back to $top_prime");
+  SKIP: {
+    skip "Skipping bigint traversals on a Perl that can't add correctly",5 if $broken64;
+    my $top_prime = prev_prime(~0);
+    my $big_prime = next_prime(Math::BigInt->new(''.~0));
+    ok( $big_prime > ~0, "internal check, next_prime on big int works");
+    $it->rewind($top_prime);
+    is( $it->value(), $top_prime, "iterator object can rewind to $top_prime");
+    $it->next;
+    is( $it->value(), $big_prime, "iterator object next is $big_prime");
+    $it->rewind(~0);
+    is( $it->value(), $big_prime, "iterator object rewound to ~0 is $big_prime");
+    $it->prev;
+    is( $it->value(), $top_prime, "iterator object prev goes back to $top_prime");
+  }
 
   # Validation for the Math::NumSeq compatiblity stuff
   $it->rewind;

@@ -47,6 +47,7 @@ my %pseudoprimes = (
    '564132928021909221014087501701' => [ qw/2 3 5 7 11 13 17 19 23 29 31 37 325 9375/ ],
    #'1543267864443420616877677640751301' => [ qw/2 3 5 7 11 13 17 19 23 29 31 37 61 325 9375/ ],
 );
+delete $pseudoprimes{'3825123056546413051'} if $broken64;
 my $num_pseudoprime_tests = 0;
 foreach my $psrp (keys %pseudoprimes) {
   push @composites, $psrp;
@@ -62,7 +63,7 @@ my %factors = (
 
 my %allfactors = (
   #'7674353466844111807691499613711' => [qw/11783 12239 18869 22277 37861 55163 60617 144212137 222333427 230937691 262489891 272648203 420344713 446116163 463380779 649985629 675139957 714250111 714399209 741891463 843429497 1040870647 1143782173 1228866151 1350364909 2088526343 2295020237 3343815571 2721138813053 3212613775949 4952921753279 5144598942407 5460015718957 7955174113331 8417765879647 8741707108529 8743531918951 9938129763151 10322733613783 12264578833601 12739215848633 13477185344459 13998750015347 14479729857233 15040092822089 15911349722747 15914671178893 16527116121251 23187475403219 24609105899569 25480035467921 25561473911977 27042223452571 28088752680643 39400178873093 39408403566067 40924958773469 43304736851953 46526101343011 51126165819649 63094456009199 74490179475167 126600201333631 60618809338381681 103025036600999633 121632770171205089 150106180344442639 164947271430833701 177217413722674687 187522570500896219 194739009256700533 194779660558471427 273218022676129477 283791511459997341 300231257918513143 301190847104824991 311850154091885119 330969772836016469 464349219218967461 482218789227785227 482319451245094013 510259714326562199 530006674331052767 548217052124698613 569432954337111629 602419611852924167 625733143466684111 743441975156391817 772213047096586561 877717784755892761 877901006241274559 911685306596568913 964699622850956981 1405555196516926123 1491730172314174073 1549459864122309809 2388819198964283339 2820272685109297787 2295088740360468824341 3343915379533148669003 3674530365664682357177 5683170094020942755179 6245068643642794753561 6709628500954186324507 7373013629467938879913 9098986333939079448263 10344307556540938128697 10742387967627371501879 10744630415386959327601 11367055656052826107123 11806958684072862490459 16561656880558940507309 17202590050170658819397 18257285578953176479447 28147456621396150583437 29236758176123863786021 33231273048642855824221 34517317393052695615093 53215725295327339942903 126603980184504541757122583 139121394174430538725078397 202698118561160872868954851 344496721589267486990685443 406717550842339912432640819 627040891154842046547226049 651307261889511313561189817/],
-  '23489223467134234890234680' => [qw/2 4 5 8 10 20 40 4073 4283 8146 8566 16292 17132 20365 21415 32584 34264 40730 42830 81460 85660 162920 171320 17444659 34889318 69778636 87223295 139557272 174446590 348893180 697786360 33662485846146713 67324971692293426 134649943384586852 168312429230733565 269299886769173704 336624858461467130 673249716922934260 1346499433845868520 137107304851355562049 144176426879046371779 274214609702711124098 288352853758092743558 548429219405422248196 576705707516185487116 685536524256777810245 720882134395231858895 1096858438810844496392 1153411415032370974232 1371073048513555620490 1441764268790463717790 2742146097027111240980 2883528537580927435580 5484292194054222481960 5767057075161854871160 587230586678355872255867 1174461173356711744511734 2348922346713423489023468 2936152933391779361279335 4697844693426846978046936 5872305866783558722558670 11744611733567117445117340/],
+  '23489223467134234890234680' => [qw/1 2 4 5 8 10 20 40 4073 4283 8146 8566 16292 17132 20365 21415 32584 34264 40730 42830 81460 85660 162920 171320 17444659 34889318 69778636 87223295 139557272 174446590 348893180 697786360 33662485846146713 67324971692293426 134649943384586852 168312429230733565 269299886769173704 336624858461467130 673249716922934260 1346499433845868520 137107304851355562049 144176426879046371779 274214609702711124098 288352853758092743558 548429219405422248196 576705707516185487116 685536524256777810245 720882134395231858895 1096858438810844496392 1153411415032370974232 1371073048513555620490 1441764268790463717790 2742146097027111240980 2883528537580927435580 5484292194054222481960 5767057075161854871160 587230586678355872255867 1174461173356711744511734 2348922346713423489023468 2936152933391779361279335 4697844693426846978046936 5872305866783558722558670 11744611733567117445117340 23489223467134234890234680/],
 );
 
 plan tests =>  0
@@ -73,10 +74,12 @@ plan tests =>  0
              + scalar(keys %pseudoprimes)
              + 6   # PC lower, upper, approx
              + 6*2*$extra # more PC tests
-             + scalar(keys %factors)
+             + 2*scalar(keys %factors)
              + scalar(keys %allfactors)
-             + 7   # moebius, euler_phi, jordan totient, divsum, znorder
+             + 10  # moebius, euler_phi, jordan totient, divsum, znorder
+             + 2   # liouville
              + 15  # random primes
+             + 2   # miller-rabin random
              + 0;
 
 # Using GMP makes these tests run about 2x faster on some machines
@@ -93,12 +96,15 @@ use Math::Prime::Util qw/
   nth_prime_upper
   nth_prime_approx
   factor
+  factor_exp
   all_factors
   moebius
   euler_phi
   jordan_totient
   divisor_sum
   znorder
+  liouville
+  pn_primorial
   ExponentialIntegral
   LogarithmicIntegral
   RiemannR
@@ -115,6 +121,7 @@ use Math::Prime::Util qw/
   random_nbit_prime
   random_strong_prime
   random_maurer_prime
+  miller_rabin_random
   verify_prime
 /;
 # TODO:  is_strong_lucas_pseudoprime
@@ -177,13 +184,10 @@ is( prime_count(877777777777777777777752, 877777777777777777777872), 2, "prime_c
 ###############################################################################
 
 while (my($psrp, $baseref) = each (%pseudoprimes)) {
-  SKIP: {
-    skip "Your 64-bit Perl is broken, skipping pseudoprime tests for $psrp", 1 if $broken64 && $psrp == 3825123056546413051;
-    my $baselist = join(",", @$baseref);
-    my @expmr = map { (0!=1) } @$baseref;
-    my @gotmr = map { is_strong_pseudoprime($psrp, $_) } @$baseref;
-    is_deeply(\@gotmr, \@expmr, "$psrp is a strong pseudoprime to bases $baselist");
-  }
+  my $baselist = join(",", @$baseref);
+  my @expmr = map { (0!=1) } @$baseref;
+  my @gotmr = map { is_strong_pseudoprime($psrp, $_) } @$baseref;
+  is_deeply(\@gotmr, \@expmr, "$psrp is a strong pseudoprime to bases $baselist");
 }
 
 ###############################################################################
@@ -197,9 +201,10 @@ if ($extra) {
 ###############################################################################
 
 SKIP: {
-  skip "Your 64-bit Perl is broken, skipping bignum factoring tests", scalar(keys %factors) + scalar(keys %allfactors) if $broken64;
+  skip "Your 64-bit Perl is broken, skipping bignum factoring tests", 2*scalar(keys %factors) + scalar(keys %allfactors) if $broken64;
   while (my($n, $factors) = each(%factors)) {
     is_deeply( [factor($n)], $factors, "factor($n)" );
+    is_deeply( [factor_exp($n)], [linear_to_exp(@$factors)], "factor_exp($n)" );
   }
   while (my($n, $allfactors) = each(%allfactors)) {
     is_deeply( [all_factors($n)], $allfactors, "all_factors($n)" );
@@ -209,7 +214,7 @@ SKIP: {
 ###############################################################################
 
 SKIP: {
-  skip "Your 64-bit Perl is broken, skipping moebius and euler_phi tests", 7 if $broken64;
+  skip "Your 64-bit Perl is broken, skipping moebius, totient, etc.", 10 if $broken64;
   my $n;
   $n = 618970019642690137449562110;
   is( moebius($n), -1, "moebius($n)" );
@@ -220,6 +225,11 @@ SKIP: {
   # Done wrong, the following will have a bunch of extra zeros.
   my $hundredfac = Math::BigInt->new(100)->bfac;
   is( divisor_sum($hundredfac), 774026292208877355243820142464115597282472420387824628823543695735957009720184359087194959566149232506852422409529601312686157396490982598473425595924480000000, "Divisor sum of 100!" );
+  # These should yield bigint results.
+  # Quoted 0 to prevent error in perl 5.8.2 + bigint 0.23 (0 turns into NaN)
+  is( divisor_sum(pn_primorial(71),"0"), 2361183241434822606848, "Divisor count(353#)" );
+  is( divisor_sum(pn_primorial(71),1), 592169807666179080336898884075191344863843751107274613826065194910163387683715846870630955555390054490059876013007363004327526400000000000000000, "Divisor sum(353#)" );
+  is( divisor_sum(pn_primorial(71),2), "12949784465615028275107011121945805610528825503288465119226912396970037707579655747291137846306343809131200618880146749230653882973421307691846381555612687582146340434261447200658536708625570145324567757917046739100833453606420350207262720000000000000000000000000000000000000000000000000", "sigma_2(353#)" );
   # Calc/FastCalc are slugs with this function, so tone things down.
   #is( znorder(82734587234,927208363107752634625923555185111613055040823736157),
   #    4360156780036190093445833597286118936800,
@@ -229,18 +239,26 @@ SKIP: {
 }
 
 ###############################################################################
+is( liouville(  560812147176208202656339069), -1, "liouville(a x b x c) = -1" );
+is( liouville(10571644062695614514374497899),  1, "liouville(a x b x c x d) = 1" );
+
+###############################################################################
 
 my $randprime;
 
-$randprime = random_prime(147573952590750158861, 340282366920939067930896100764782952647);
-cmp_ok( $randprime, '>=', 147573952590750158861, "random range prime isn't too small");
-cmp_ok( $randprime, '<=', 340282366920939067930896100764782952647, "random range prime isn't too big");
-ok( is_prime($randprime), "random range prime is prime");
+SKIP: {
+  skip "Skipping large random prime tests on broken 64-bit Perl", 6 if $broken64;
 
-$randprime = random_ndigit_prime(25);
-cmp_ok( $randprime, '>', 10**24, "random 25-digit prime isn't too small");
-cmp_ok( $randprime, '<', 10**25, "random 25-digit prime isn't too big");
-ok( is_prime($randprime), "random 25-digit prime is prime");
+  $randprime = random_prime(147573952590750158861, 340282366920939067930896100764782952647);
+  cmp_ok( $randprime, '>=', 147573952590750158861, "random range prime isn't too small");
+  cmp_ok( $randprime, '<=', 340282366920939067930896100764782952647, "random range prime isn't too big");
+  ok( is_prime($randprime), "random range prime is prime");
+
+  $randprime = random_ndigit_prime(25);
+  cmp_ok( $randprime, '>', 10**24, "random 25-digit prime isn't too small");
+  cmp_ok( $randprime, '<', 10**25, "random 25-digit prime isn't too big");
+  ok( is_prime($randprime), "random 25-digit prime is prime");
+}
 
 $randprime = random_nbit_prime(80);
 cmp_ok( $randprime, '>', 2**79, "random 80-bit prime isn't too small");
@@ -252,13 +270,17 @@ cmp_ok( $randprime, '>', 2**255, "random 256-bit strong prime isn't too small");
 cmp_ok( $randprime, '<', 2**256, "random 256-bit strong prime isn't too big");
 ok( is_prime($randprime), "random 80-bit strong prime is prime");
 
-SKIP: {
-  skip "Your 64-bit Perl is broken, skipping maurer prime", 3 if $broken64;
-  $randprime = random_maurer_prime(80);
-  cmp_ok( $randprime, '>', 2**79, "random 80-bit Maurer prime isn't too small");
-  cmp_ok( $randprime, '<', 2**80, "random 80-bit Maurer prime isn't too big");
-  ok( is_prime($randprime), "random 80-bit Maurer prime is prime");
-}
+$randprime = random_maurer_prime(80);
+cmp_ok( $randprime, '>', 2**79, "random 80-bit Maurer prime isn't too small");
+cmp_ok( $randprime, '<', 2**80, "random 80-bit Maurer prime isn't too big");
+ok( is_prime($randprime), "random 80-bit Maurer prime is prime");
+
+###############################################################################
+
+$randprime = random_nbit_prime(80);
+is( miller_rabin_random( $randprime, 20 ), 1, "80-bit prime passes Miller-Rabin with 20 random bases" );
+do { $randprime += 2 } while is_prime($randprime);
+is( miller_rabin_random( $randprime, 40 ), "0", "80-bit composite fails Miller-Rabin with 40 random bases" );
 
 ###############################################################################
 
@@ -302,3 +324,9 @@ sub check_pcbounds {
 }
 
 ###############################################################################
+
+sub linear_to_exp {   # Convert factor() output to factor_exp() output
+  my %exponents;
+  my @factors = grep { !$exponents{$_}++ } @_;
+  return (map { [$_, $exponents{$_}] } @factors);
+}

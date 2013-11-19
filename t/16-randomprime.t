@@ -7,12 +7,12 @@ use Test::More;
 #use Math::Random::MT::Auto qw/rand/;
 #sub rand { return 0.5; }
 use Math::Prime::Util qw/random_prime random_ndigit_prime random_nbit_prime
-                         random_maurer_prime is_prime
-                         prime_set_config/;
+                         random_maurer_prime random_proven_prime
+                         is_prime prime_set_config/;
 
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
-my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
 my $broken64 = (18446744073709550592 == ~0);
+my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
 my $maxbits = $use64 ? 64 : 32;
 
 my @random_to = (2, 3, 4, 5, 6, 7, 8, 9, 100, 1000, 1000000, 4294967295);
@@ -22,6 +22,13 @@ push @random_nbit_tests, (34) if $use64;
 @random_nbit_tests = (2 .. $maxbits) if $extra;
 
 my @random_ndigit_tests = (1 .. ($use64 ? 20 : 10));
+
+if ($use64 && $broken64) {
+  diag "Skipping some values for with broken 64-bit Perl\n";
+  @random_ndigit_tests = grep { $_ < 10 } @random_ndigit_tests;
+  @random_nbit_tests = grep { $_ < 50 } @random_nbit_tests;
+}
+
 
 my %ranges = (
   "2 to 20" => [2,19],
@@ -64,7 +71,8 @@ plan tests => 13+3+3+3
               + (2 * scalar (keys %ranges))
               + (2 * scalar @random_to)
               + (1 * scalar @random_ndigit_tests)
-              + (2 * scalar @random_nbit_tests)
+              + (3 * scalar @random_nbit_tests)
+              + 2 + 4
               + 0;
 
 my $infinity = 20**20**20;
@@ -138,31 +146,16 @@ foreach my $high (@random_to) {
   ok($inrange, "All returned values for $high were in the range" );
 }
 
-SKIP: {
-  if ($use64 && $broken64) {
-    my $num_ndigit_tests = scalar @random_ndigit_tests;
-    @random_ndigit_tests = grep { $_ < 15 } @random_ndigit_tests;
-    my $nskip = $num_ndigit_tests - scalar @random_ndigit_tests;
-    skip "Skipping random 15+ digit primes on broken 64-bit Perl", $nskip;
-  }
-}
 foreach my $digits ( @random_ndigit_tests ) {
   my $n = random_ndigit_prime($digits);
   ok ( length($n) == $digits && is_prime($n),
        "$digits-digit random prime is in range and prime");
 }
 
-SKIP: {
-  if ($use64 && $broken64) {
-    my $num_nbit_tests = scalar @random_nbit_tests;
-    @random_nbit_tests = grep { $_ < 50 } @random_nbit_tests;
-    my $nskip = $num_nbit_tests - scalar @random_nbit_tests;
-    skip "Skipping random 50+ bit primes on broken 64-bit Perl", 2*$nskip;
-  }
-}
 foreach my $bits ( @random_nbit_tests ) {
   check_bits( random_nbit_prime($bits), $bits, "nbit" );
   check_bits( random_maurer_prime($bits), $bits, "Maurer" );
+  check_bits( random_proven_prime($bits), $bits, "proven" );
 }
 
 sub check_bits {
@@ -172,4 +165,32 @@ sub check_bits {
   $max = Math::BigInt->new("$max") if ref($n) eq 'Math::BigInt';
   ok ( $n >= $min && $n <= $max && is_prime($n),
        "$bits-bit random $what prime is in range and prime");
+}
+prime_set_config(nobigint=>0);
+
+# Now check with custom irand
+{
+  my $seed = 2389743;
+  sub mysrand { $seed = $_[0]; }
+  #sub irand { $seed = (1103515245*$seed + 12345) % 4294967296; }
+  sub irand { $seed = ( 16807 * $seed ) % 2147483647; }
+  prime_set_config( irand => \&irand );
+}
+is( random_nbit_prime(20), 771283, "random 20-bit prime with custom irand" );
+is( random_ndigit_prime(9), 980824987, "random 9-digit with custom irand" );
+
+{
+  my $n = random_nbit_prime(80);
+  is( ref($n), 'Math::BigInt', "random 80-bit prime returns a BigInt" );
+  ok(    $n >= Math::BigInt->new(2)->bpow(79)
+      && $n <= Math::BigInt->new(2)->bpow(80),
+      "random 80-bit prime is in range" );
+}
+SKIP: {
+  skip "Skipping 30-digit random prime with broken 64-bit Perl", 2 if $broken64;
+  my $n = random_ndigit_prime(30);
+  is( ref($n), 'Math::BigInt', "random 30-digit prime returns a BigInt" );
+  ok(    $n >= Math::BigInt->new(10)->bpow(29)
+      && $n <= Math::BigInt->new(10)->bpow(30),
+      "random 30-digit prime is in range" );
 }

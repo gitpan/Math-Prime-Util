@@ -1,5 +1,54 @@
 Revision history for Perl module Math::Prime::Util
 
+0.33  2013-11-18
+
+    [API Changes]
+
+    - all_factors now includes 1 and n, making it identical to Pari's
+      divisors(n) function, but no longer identical to Math::Factor::XS's
+      factors(n) function.  This change allows consistency between
+      divisor_sum(n,0) and scalar all_factors(n).
+
+    [ADDED]
+
+    - factor_exp    returns factors as ([p,e],[p,e],...)
+    - liouville     -1^(Omega(n)), OEIS A008836
+    - partitions    partition function p(n), OEIS A000041
+
+    [FUNCTIONALITY AND PERFORMANCE]
+
+    - all_factors in scalar context returns sigma_0(n).
+
+    - exp_mangoldt defaults to XS for speed.
+
+    - Fixed Pure Perl 33- to 64-bit is_pseudoprime.
+
+    - prime_count uses Lehmer below a threshold (8000M), LMO above.
+      This keeps good performance while still using low memory.  A small
+      speedup for small (3-6M) inputs has been added.  Overall memory use
+      has been reduced by 2-4x for large inputs.
+
+    - Perl RiemannZeta changes:
+
+      - Borwein Zeta calculations done in BigInt instead of BigFloat (speed).
+
+      - Patch submitted for the frustrating Math::BigFloat defect RT 43692.
+        With the patch applied, we get much, much better accuracy.
+
+      - Accuracy updates, especially with fixed BigFloat.
+
+    - Lucas sequence called with bigints will return bigint objects.
+
+    - prime_iterator_object should now work with Iterator::Simple.
+
+    - chebyshev_theta and chebyshev_psi use segmented sieves.
+
+    - More aggressive pruning of tests with 64-bit Perl 5.6.  I'd like to
+      just kill support for systems that can't even add two numbers
+      correctly, but too many other modules want 5.6 support, and lots of
+      our functionality *does* work (e.g. primes, prime count, etc.).
+
+
 0.32  2013-10-13
 
     [ADDED]
