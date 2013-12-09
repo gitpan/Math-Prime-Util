@@ -2,10 +2,11 @@ package Math::Prime::Util;
 use strict;
 use warnings;
 use Carp qw/croak confess carp/;
+use Math::BigInt try=>"GMP,Pari";
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.34';
+  $Math::Prime::Util::VERSION = '0.35';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -161,30 +162,6 @@ our $_Infinity = 0+'inf';
 $_Infinity = 20**20**20 if 65535 > $_Infinity;   # E.g. Windows
 our $_Neg_Infinity = -$_Infinity;
 
-# Notes on how we're dealing with big integers:
-#
-#  1) if (ref($n) eq 'Math::BigInt')
-#     $n is a bigint, so do bigint stuff
-#
-#  2) if (defined $bigint::VERSION && $n > ~0)
-#     make $n into a bigint.  This is debatable, but they *did* hand us a
-#     string with a big integer in it.  The big gotcha here is that
-#     is_strong_lucas_pseudoprime does bigint computations, so it will load
-#     up Math::BigInt and there is no way to unload it.
-#
-#  3) if (ref($n) =~ /^Math::Big/)
-#     $n is a big int, float, or rat.  We probably want this as an int.
-#
-#  $n = $n->numify if $n < ~0 && ref($n) =~ /^Math::Big/;
-#     get us out of big math if we can
-#
-# Sadly, non-modern versions of bignum (5.12.4 and earlier) completely make a
-# mess of things like BigInt::numify and int(BigFloat).  Using int($x->bstr)
-# seems to work.
-# E.g.:
-#    $n = 33662485846146713;  $n->numify;   $n is now 3.36624858461467e+16
-
-
 sub prime_get_config {
   my %config = %_Config;
 
@@ -240,22 +217,11 @@ sub _validate_positive_integer {
   croak "Parameter '$n' must be >= $min" if defined $min && $n < $min;
   croak "Parameter '$n' must be <= $max" if defined $max && $n > $max;
 
-  if (ref($_[0])) {
-    $_[0] = Math::BigInt->new("$_[0]") unless ref($_[0]) eq 'Math::BigInt';
-    # Stupid workaround for Math::BigInt::GMP RT # 71548
-    if ($_[0]->bacmp(''.~0) <= 0) {
-      $_[0] = int($_[0]->bstr);
-    } else {
-      $_[0]->upgrade(undef) if $_[0]->upgrade();  # Stop BigFloat upgrade
-    }
+  $_[0] = Math::BigInt->new("$_[0]") unless ref($_[0]) eq 'Math::BigInt';
+  if ($_[0]->bacmp(''.~0) <= 0) {
+    $_[0] = int($_[0]->bstr);
   } else {
-    # The second term is used instead of '<=' to fix strings like ~0+delta.
-    if ( ! ($n < $_Config{'maxparam'} || int($n) eq $_Config{'maxparam'}) ) {
-      # We were handed a string representing a big number.
-      croak "Parameter '$n' outside of integer range" if !defined $bigint::VERSION;
-      $_[0] = Math::BigInt->new("$n"); # Make $n a proper bigint object
-      $_[0]->upgrade(undef) if $_[0]->upgrade();  # Stop BigFloat upgrade
-    }
+    $_[0]->upgrade(undef) if $_[0]->upgrade();  # Stop BigFloat upgrade
   }
   # One of these will be true:
   #     1) $n <= ~0 and $n is not a bigint
@@ -263,20 +229,10 @@ sub _validate_positive_integer {
   1;
 }
 
-# If you use bigint then call one of the approx/bounds/math functions, you'll
-# end up with full bignum turned on.  This seems non-optimal.  However, if I
-# don't do this, then you'll get wrong results and end up with it turned on
-# _anyway_.  As soon as anyone does something like log($n) where $n is a
-# Math::BigInt, it auto-upgrade and loads up Math::BigFloat.
-#
-# Ideally we'd notice we were causing this, and turn off Math::BigFloat after
-# we were done.
 sub _upgrade_to_float {
-  my($n) = @_;
-  return $n unless defined $Math::BigInt::VERSION || defined $Math::BigFloat::VERSION;
-  do { require Math::BigFloat; Math::BigFloat->import() }
-     if defined $Math::BigInt::VERSION && !defined $Math::BigFloat::VERSION;
-  return Math::BigFloat->new($n);   # $n is a Math::BigInt
+  do { require Math::BigFloat; Math::BigFloat->import(); }
+    if !defined $Math::BigFloat::VERSION;
+  return Math::BigFloat->new($_[0]);
 }
 
 my @_primes_small = (
@@ -284,15 +240,19 @@ my @_primes_small = (
    101,103,107,109,113,127,131,137,139,149,151,157,163,167,173,179,181,191,
    193,197,199,211,223,227,229,233,239,241,251,257,263,269,271,277,281,283,
    293,307,311,313,317,331,337,347,349,353,359,367,373,379,383,389,397,401,
-   409,419,421,431,433,439,443,449,457,461,463,467,479,487,491,499);
-my @_prime_count_small = (
-   0,0,1,2,2,3,3,4,4,4,4,5,5,6,6,6,6,7,7,8,8,8,8,9,9,9,9,9,9,10,10,
-   11,11,11,11,11,11,12,12,12,12,13,13,14,14,14,14,15,15,15,15,15,15,
-   16,16,16,16,16,16,17,17,18,18,18,18,18,18,19);
-#my @_prime_next_small = (
-#   2,2,3,5,5,7,7,11,11,11,11,13,13,17,17,17,17,19,19,23,23,23,23,
-#   29,29,29,29,29,29,31,31,37,37,37,37,37,37,41,41,41,41,43,43,47,
-#   47,47,47,53,53,53,53,53,53,59,59,59,59,59,59,61,61,67,67,67,67,67,67,71);
+   409,419,421,431,433,439,443,449,457,461,463,467,479,487,491,499,503,509);
+sub _tiny_prime_count {
+  my($n) = @_;
+  return if $n >= $_primes_small[-1];
+  my $j = $#_primes_small;
+  my $i = 1 + ($n >> 4);
+  while ($i < $j) {
+    my $mid = ($i+$j)>>1;
+    if ($_primes_small[$mid] <= $n) { $i = $mid+1; }
+    else                            { $j = $mid;   }
+  }
+  return $i-1;
+}
 
 
 
@@ -318,8 +278,6 @@ sub primes {
       $sref = Math::Prime::Util::GMP::primes($low,$high);
       if ($high > ~0) {
         # Convert the returned strings into BigInts
-        croak "Internal error: large value without bigint loaded."
-              unless defined $Math::BigInt::VERSION;
         @$sref = map { Math::BigInt->new("$_") } @$sref;
       } else {
         @$sref = map { int($_) } @$sref;
@@ -480,7 +438,6 @@ sub primes {
       $_big_gcd_use = 0;
       return;
     }
-    croak "Internal error: make_big_gcds needs Math::BigInt!" unless defined $Math::BigInt::VERSION;
     if (Math::BigInt->config()->{lib} !~ /^Math::BigInt::(GMP|Pari)/) {
       $_big_gcd_use = 0;
       return;
@@ -874,10 +831,6 @@ sub primes {
 
     if (!defined $_random_ndigit_ranges[$digits]) {
       if ($bigdigits) {
-        if (!defined $Math::BigInt::VERSION) {
-          eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-          or do { croak "Cannot load Math::BigInt"; };
-        }
         my $low  = Math::BigInt->new('10')->bpow($digits-1);
         my $high = Math::BigInt->new('10')->bpow($digits);
         # Just pull the range in to the nearest odd.
@@ -918,12 +871,6 @@ sub primes {
     croak "Mid-size random primes not supported on broken old Perl"
       if $] < 5.008 && $bits > 49
       && $_Config{'maxbits'} > 32 && $bits <= $_Config{'maxbits'};
-    if ($bits > $_Config{'maxbits'}) {
-      if (!defined $Math::BigInt::VERSION) {
-        eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-        or do { croak "Cannot load Math::BigInt"; };
-      }
-    }
 
     # Fouque and Tibouchi (2011) Algorithm 1 (basic)
     # Modified to make sure the nth bit is always set.
@@ -1069,18 +1016,12 @@ sub primes {
       return ($n, $cert);
     }
 
-    if (!defined $Math::BigInt::VERSION) {
-      eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-      or do { croak "Cannot load Math::BigInt"; };
-    }
-    if (!defined $Math::BigFloat::VERSION) {
-      eval { require Math::BigFloat; Math::BigFloat->import(); 1; }
-      or do { croak "Cannot load Math::BigFloat"; };
-    }
-
     # Set verbose to 3 to get pretty output like Crypt::Primes
     my $verbose = $_Config{'verbose'};
     local $| = 1 if $verbose > 2;
+
+    do { require Math::BigFloat; Math::BigFloat->import(); }
+      if !defined $Math::BigFloat::VERSION;
 
     # Ignore Maurer's g and c that controls how much trial division is done.
     my $r = Math::BigFloat->new("0.5");   # relative size of the prime q
@@ -1171,10 +1112,6 @@ sub primes {
     _validate_num($t, 128) || _validate_positive_integer($t, 128);
     croak "Random strong primes must be >= 173 bits on old Perl" if $] < 5.008 && $_Config{'maxbits'} > 32 && $t < 173;
 
-    if (!defined $Math::BigInt::VERSION) {
-      eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-      or do { croak "Cannot load Math::BigInt"; };
-    }
     _set_randf() unless defined $_RANDF;
 
     my $l   = (($t+1) >> 1) - 2;
@@ -1234,43 +1171,26 @@ sub primorial {
   my($n) = @_;
   _validate_num($n) || _validate_positive_integer($n);
 
-  my $pn = 1;
-  if ($n >= (($_Config{'maxbits'} == 32) ? 29 : 53)) {
-    if (!defined $Math::BigInt::VERSION) {
-      eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-      or do { croak "Cannot load Math::BigInt"; };
-    }
-    $pn = Math::BigInt->bone();
-  }
-  # Make sure we use their type if they passed one in.
-  $pn = $_[0]->copy->bone() if ref($_[0]) eq 'Math::BigInt';
+  return Math::BigInt->new(''.Math::Prime::Util::GMP::primorial($n))
+    if $_HAVE_GMP && defined &Math::Prime::Util::GMP::primorial;
 
-  if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::primorial) {
-    if (ref($pn) eq 'Math::BigInt') {
-      $pn->bzero->badd( ''.Math::Prime::Util::GMP::primorial($n) );
-    } else {
-      $pn = int( Math::Prime::Util::GMP::primorial($n) );
-    }
-  } else {
-    forprimes(sub { $pn *= $_ }, $n);
-  }
+  my $max = ($_Config{'maxbits'} == 32) ? 29 : 53;
+  my $pn = (ref($_[0]) eq 'Math::BigInt') ? $_[0]->copy->bone()
+         : ($n >= $max) ? Math::BigInt->bone()
+         : 1;
+  forprimes { $pn *= $_ } $n;
   return $pn;
 }
 
 sub pn_primorial {
   my($n) = @_;
-  return primorial(nth_prime($n))
-    unless $_HAVE_GMP && defined &Math::Prime::Util::GMP::pn_primorial;
 
-  _validate_num($n) || _validate_positive_integer($n);
-  my $pn = Math::Prime::Util::GMP::pn_primorial($n);
-  return int($pn) if $n < (($_Config{'maxbits'} == 32) ? 10 : 16);
-  return $_[0]->copy->bzero->badd("$pn") if ref($_[0]) eq 'Math::BigInt';
-  if (!defined $Math::BigInt::VERSION) {
-    eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-    or do { croak "Cannot load Math::BigInt"; };
+  if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::pn_primorial) {
+    _validate_num($n) || _validate_positive_integer($n);
+    return Math::BigInt->new(''.Math::Prime::Util::GMP::pn_primorial($n))
   }
-  return Math::BigInt->new("$pn");
+
+  return primorial(nth_prime($n));
 }
 
 sub consecutive_integer_lcm {
@@ -1278,31 +1198,23 @@ sub consecutive_integer_lcm {
   _validate_num($n) || _validate_positive_integer($n);
   return 0 if $n < 1;
 
-  my $pn = 1;
   my $max = ($_Config{'maxbits'} == 32) ? 22 : ($] < 5.008) ? 43 : 46;
-  if ($n >= $max) {
-    if (!defined $Math::BigInt::VERSION) {
-      eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-      or do { croak "Cannot load Math::BigInt"; };
-    }
-    $pn = Math::BigInt->bone();
-  }
-  # Ensure we use their type
-  $pn = $_[0]->copy->bone() if ref($_[0]) eq 'Math::BigInt';
 
   if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::consecutive_integer_lcm) {
     my $clcm = Math::Prime::Util::GMP::consecutive_integer_lcm($n);
-    return int($clcm) unless ref($pn) eq 'Math::BigInt';
-    return $pn->bzero->badd("$clcm");
+    return ($n < $max) ? int($clcm) : Math::BigInt->new("$clcm");
   }
 
+  my $pn = (ref($_[0]) eq 'Math::BigInt') ? $_[0]->copy->bone()
+         : ($n >= $max) ? Math::BigInt->bone()
+         : 1;
   forprimes {
     my($p_power, $pmin) = ($_, int($n/$_));
     $p_power *= $_ while $p_power <= $pmin;
     $pn *= $p_power;
   } $n;
 
-  return (ref($pn) eq 'Math::BigInt') ? $pn : int($pn);
+  return $pn;
 }
 
 
@@ -1312,8 +1224,7 @@ sub all_factors {
   # In scalar context, returns sigma_0(n).  Very fast.
   return divisor_sum($n,0) unless wantarray;
 
-  my $use_bigint = defined $bigint::VERSION
-             || !($n < $_Config{'maxparam'} || int($n) eq $_Config{'maxparam'});
+  my $use_bigint = !($n < $_Config{'maxparam'} || int($n) eq $_Config{'maxparam'});
   my @factors = factor($n);
   if ($n <= 0) { @factors = (); return @factors; }
   my %all_factors;
@@ -1554,13 +1465,6 @@ sub divisor_sum {
 
   return _XS_divisor_sum($n, $k) if $n <= $_XS_MAXVAL && !$will_overflow;
 
-  if ($will_overflow) {
-    if (!defined $Math::BigInt::VERSION) {
-      eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-      or do { croak "Cannot load Math::BigInt"; };
-    }
-  }
-
   # The standard way is:
   #    my $pk = $f ** $k;  $product *= ($pk ** ($e+1) - 1) / ($pk - 1);
   # But we get less overflow using:
@@ -1675,13 +1579,10 @@ sub partitions {
   my($n) = @_;
   return 1 if defined $n && $n <= 0;
   _validate_num($n) || _validate_positive_integer($n);
-  if (!defined $Math::BigInt::VERSION) {
-    eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-    or do { croak "Cannot load Math::BigInt"; };
-  }
-  if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::partitions) {
-    return Math::BigInt->new( '' . Math::Prime::Util::GMP::partitions($n) );
-  }
+
+  return Math::BigInt->new(''.Math::Prime::Util::GMP::partitions($n))
+    if $_HAVE_GMP && defined &Math::Prime::Util::GMP::partitions;
+
   my $d = int(sqrt($n+1));
   my @pent = (1, map { (($_*(3*$_+1))>>1, (($_+1)*(3*$_+2))>>1) } 1 .. $d);
   my @part = (Math::BigInt->bone);
@@ -1710,12 +1611,14 @@ sub chebyshev_psi {
   _validate_num($n) || _validate_positive_integer($n);
   return 0 if $n <= 1;
   return _XS_chebyshev_psi($n) if $n <= $_XS_MAXVAL;
-  my ($sum, $logn, $mults_are_one) = (0.0, log($n), 0);
+  my ($sum, $logn, $sqrtn) = (0.0, log($n), int(sqrt($n)));
   forprimes {
     my $logp = log($_);
-    $mults_are_one = 1 if !$mults_are_one && $_ > int($n/$_);
-    $sum += ($mults_are_one) ? $logp : $logp * int($logn/$logp+1e-15);
-  } $n;
+    $sum += $logp * int($logn/$logp+1e-15);
+  } $sqrtn;
+  forprimes {
+    $sum += log($_);
+  } $sqrtn+1, $n;
   return $sum;
 }
 
@@ -1730,10 +1633,6 @@ sub carmichael_lambda {
   my @pe = ($n <= $_XS_MAXVAL) ? _XS_factor_exp($n) : factor_exp($n);
   $pe[0]->[1]-- if $pe[0]->[0] == 2 && $pe[0]->[1] > 2;
 
-  if (!defined $Math::BigInt::VERSION) {
-    eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-    or do { croak "Cannot load Math::BigInt"; };
-  }
   my $lcm = Math::BigInt::blcm(
     map { $_->[0]->copy->bpow($_->[1]->copy->bdec)->bmul($_->[0]->copy->bdec) }
     map { [ map { Math::BigInt->new("$_") } @$_ ] }
@@ -1750,10 +1649,7 @@ sub znorder {
   return if $n <= 0;
   return (undef,1)[$a] if $a <= 1;
   return 1 if $n == 1;
-  if (!defined $Math::BigInt::VERSION) {
-    eval { require Math::BigInt; Math::BigInt->import(try=>'GMP,Pari'); 1; }
-    or do { croak "Cannot load Math::BigInt"; };
-  }
+
   # Sadly, Calc/FastCalc are horrendously slow for this function.
   return if Math::BigInt::bgcd($a, $n) > 1;
   # Method 1:  check all a^k 1 .. $n-1.
@@ -1819,14 +1715,9 @@ sub znorder {
 sub _generic_is_prime {
   my($n) = @_;
   return 0 if defined $n && $n < 2;
-  if (!_validate_num($n)) {
-    $n = Math::BigInt->new("$n")
-       if defined $Math::BigInt::VERSION && ref($_[0]) ne 'Math::BigInt';
-    _validate_positive_integer($n);
-  }
+  _validate_num($n) || _validate_positive_integer($n);
 
-  return _XS_is_prime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+  return _XS_is_prime($n) if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_prime($n) if $_HAVE_GMP;
 
   if ($n < 7) { return ($n == 2) || ($n == 3) || ($n == 5) ? 2 : 0; }
@@ -1837,14 +1728,9 @@ sub _generic_is_prime {
 sub _generic_is_prob_prime {
   my($n) = @_;
   return 0 if defined $n && $n < 2;
-  if (!_validate_num($n)) {
-    $n = Math::BigInt->new("$n")
-       if defined $Math::BigInt::VERSION && ref($_[0]) ne 'Math::BigInt';
-    _validate_positive_integer($n);
-  }
+  _validate_num($n) || _validate_positive_integer($n);
 
-  return _XS_is_prob_prime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+  return _XS_is_prob_prime($n) if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_prob_prime($n) if $_HAVE_GMP;
 
   if ($n < 7) { return ($n == 2) || ($n == 3) || ($n == 5) ? 2 : 0; }
@@ -1856,21 +1742,15 @@ sub _generic_next_prime {
   my($n) = @_;
   _validate_num($n) || _validate_positive_integer($n);
 
-  # If we have XS and n is either small or bigint is unknown, then use XS.
   return _XS_next_prime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL
-    && (!defined $bigint::VERSION || $n < $_Config{'maxprime'});
-
-  # Try to stick to the plan with respect to maximum return values.
-  return 0 if ref($_[0]) ne 'Math::BigInt' && $n >= $_Config{'maxprime'};
+    if $n <= $_XS_MAXVAL && $n < $_Config{'maxprime'};
 
   if ($_HAVE_GMP) {
-    # If $n is a bigint object, try to make the return value the same
-    return (ref($_[0]) eq 'Math::BigInt')
-        ?  $_[0]->copy->bzero->badd(''.Math::Prime::Util::GMP::next_prime($n))
-        :  Math::Prime::Util::GMP::next_prime($n);
+    my $r = Math::Prime::Util::GMP::next_prime($n);
+    return (ref($n) eq 'Math::BigInt' || $n >= $_Config{'maxprime'})
+           ?  Math::BigInt->new("$r")  :  int($r);
   }
-  # Pass original argument to preserve bigint status
+
   return Math::Prime::Util::PP::next_prime($_[0]);
 }
 
@@ -1879,14 +1759,15 @@ sub _generic_prev_prime {
   _validate_num($n) || _validate_positive_integer($n);
 
   return _XS_prev_prime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
+
   if ($_HAVE_GMP) {
-    # If $n is a bigint object, try to make the return value the same
-    return (ref($_[0]) eq 'Math::BigInt')
-        ?  $n->copy->bzero->badd(''.Math::Prime::Util::GMP::prev_prime($n))
-        :  Math::Prime::Util::GMP::prev_prime($n);
+    my $r = Math::Prime::Util::GMP::prev_prime($n);
+    return (ref($n) eq 'Math::BigInt' && $r > $_Config{'maxprime'})
+           ?  Math::BigInt->new("$r")  :  int($r);
   }
-  return Math::Prime::Util::PP::prev_prime($n);
+
+  return Math::Prime::Util::PP::prev_prime($_[0]);
 }
 
 sub prime_count {
@@ -1910,10 +1791,8 @@ sub prime_count {
       #if ($est_lehmer < $est_segment) {
       if ( ($high / ($high-$low+1)) < 100 ) {
         my $count;
-        $count  =   ($high > 8_000_000_000) ? _XS_LMO_pi($high)  : _XS_lehmer_pi($high);
-        if ($low > 2) {
-          $count -= ($low  > 8_000_000_000) ? _XS_LMO_pi($low-1) : _XS_lehmer_pi($low-1);
-        }
+        $count  =  _XS_LMO_pi($high);
+        $count -=  _XS_LMO_pi($low-1) if $low > 2;
         return $count;
       }
     }
@@ -1932,7 +1811,9 @@ sub nth_prime {
   my($n) = @_;
   _validate_num($n) || _validate_positive_integer($n);
 
-  return _XS_nth_prime($n) if $_Config{'xs'} && $n <= $_Config{'maxprimeidx'};
+  return _XS_nth_prime($n)
+    if $n <= $_XS_MAXVAL && $n < $_Config{'maxprimeidx'};
+
   return Math::Prime::Util::PP::nth_prime($n);
 }
 
@@ -1940,12 +1821,12 @@ sub factor {
   my($n) = @_;
   _validate_num($n) || _validate_positive_integer($n);
 
-  return _XS_factor($n) if ref($n) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+  return _XS_factor($n) if $n <= $_XS_MAXVAL;
 
   if ($_HAVE_GMP) {
     my @factors = Math::Prime::Util::GMP::factor($n);
     if (ref($_[0]) eq 'Math::BigInt') {
-      @factors = map { ($_ > ~0) ? $n->copy->bzero->badd(''.$_) : $_ } @factors;
+      @factors = map { ($_ > ~0) ? Math::BigInt->new(''.$_) : $_ } @factors;
     }
     return @factors;
   }
@@ -1995,7 +1876,7 @@ sub is_pseudoprime {
   _validate_num($n) || _validate_positive_integer($n);
   _validate_num($a) || _validate_positive_integer($a);
   return _XS_is_pseudoprime($n, $a)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_pseudoprime($n, $a)
     if $_HAVE_GMP && defined &Math::Prime::Util::GMP::is_pseudoprime;
   return Math::Prime::Util::PP::is_pseudoprime($n, $a);
@@ -2006,7 +1887,7 @@ sub is_strong_pseudoprime {
   _validate_num($n) || _validate_positive_integer($n);
   # validate bases?
   return _XS_miller_rabin($n, @_)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_strong_pseudoprime($n, @_) if $_HAVE_GMP;
   return Math::Prime::Util::PP::miller_rabin($n, @_);
 }
@@ -2015,7 +1896,7 @@ sub is_lucas_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   return _XS_is_lucas_pseudoprime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_lucas_pseudoprime("$n")
     if $_HAVE_GMP && defined &Math::Prime::Util::GMP::is_lucas_pseudoprime;
   return Math::Prime::Util::PP::is_lucas_pseudoprime($n);
@@ -2025,7 +1906,7 @@ sub is_strong_lucas_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   return _XS_is_strong_lucas_pseudoprime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_strong_lucas_pseudoprime("$n")
     if $_HAVE_GMP;
   return Math::Prime::Util::PP::is_strong_lucas_pseudoprime($n);
@@ -2035,7 +1916,7 @@ sub is_extra_strong_lucas_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   return _XS_is_extra_strong_lucas_pseudoprime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_extra_strong_lucas_pseudoprime("$n")
     if $_HAVE_GMP
     && defined &Math::Prime::Util::GMP::is_extra_strong_lucas_pseudoprime;
@@ -2052,7 +1933,7 @@ sub is_almost_extra_strong_lucas_pseudoprime {
     || _validate_positive_integer($inc, 1, 256);
   }
   return _XS_is_almost_extra_strong_lucas_pseudoprime($n, $inc)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_almost_extra_strong_lucas_pseudoprime("$n", $inc)
     if $_HAVE_GMP
     && defined &Math::Prime::Util::GMP::is_almost_extra_strong_lucas_pseudoprime;
@@ -2063,7 +1944,7 @@ sub is_frobenius_underwood_pseudoprime {
   my($n) = shift;
   _validate_num($n) || _validate_positive_integer($n);
   return _XS_is_frobenius_underwood_pseudoprime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_frobenius_underwood_pseudoprime("$n")
     if $_HAVE_GMP
     && defined &Math::Prime::Util::GMP::is_frobenius_underwood_pseudoprime;
@@ -2087,7 +1968,7 @@ sub lucas_sequence {
     if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL
     && ref($_[3]) ne 'Math::BigInt' && $k <= $_XS_MAXVAL;
   if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::lucas_sequence) {
-    return map { ($_ > ~0) ? $n->copy->bzero->badd(''.$_) : $_ }
+    return map { ($_ > ~0) ? Math::BigInt->new(''.$_) : $_ }
            Math::Prime::Util::GMP::lucas_sequence($n, $P, $Q, $k);
   }
   return Math::Prime::Util::PP::lucas_sequence($n, $P, $Q, $k);
@@ -2177,7 +2058,7 @@ sub is_provable_prime {
   _validate_num($n) || _validate_positive_integer($n);
 
   return _XS_is_prime($n)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL;
+    if $n <= $_XS_MAXVAL;
   return Math::Prime::Util::GMP::is_provable_prime($n)
          if $_HAVE_GMP && defined &Math::Prime::Util::GMP::is_provable_prime;
 
@@ -2199,7 +2080,7 @@ sub is_provable_prime_with_cert {
   _validate_num($n) || _validate_positive_integer($n);
   my $header = "[MPU - Primality Certificate]\nVersion 1.0\n\nProof for:\nN $n\n\n";
 
-  if (ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL) {
+  if ($n <= $_XS_MAXVAL) {
     my $isp = _XS_is_prime("$n");
     return ($isp, '') unless $isp == 2;
     return (2, "[MPU - Primality Certificate]\nVersion 1.0\n\nProof for:\nN $n\n\nType Small\nN $n\n");
@@ -2283,7 +2164,10 @@ sub prime_count_approx {
   my($x) = @_;
   _validate_num($x) || _validate_positive_integer($x);
 
-  return $_prime_count_small[$x] if $x <= $#_prime_count_small;
+  # With XS using 30k tables, this is super fast.
+  return _XS_prime_count(2,$x) if $x < $_XS_MAXVAL && $x < 3_000_000;
+  # Give an exact answer for what we have in our little table.
+  return _tiny_prime_count($x) if $x < $_primes_small[-1];
 
   # Below 2^58th or so, all differences between the high precision and C double
   # precision result are less than 0.5.
@@ -2296,6 +2180,7 @@ sub prime_count_approx {
 
   #    Method             10^10 %error  10^19 %error
   #    -----------------  ------------  ------------
+  #    n/(log(n)-1)        .22%          .06%
   #    average bounds      .01%          .0002%
   #    li(n)               .0007%        .00000004%
   #    li(n)-li(n^.5)/2    .0004%        .00000001%
@@ -2330,9 +2215,13 @@ sub prime_count_lower {
   my($x) = @_;
   _validate_num($x) || _validate_positive_integer($x);
 
-  return $_prime_count_small[$x] if $x <= $#_prime_count_small;
+  # With XS using 30k tables, this is super fast.
+  return _XS_prime_count(2,$x) if $x < $_XS_MAXVAL && $x < 3_000_000;
+  # Give an exact answer for what we have in our little table.
+  return _tiny_prime_count($x) if $x < $_primes_small[-1];
 
-  $x = _upgrade_to_float($x) if ref($_[0]) eq 'Math::BigInt';
+  $x = _upgrade_to_float($x)
+    if ref($x) eq 'Math::BigInt' || ref($_[0]) eq 'Math::BigInt';
 
   my $flogx = log($x);
 
@@ -2376,9 +2265,13 @@ sub prime_count_upper {
   my($x) = @_;
   _validate_num($x) || _validate_positive_integer($x);
 
-  return $_prime_count_small[$x] if $x <= $#_prime_count_small;
+  # With XS using 30k tables, this is super fast.
+  return _XS_prime_count(2,$x) if $x < $_XS_MAXVAL && $x < 3_000_000;
+  # Give an exact answer for what we have in our little table.
+  return _tiny_prime_count($x) if $x < $_primes_small[-1];
 
-  $x = _upgrade_to_float($x) if ref($_[0]) eq 'Math::BigInt';
+  $x = _upgrade_to_float($x)
+    if ref($x) eq 'Math::BigInt' || ref($_[0]) eq 'Math::BigInt';
 
   # Chebyshev:            1.25506*x/logx       x >= 17
   # Rosser & Schoenfeld:  x/(logx-3/2)         x >= 67
@@ -2433,7 +2326,6 @@ sub prime_count_upper {
     #else                    { $a = 2.51;  } # Dusart 1999, page 14
 
     # Old versions of Math::BigFloat will do the Wrong Thing with this.
-    #return int( ($x/$flogx) * (1.0 + 1.0/$flogx + $a/($flogx*$flogx)) + 1.0 );
     $result = ($x/$flogx) * (1.0 + 1.0/$flogx + $a/($flogx*$flogx)) + 1.0;
   }
 
@@ -2449,7 +2341,8 @@ sub nth_prime_approx {
 
   return $_primes_small[$n] if $n <= $#_primes_small;
 
-  $n = _upgrade_to_float($n) if ref($_[0]) eq 'Math::BigInt';
+  $n = _upgrade_to_float($n)
+    if ref($n) eq 'Math::BigInt' || $n >= $_Config{'maxprimeidx'};
 
   my $flogn  = log($n);
   my $flog2n = log($flogn);
@@ -2488,11 +2381,6 @@ sub nth_prime_approx {
   # $approx = -0.025 is better for the last, but it gives problems with some
   # other code that always wants the asymptotic approximation to be >= actual.
 
-  if ( ($approx >= ~0) && (ref($approx) ne 'Math::BigFloat') ) {
-    return $_Config{'maxprime'} if $n <= $_Config{'maxprimeidx'};
-    croak "nth_prime_approx($n) overflow";
-  }
-
   return int($approx + 0.5);
 }
 
@@ -2503,7 +2391,7 @@ sub nth_prime_lower {
 
   return $_primes_small[$n] if $n <= $#_primes_small;
 
-  $n = _upgrade_to_float($n) if ref($_[0]) eq 'Math::BigInt';
+  $n = _upgrade_to_float($n) if $n > $_Config{'maxprimeidx'} || $n > 2**45;
 
   my $flogn  = log($n);
   my $flog2n = log($flogn);  # Note distinction between log_2(n) and log^2(n)
@@ -2512,11 +2400,6 @@ sub nth_prime_lower {
   #my $lower = $n * ($flogn + $flog2n - 1.0 + (($flog2n-2.25)/$flogn));
   # Dusart 2010 page 2, for all n >= 3
   my $lower = $n * ($flogn + $flog2n - 1.0 + (($flog2n-2.10)/$flogn));
-
-  if ( ($lower >= ~0) && (ref($lower) ne 'Math::BigFloat') ) {
-    return $_Config{'maxprime'} if $n <= $_Config{'maxprimeidx'};
-    croak "nth_prime_lower($n) overflow";
-  }
 
   return int($lower);
 }
@@ -2528,7 +2411,7 @@ sub nth_prime_upper {
 
   return $_primes_small[$n] if $n <= $#_primes_small;
 
-  $n = _upgrade_to_float($n) if ref($_[0]) eq 'Math::BigInt';
+  $n = _upgrade_to_float($n) if $n > $_Config{'maxprimeidx'} || $n > 2**45;
 
   my $flogn  = log($n);
   my $flog2n = log($flogn);  # Note distinction between log_2(n) and log^2(n)
@@ -2544,11 +2427,6 @@ sub nth_prime_upper {
     $upper = $n * ( $flogn  +  0.6000 * $flog2n );
   } else {
     $upper = $n * ( $flogn  +  $flog2n );
-  }
-
-  if ( ($upper >= ~0) && (ref($upper) ne 'Math::BigFloat') ) {
-    return $_Config{'maxprime'} if $n <= $_Config{'maxprimeidx'};
-    croak "nth_prime_upper($n) overflow";
   }
 
   return int($upper + 1.0);
@@ -2631,7 +2509,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.34
+Version 0.35
 
 
 =head1 SYNOPSIS
@@ -2772,14 +2650,12 @@ L<Math::Factoring>, and L<Math::Primality> (when the GMP module is available).
 For numbers in the 10-20 digit range, it is often orders of magnitude faster.
 Typically it is faster than L<Math::Pari> for 64-bit operations.
 
-All operations support both Perl UV's (32-bit or 64-bit) and bignums.  It
-requires no external software for big number support, as there are Perl
-implementations included that solely use Math::BigInt and Math::BigFloat.
-B<If you want high performance with big numbers (larger than Perl's UV
-size), you should install L<Math::Prime::Util::GMP>>.  This will be a
-recurring theme throughout this documentation -- while all bignum operations
-are supported in pure Perl, most methods will be much slower than the C+GMP
-alternative.
+All operations support both Perl UV's (32-bit or 64-bit) and bignums.  If
+you want high performance with big numbers (larger than Perl's native 32-bit
+or 64-bit size), you should install L<Math::Prime::Util::GMP> and
+L<Math::BigInt::GMP>.  This will be a recurring theme throughout this
+documentation -- while all bignum operations are supported in pure Perl,
+most methods will be much slower than the C+GMP alternative.
 
 The module is thread-safe and allows concurrency between Perl threads while
 still sharing a prime cache.  It is not itself multi-threaded.  See the
@@ -2806,15 +2682,9 @@ bigint and expression inputs.
 
 =head1 BIGNUM SUPPORT
 
-By default all functions support bignums.  With a few exceptions, the module
-will not turn on bignum support for you -- you will need to C<use bigint>,
-C<use bignum>, or pass in a L<Math::BigInt> or L<Math::BigFloat> object as
-your input.  The functions take some care to perform all bignum operations
-using the same class as was passed in, allowing the module to work properly
-with Calc, FastCalc, GMP, Pari, etc.  You should try to install
-L<Math::Prime::Util::GMP> if you plan to use bigints with this module, as
-it will make it run much faster.
-
+By default all functions support bignums.  For performance, you should
+install and use L<Math::BigInt::GMP> or L<Math::BigInt::Pari>, and
+L<Math::Prime::Util::GMP>.
 
 Some of the functions, including:
 
@@ -3037,13 +2907,13 @@ handles iterating across bigints.
 
 Returns the Prime Count function C<Pi(n)>, also called C<primepi> in some
 math packages.  When given two arguments, it returns the inclusive
-count of primes between the ranges (e.g. C<(13,17)> returns 2, C<14,17>
-and C<13,16> return 1, and C<14,16> returns 0).
+count of primes between the ranges.  E.g. C<(13,17)> returns 2, C<(14,17)>
+and C<(13,16)> return 1, C<(14,16)> returns 0.
 
 The current implementation decides based on the ranges whether to use a
-segmented sieve with a fast bit count, or the LMO algorithm.  The former
-is preferred for small sizes as well as small ranges.  The latter is much
-faster for large ranges.
+segmented sieve with a fast bit count, or the extended LMO algorithm.
+The former is preferred for small sizes as well as small ranges.
+The latter is much faster for large ranges.
 
 The segmented sieve is very memory efficient and is quite fast even with
 large base values.  Its complexity is approximately C<O(sqrt(a) + (b-a))>,
@@ -3051,12 +2921,12 @@ where the first term is typically negligible below C<~ 10^11>.  Memory use
 is proportional only to C<sqrt(a)>, with total memory use under 1MB for any
 base under C<10^14>.
 
-The LMO method has complexity approximately C<O(b^0.7) + O(a^0.7)>.  It
-does use more memory however.  A calculation of C<Pi(10^14)> completes in
-under 1 minute, C<Pi(10^15)> in under 5 minutes, and C<Pi(10^16)> in under
-20 minutes, however using about 500MB of peak memory for the last.
-In contrast, even primesieve using 12 cores would take over a week on this
-same computer to determine C<Pi(10^16)>.
+The extended LMO method has complexity approximately
+C<O(b^(2/3)) + O(a^(2/3))>, and also uses low memory.
+A calculation of C<Pi(10^14)> completes in a few seconds, C<Pi(10^15)>
+in well under a minute, and C<Pi(10^16)> in about one minute.  In
+contrast, even parallel primesieve would take over a week on a
+similar machine to determine C<Pi(10^16)>.
 
 Also see the function L</prime_count_approx> which gives a very good
 approximation to the prime count, and L</prime_count_lower> and
@@ -3119,25 +2989,22 @@ the upper and lower bounds.
 Returns the prime that lies in index C<n> in the array of prime numbers.  Put
 another way, this returns the smallest C<p> such that C<Pi(p) E<gt>= n>.
 
-For relatively small inputs (below 2 million or so), this does a sieve over
+For relatively small inputs (below 1 million or so), this does a sieve over
 a range containing the nth prime, then counts up to the number.  This is fairly
-efficient in time and memory.  For larger values, a binary search is performed
-between the Dusart 2010 bounds using Riemann's R function, then a fast
-prime counting method is used to calculate the count up to that point, then
-sieving is done in the typically small difference zone.
+efficient in time and memory.  For larger values, create a low-biased estimate
+using the inverse logarithmic integral, use a fast prime count, then sieve in
+the small difference.
 
-While this method is hundreds of times faster than generating primes, and
+While this method is thousands of times faster than generating primes, and
 doesn't involve big tables of precomputed values, it still can take a fair
-amount of time and space for large inputs.  Calculating the C<10^11th> prime
-takes a bit under 2 seconds, the C<10^12th> prime takes 10 seconds, and the
-C<10^13th> prime (323780508946331) takes 1 minute.  Think about whether
-a bound or approximation would be acceptable, as they can be computed
-analytically.
+amount of time for large inputs.  Calculating the C<10^12th> prime takes
+about 1 second, the C<10^13th> prime takes under 10 seconds, and the
+C<10^14th> prime (3475385758524527) takes under one minute.  Think about
+whether a bound or approximation would be acceptable, as they can be
+computed analytically.
 
-If the bigint or bignum module is not in use, this will generate an overflow
-exception if the number requested would result in a prime that cannot fit in
-a native type.  If bigints are in use, then the calculation will proceed,
-though it will be exceedingly slow.  A later version of
+If the result is larger than a native integer size (32-bit or 64-bit), the
+result will take a very long time.  A later version of
 L<Math::Prime::Util::GMP> may include this functionality which would help for
 32-bit machines.
 
@@ -4964,6 +4831,7 @@ Perl modules, counting the primes to C<800_000_000> (800 million):
 
   Time (s)   Module                      Version  Notes
   ---------  --------------------------  -------  -----------
+       0.002 Math::Prime::Util           0.35     using extended LMO
        0.007 Math::Prime::Util           0.12     using Lehmer's method
        0.27  Math::Prime::Util           0.17     segmented mod-30 sieve
        0.39  Math::Prime::Util::PP       0.24     Perl (Lehmer's method)
@@ -5203,6 +5071,10 @@ Gabriel Mincu, "An Asymptotic Expansion", I<Journal of Inequalities in Pure and 
 
 =item *
 
+Christian Bau, "The Extended Meissel-Lehmer Algorithm", 2003, preprint with example C++ implementation.  Very detailed implementation-specific paper which was used for the implementation here.  Highly recommended for implementing a sieve-based LMO.  L<http://cs.swan.ac.uk/~csoliver/ok-sat-library/OKplatform/ExternalSources/sources/NumberTheory/ChristianBau/>
+
+=item *
+
 David M. Smith, "Multiple-Precision Exponential Integral and Related Functions", I<ACM Transactions on Mathematical Software>, v37, n4, 2011.  L<http://myweb.lmu.edu/dmsmith/toms2011.pdf>
 
 =item *
@@ -5262,7 +5134,7 @@ John Brillhart, D. H. Lehmer, and J. L. Selfridge, "New Primality Criteria and F
 
 =head1 COPYRIGHT
 
-Copyright 2011-2012 by Dana Jacobsen E<lt>dana@acm.orgE<gt>
+Copyright 2011-2013 by Dana Jacobsen E<lt>dana@acm.orgE<gt>
 
 This program is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
 

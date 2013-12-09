@@ -130,14 +130,31 @@ typedef   signed long IV;
 #define prime_precalc(n)          /* */
 #define BITS_PER_WORD             ((ULONG_MAX <= 4294967295UL) ? 32 : 64)
 
-static UV isqrt(UV n)
-{
+static UV isqrt(UV n) {
   UV root;
   if (sizeof(UV) == 8 && n >= 18446744065119617025UL)  return 4294967295UL;
   if (sizeof(UV) == 4 && n >= 4294836225UL)            return 65535UL;
   root = (UV) sqrt((double)n);
   while (root*root > n)  root--;
   while ((root+1)*(root+1) <= n)  root++;
+  return root;
+}
+static UV icbrt(UV n) {
+  UV b, root = 0;
+  int s;
+  if (sizeof(UV) == 8) {
+    s = 63;  if (n >= 18446724184312856125UL)  return 2642245UL;
+  } else {
+    s = 30;  if (n >= 4291015625UL)            return 1625UL;
+  }
+  for ( ; s >= 0; s -= 3) {
+    root += root;
+    b = 3*root*(root+1)+1;
+    if ((n >> s) >= b) {
+      n -= b << s;
+      root++;
+    }
+  }
   return root;
 }
 
@@ -198,6 +215,7 @@ static uint32_t* generate_small_primes(UV n)
 /* We will use pre-sieving to speed up counting for small ranges */
 #define SIEVE_MULT   1
 
+#define FUNC_icbrt 1
 #include "lehmer.h"
 #include "util.h"
 #include "cache.h"
@@ -233,42 +251,7 @@ static uint32_t* generate_small_primes(UV n)
   if (verbose > 1) printf("generated %lu small primes, from 2 to %lu\n", i, (unsigned long)primes[i]);
   return primes;
 }
-
 #endif
-
-static UV icbrt(UV n)
-{
-  UV root = 0;
-  /* int s = BITS_PER_WORD - (BITS_PER_WORD % 3); */
-#if BITS_PER_WORD == 32
-  int s = 30;
-  if (n >= UVCONST(4291015625)) return UVCONST(1625);
-#else
-  int s = 63;
-  if (n >= UVCONST(18446724184312856125)) return UVCONST(2642245);
-#endif
-#if 0
-  /* The integer cube root code is about 30% faster for me */
-  root = (UV) pow(n, 1.0/3.0);
-  if (root*root*root > n) {
-    root--;
-    while (root*root*root > n)  root--;
-  } else {
-    while ((root+1)*(root+1)*(root+1) <= n)  root++;
-  }
-#else
-  for ( ; s >= 0; s -= 3) {
-    UV b;
-    root += root;
-    b = 3*root*(root+1)+1;
-    if ((n >> s) >= b) {
-      n -= b << s;
-      root++;
-    }
-  }
-#endif
-  return root;
-}
 
 
 /* Given an array of primes[1..lastprime], return Pi(n) where n <= lastprime.
@@ -297,7 +280,7 @@ static UV bs_prime_count(uint32_t n, uint32_t const* const primes, uint32_t last
     if (j > (n>>4)) j = n>>4;
   }
   while (i < j) {
-    UV mid = (i+j)/2;
+    UV mid = i + (j-i)/2;
     if (primes[mid] <= n)  i = mid+1;
     else                   j = mid;
   }
@@ -723,8 +706,7 @@ static UV Pk_2_p(UV n, UV a, UV b, const uint32_t* primes, uint32_t lastidx)
 }
 static UV Pk_2(UV n, UV a, UV b)
 {
-  UV lastprime = b*SIEVE_MULT+1;
-  if (lastprime > 203280221) lastprime = 203280221;
+  UV lastprime = ((b*SIEVE_MULT+1) > 203280221) ? 203280221 : b*SIEVE_MULT+1;
   const uint32_t* primes = generate_small_primes(lastprime);
   UV P2 = Pk_2_p(n, a, b, primes, lastprime);
   Safefree(primes);
@@ -842,7 +824,7 @@ UV _XS_lehmer_pi(UV n)
  * About the same speed as Lehmer, a bit less memory.
  * A better implementation can be 10-50x faster and much less memory.
  */
-UV _XS_LMO_pi(UV n)
+UV _XS_LMOS_pi(UV n)
 {
   UV n13, a, b, sum, i, j, k, lastprime, P2, S1, S2;
   const uint32_t* primes = 0;  /* small prime cache */
@@ -869,7 +851,7 @@ UV _XS_LMO_pi(UV n)
   Newz(0, lpf, n13+1, uint32_t);
   mu[0] = 0;
   for (i = 1; i <= n13; i++) {
-    uint32_t primei = primes[i];
+    UV primei = primes[i];
     for (j = primei; j <= n13; j += primei) {
       mu[j] = -mu[j];
       if (lpf[j] == 0) lpf[j] = primei;
@@ -921,7 +903,34 @@ UV _XS_LMO_pi(UV n)
   return sum;
 }
 
-UV _XS_legendre_phi(UV x, UV a) { return phi(x,a); }
+static const unsigned char primes_small[] =
+  {0,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97,
+   101,103,107,109,113,127,131,137,139,149,151,157,163,167,173,179,181,191};
+#define NPRIMES_SMALL (sizeof(primes_small)/sizeof(primes_small[0]))
+
+UV _XS_legendre_phi(UV x, UV a) {
+  /* For small values, calculate directly */
+  if (a < 3)  return (a == 0) ? x : (a == 1) ? x-x/2 : x-x/2-x/3+x/6;
+  if (a <= 7) return mapes(x, a);
+  /* For large values, do our non-recursive phi */
+  if (a > NPRIMES_SMALL) return phi(x,a);
+  /* Otherwise, recurse */
+  {
+    UV i;
+    UV sum = mapes7(x);
+    for (i = 8; i <= a; i++) {
+      uint32_t p = primes_small[i];
+      UV xp = x/p;
+      if (xp < p) {
+        while (x < primes_small[a])
+          a--;
+        return (sum - a + i - 1);
+      }
+      sum -= _XS_legendre_phi(xp, i-1);
+    }
+    return sum;
+  }
+}
 
 
 #ifdef PRIMESIEVE_STANDALONE
@@ -947,7 +956,7 @@ int main(int argc, char *argv[])
   if      (!strcasecmp(method, "lehmer"))   { pi = _XS_lehmer_pi(n);      }
   else if (!strcasecmp(method, "meissel"))  { pi = _XS_meissel_pi(n);     }
   else if (!strcasecmp(method, "legendre")) { pi = _XS_legendre_pi(n);    }
-  else if (!strcasecmp(method, "lmo"))      { pi = _XS_LMO_pi(n);         }
+  else if (!strcasecmp(method, "lmo"))      { pi = _XS_LMOS_pi(n);  }
   else if (!strcasecmp(method, "sieve"))    { pi = _XS_prime_count(2, n); }
   else {
     printf("method must be one of: lehmer, meissel, legendre, lmo, or sieve\n");

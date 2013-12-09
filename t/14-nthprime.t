@@ -35,6 +35,14 @@ my %nthprimes32 = (
             1000000 => 15485863,
            10000000 => 179424673,
           100000000 => 2038074743,
+  # Some values that estimate right around the value
+            6305537 => 110040379,
+            6305538 => 110040383,
+            6305539 => 110040391,
+            6305540 => 110040407,
+            6305541 => 110040467,
+            6305542 => 110040499,
+            6305543 => 110040503,
 );
 my %nthprimes64 = (
          1000000000 => 22801763489,
@@ -58,7 +66,6 @@ plan tests => 0 + 2*scalar(keys %pivals32)
                 + 3*scalar(keys %nthprimes32)
                 + scalar(keys %nthprimes_small)
                 + $use64 * 3 * scalar(keys %nthprimes64)
-                + 4
                 + 3
                 + (($extra && $use64 && $usexs) ? 1 : 0);
 
@@ -97,24 +104,14 @@ if ($use64) {
   }
 }
 
-my $maxindex   = $use64 ? 425656284035217743 : 203280221;
-my $maxindexp1 = $use64 ? 425656284035217744 : 203280222;
-my $maxprime   = $use64 ? 18446744073709551557 : 4294967291;
+my $maxindex   = $use64 ? '425656284035217743' : '203280221';
+my $maxindexp1 = $use64 ? '425656284035217744' : '203280222';
+my $maxprime   = $use64 ? '18446744073709551557' : '4294967291';
 cmp_ok( nth_prime_lower($maxindex), '<=', $maxprime, "nth_prime_lower(maxindex) <= maxprime");
 cmp_ok( nth_prime_upper($maxindex), '>=', $maxprime, "nth_prime_upper(maxindex) >= maxprime");
-cmp_ok( nth_prime_approx($maxindex), '==', $maxprime, "nth_prime_approx(maxindex) == maxprime");
 cmp_ok( nth_prime_lower($maxindexp1), '>=', nth_prime_lower($maxindex), "nth_prime_lower(maxindex+1) >= nth_prime_lower(maxindex)");
 
 my $overindex = ($broken64) ? 425656284035217843 : $maxindexp1;
-
-eval { nth_prime_upper($overindex); };
-like($@, qr/overflow/, "nth_prime_upper($overindex) overflows");
-
-eval { nth_prime_approx($overindex); };
-like($@, qr/overflow/, "nth_prime_approx($overindex) overflows");
-
-eval { nth_prime($overindex); };
-like($@, qr/overflow/, "nth_prime($overindex) overflows");
 
 if ($extra && $use64 && $usexs) {
   # Test an nth prime value that uses the binary-search-on-R(n) algorithm

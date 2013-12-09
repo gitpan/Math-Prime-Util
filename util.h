@@ -25,6 +25,7 @@ extern double _XS_ExponentialIntegral(double x);
 extern double _XS_LogarithmicIntegral(double x);
 extern long double ld_riemann_zeta(long double x);
 extern double _XS_RiemannR(double x);
+extern UV _XS_Inverse_Li(UV x);
 
 /* Above this value, is_prime will do deterministic Miller-Rabin */
 /* With 64-bit math, we can do much faster mulmods from 2^16-2^32 */
@@ -46,6 +47,28 @@ static UV isqrt(UV n) {
   while ((root+1)*(root+1) <= n)  root++;
   return root;
 }
+
+#ifdef FUNC_icbrt
+static UV icbrt(UV n) {
+  UV b, root = 0;
+#if BITS_PER_WORD == 32
+  int s = 30;
+  if (n >= UVCONST(4291015625)) return UVCONST(1625);
+#else
+  int s = 63;
+  if (n >= UVCONST(18446724184312856125)) return UVCONST(2642245);
+#endif
+  for ( ; s >= 0; s -= 3) {
+    root += root;
+    b = 3*root*(root+1)+1;
+    if ((n >> s) >= b) {
+      n -= b << s;
+      root++;
+    }
+  }
+  return root;
+}
+#endif
 
 #ifdef FUNC_gcd_ui
 static UV gcd_ui(UV x, UV y) {
