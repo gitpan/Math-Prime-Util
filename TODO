@@ -1,12 +1,9 @@
 - Testing requirements after changes:
-
-  - Test all functions return either native or bigints.  Functions that
+  * Test all functions return either native or bigints.  Functions that
     return raw MPU::GMP results will return strings, which isn't right.
-
-  - Valgrind, coverage
-
-  - compile with -O2 -g -Wall -Wextra -Wdeclaration-after-statement -fsigned-char
-
+  * Valgrind, coverage
+  * use:  -O2 -g -Wall -Wextra -Wdeclaration-after-statement -fsigned-char
+  * Test on 32-bit Perl.  Test on Win32.
 
 
 - Add test to check maxbits in compiled library vs. Perl
@@ -20,14 +17,10 @@
 
 - finish test suite for bignum.  Work on making it faster.
 
-- Test all routines for numbers on word-size boundary, or ranges that cross.
-
-- More testing on 32-bit machines.
-
-- An assembler version of mulmod for i386 would be _really_ helpful for
-  all the non-x86-64 Intel machines.
+- An assembler version of mulmod for i386.
 
 - More efficient Mertens.  The current version has poor growth.
+  For 32-bit, consider doing XS followed by sum for remainder.
 
 - It may be possible to have a more efficient ranged totient.  We're using
   the sieve up to n/2, which is better than most people seem to use, but I'm
@@ -61,9 +54,39 @@
 - Consider using Test::Number::Delta for many tests
 
 - More tweaking of LMO prime count.
-    - Consider using UV size for sieve
-    - is there any way to see if we could safely use asm popcnt?
     - OpenMP.  The step 7 inner loop is available.
     - Convert to 32-bit+GMP to support large inputs, add to MPU::GMP.
+    - Try __int128.
+    - Variable sieve size
+    - look at sieve.c style prime walking
 
-- Add Inverse Li and Legendre Phi to API?
+
+- Iterators speedup:
+  1) config option for sieved next_prime.  Very general, would make
+     next_prime run fast when called many times sequentially.  Nasty
+     mixing with threads.
+  2) iterator, PrimeIterator, or PrimeArray in XS using segment sieve.
+
+- Perhaps have main segment know the filled in range.  That would allow
+  a sieved next_prime, and might speed up some counts and the like.
+
+- Consider exporting is_bpsw_prime
+
+- Add Inverse Li to API?
+
+- Benchmark simple SoEs, SoA.  Include Sisyphus SoE hidden in Math::GMPz.
+
+- Redo trial vs. segment test in Util.pm primes().
+
+- commit Porter example
+
+- Try using malloc/free for win32 cache memory.  #define NO_XSLOCKS
+
+- Investigate optree constant folding in PP compilation for performance.
+  Use B::Deparse to check.
+
+- Move more functions from _generic_... to PP::
+
+- Ensure a fast path for Math::GMP from MPU -> MPU:GMP -> GMP, and back.
+
+- znlog bignum tests, znlog better implementation

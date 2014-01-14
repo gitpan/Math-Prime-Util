@@ -22,12 +22,14 @@ aks.h
 aks.c
 cache.h
 cache.c
+constants.h
 factor.h
 factor.c
 lehmer.h
 lehmer.c
 lmo.h
 lmo.c
+ppport.h
 primality.h
 primality.c
 sieve.h
@@ -70,6 +72,7 @@ bin/factor.pl
 t/01-load.t
 t/02-can.t
 t/03-init.t
+t/04-inputvalidation.t
 t/10-isprime.t
 t/11-primes.t
 t/12-nextprime.t
@@ -97,6 +100,7 @@ t/90-release-perlcritic.t
 t/91-release-pod-syntax.t
 t/92-release-pod-coverage.t
 t/93-release-spelling.t
+t/94-weaken.t
 xt/moebius-mertens.pl
 xt/totient-range.pl
 xt/primality-small.pl
@@ -104,10 +108,13 @@ xt/primality-aks.pl
 xt/primality-proofs.pl
 xt/small-is-next-prev.pl
 xt/factor-holf.pl
+xt/legendre_phi.t
 xt/make-script-test-data.pl
 xt/measure_zeta_accuracy.pl
 xt/pari-totient-moebius.pl
 xt/nthprime.t
+xt/pari-compare.pl
+xt/primecount-approx.t
 xt/primecount-many.t
 xt/primes-edgecases.pl
 xt/rwh_primecount.py

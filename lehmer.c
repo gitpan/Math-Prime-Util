@@ -1,11 +1,9 @@
+#if defined(LEHMER) || defined(PRIMESIEVE_STANDALONE)
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-
-/* Below this size, just sieve (with table speedup). */
-#define SIEVE_LIMIT  60000000
-#define MAX_PHI_MEM  (256*1024*1024)
 
 /*****************************************************************************
  *
@@ -16,59 +14,51 @@
  * the same terms as the Perl 5 programming language system itself.
  *
  * This file is part of the Math::Prime::Util Perl module, but also can be
- * compiled as a standalone UNIX program using the primesieve package.
+ * compiled as a standalone UNIX program using primesieve 5.x.
  *
  *    g++ -O3 -DPRIMESIEVE_STANDALONE lehmer.c -o prime_count -lprimesieve
  *
- * For faster prime counting in stage 4 with multiprocessor machines:
- *
- *    g++ -O3 -DPRIMESIEVE_STANDALONE -DPRIMESIEVE_PARALLEL lehmer.c -o prime_count -lprimesieve -lgomp
- *
  * The phi(x,a) calculation is unique, to the best of my knowledge.  It uses
  * two lists of all x values + signed counts for the given 'a' value, and walks
- * 'a' down until it is small enough to calculate directly using Mapes' method.
+ * 'a' down until it is small enough to calculate directly using a table.
  * This is relatively fast and low memory compared to many other solutions.
  * As with all Lehmer-Meissel-Legendre algorithms, memory use will be a
- * constraint with large values of x (see the table below).
+ * constraint with large values of x.
  *
- * If you want something better, I highly recommend the paper "Computing
- * Pi(x): the combinatorial method" (2006) by Tomás Oliveira e Silva.  His
- * implementation is certainly much faster and lower memory than this.  I have
- * briefly run Christian Bau's LMO implementation which has the big advantage
- * of using almost no memory.  On the same machine that ran the times below,
- * I got 10^16 in 36s, 10^17 in 165s, 10^18 in 769s, 10^19 in 4162s.  All
- * using a single core.  That's 10-50x faster than this code.
+ * Math::Prime::Util now includes an extended LMO implementation, which will
+ * be quite a bit faster and much less memory than this code.  It is the
+ * default method for large counts.  Timing comparisons are in that file.
  *
- * Using my sieve code with everything running in serial, calculating pi(10^12)
- * is done under 1 second on my computer.  pi(10^14) takes under 30 seconds,
- * pi(10^16) in under 20 minutes.  Compared with Thomas R. Nicely's pix4
- * program, this one is 5x faster and uses 10x less memory.  When compiled
- * with parallel primesieve it is over 10x faster.
- *   pix4(10^16) takes 124 minutes, this code + primesieve takes < 4 minutes.
+ * Times and memory use for prime_count(10^15) on a Haswell 4770K, asterisk
+ * indicates parallel operation.  The standalone versions of my code use
+ * Kim Walisch's excellent primesieve, which is faster than my sieve.
+ * His Lehmer/Meissel/Legendre seem a bit slower in serial, but
+ * parallelize much better.
  *
- * Timings with Perl + MPU with all-serial computation, no memory limit.
- * The last column is the standalone time with 12-core parallel primesieve.
- *
- *    n     phi(x,a) mem/time  |  stage 4 mem/time  | total time | pps time
- *   10^19  17884MB   1979.41  | 9144MB             |            | 7h 26m
- *   10^18   5515MB    483.46  | 2394MB             |            | 87m  0s
- *   10^17   1698MB    109.56  |  634MB   9684.1    | 163m 36  s | 17m 45s
- *   10^16    522MB     24.14  |  171MB   1066.3    |  18m 12  s |  3m 44s
- *   10^15    159MB      5.58  |   47MB    142.5    |   2m 28  s |   47.66 s
- *   10^14     48MB      1.28  |   13MB     22.26   |    23.61 s |   10.25 s
- *   10^13     14MB      0.294 |    4MB      3.82   |     4.12 s |    2.21 s
- *   10^12      4MB      0.070 |    1MB      0.707  |     0.78 s |    0.459s
- *   10^11      1MB      0.015 |             0.135  |     0.158s |    0.097s
- *   10^10               0.003 |             0.029  |     0.028s |    0.025s
- *
- * Using the standalone program with parallel primesieve speeds up stage 4
- * a lot for large values, as can be seen by the last column.  It does use
- * quite a bit more memory in stage 4 however (lowering SIEVE_MULT can reduce
- * it by as much as 10x, at the expense of some performance).
+ *       4.74s    1.3MB    LMO
+ *      24.53s* 137.9MB    Lehmer    Walisch primecount v0.9, 8 threads
+ *      38.74s* 150.3MB    LMOS      Walisch primecount v0.9, 8 threads
+ *      42.52s* 159.4MB    Lehmer    standalone, 8 threads
+ *      42.82s* 137.9MB    Meissel   Walisch primecount v0.9, 8 threads
+ *      51.88s  153.9MB    LMOS      standalone, 1 thread
+ *      52.01s* 145.5MB    Legendre  Walisch primecount v0.9, 8 threads
+ *      64.96s  160.3MB    Lehmer    standalone, 1 thread
+ *      67.16s   67.0MB    LMOS
+ *      80.42s  286.6MB    Meissel
+ *      99.70s  159.6MB    Lehmer
+ *     107.43s   28.5MB    Lehmer    Walisch primecount v0.9, 1 thread
+ *     174.51s   83.5MB    Legendre
+ *     185.11s   25.6MB    LMOS      Walisch primecount v0.9, 1 thread
+ *     191.19s   24.8MB    Meissel   Walisch primecount v0.9, 1 thread
+ *     868.96s 1668.1MB    Lehmer    pix4 by T.R. Nicely
  *
  * Reference: Hans Riesel, "Prime Numbers and Computer Methods for
  * Factorization", 2nd edition, 1994.
  */
+
+/* Below this size, just sieve (with table speedup). */
+#define SIEVE_LIMIT  60000000
+#define MAX_PHI_MEM  (896*1024*1024)
 
 static int const verbose = 0;
 #define STAGE_TIMING 0
@@ -97,25 +87,6 @@ static int const verbose = 0;
  * crossover point is lower (better). */
 #define SIEVE_MULT   10
 
-#include <limits.h>
-#include <sys/time.h>
-#ifdef PRIMESIEVE_PARALLEL
- #include <primesieve/soe/ParallelPrimeSieve.h>
- ParallelPrimeSieve ps;
- #define SET_PPS_PARALLEL ps.setNumThreads(ParallelPrimeSieve::getMaxThreads())
- #define SET_PPS_SERIAL   ps.setNumThreads(1)
-#else
- #include <primesieve/soe/PrimeSieve.h>
- PrimeSieve ps;
- #define SET_PPS_PARALLEL /* */
- #define SET_PPS_SERIAL   /* */
-#endif
-
-#ifdef _OPENMP
-  #include <omp.h>
-  int omp_threads = 8;  /* will get replaced */
-#endif
-
 /* Translations from Perl + Math::Prime::Util  to  C/C++ + primesieve */
 typedef unsigned long UV;
 typedef   signed long IV;
@@ -125,7 +96,6 @@ typedef   signed long IV;
 #define Newz(id, mem, size, type) mem = (type*) calloc(size, sizeof(type))
 #define Renew(mem, size, type)    mem = (type*) realloc(mem,(size)*sizeof(type))
 #define Safefree(mem)             free((void*)mem)
-#define _XS_prime_count(a, b)     ps.countPrimes(a, b)
 #define croak(fmt,...)            { printf(fmt,##__VA_ARGS__); exit(1); }
 #define prime_precalc(n)          /* */
 #define BITS_PER_WORD             ((ULONG_MAX <= 4294967295UL) ? 32 : 64)
@@ -158,19 +128,16 @@ static UV icbrt(UV n) {
   return root;
 }
 
-/* Callback used for creating an array of primes. */
-static uint32_t* sieve_array = 0;
-static UV sieve_k;
-static UV sieve_n;
-class stop_primesieve : public std::exception { };
-void primesieve_callback(uint64_t pk) {
-  if (sieve_k > sieve_n) throw stop_primesieve();
-  /*
-  if (pk < sieve_array[sieve_k-1])
-    croak("Primes generated out of order.  Switch to serial mode.\n");
-  */
-  sieve_array[sieve_k++] = pk;
-}
+/* Use version 5.x of PrimeSieve */
+#include <limits.h>
+#include <sys/time.h>
+#include <primesieve.hpp>
+#include <vector>
+#ifdef _OPENMP
+  #include <omp.h>
+#endif
+
+#define _XS_prime_count(a, b)     primesieve::parallel_count_primes(a, b)
 
 /* Generate an array of n small primes, where the kth prime is element p[k].
  * Remember to free when done. */
@@ -179,17 +146,7 @@ static uint32_t* tiny_primes = 0;
 static uint32_t* generate_small_primes(UV n)
 {
   uint32_t* primes;
-  double fn = (double)n;
-  double flogn  = log(fn);
-  double flog2n  = log(flogn);
-  UV nth_prime =  /* Dusart 2010 for > 179k, custom for 18-179k */
-     (n >= 688383) ? (UV) ceil(fn*(flogn+flog2n-1.0+((flog2n-2.00)/flogn))) :
-     (n >= 178974) ? (UV) ceil(fn*(flogn+flog2n-1.0+((flog2n-1.95)/flogn))) :
-     (n >= 18)     ? (UV) ceil(fn*(flogn+flog2n-1.0+((flog2n+0.30)/flogn)))
-                   : 59;
   New(0, primes, n+1, uint32_t);
-  if (primes == 0)
-    croak("Can not allocate small primes\n");
   if (n < TINY_PRIME_SIZE) {
     if (tiny_primes == 0)
       tiny_primes = generate_small_primes(TINY_PRIME_SIZE+1);
@@ -197,16 +154,11 @@ static uint32_t* generate_small_primes(UV n)
     return primes;
   }
   primes[0] = 0;
-  sieve_array = primes;
-  sieve_n = n;
-  sieve_k = 1;
   {
-    PrimeSieve sps;
-    try {
-      sps.generatePrimes(2, nth_prime, primesieve_callback);
-    } catch (stop_primesieve&) { }
+    std::vector<uint32_t> v;
+    primesieve::generate_n_primes(n, &v);
+    memcpy(primes+1,  &v[0],  n * sizeof(uint32_t));
   }
-  sieve_array = 0;
   return primes;
 }
 
@@ -215,6 +167,7 @@ static uint32_t* generate_small_primes(UV n)
 /* We will use pre-sieving to speed up counting for small ranges */
 #define SIEVE_MULT   1
 
+#define FUNC_isqrt 1
 #define FUNC_icbrt 1
 #include "lehmer.h"
 #include "util.h"
@@ -239,8 +192,6 @@ static uint32_t* generate_small_primes(UV n)
   if (n > 203280221)
     croak("generate small primes with argument too large: %lu\n", (unsigned long)n);
   New(0, primes, n+1, uint32_t);
-  if (primes == 0)
-    croak("Can not allocate small primes\n");
   primes[0] = 0;
   START_DO_FOR_EACH_PRIME(2, nth_prime) {
     if (i >= n) break;
@@ -263,11 +214,12 @@ static UV bs_prime_count(uint32_t n, uint32_t const* const primes, uint32_t last
 {
   UV i, j;
   if (n <= 2)  return (n == 2);
-  /* if (n > primes[lastidx])  return _XS_prime_count(2, n); */
-  if (n >= primes[lastidx]) {
-    if (n == primes[lastidx]) return lastidx;
-    croak("called bspc(%u) with counts up to %u\n", n, primes[lastidx]);
-  }
+  /* If n is out of range, we could:
+   *  1. return _XS_prime_count(2, n);
+   *  2. if (n == primes[lastidx]) return lastidx else croak("bspc range");
+   *  3. if (n >= primes[lastidx]) return lastidx;
+   */
+  if (n >= primes[lastidx]) return lastidx;
   j = lastidx;
   if (n < 8480) {
     i = 1 + (n>>4);
@@ -284,76 +236,75 @@ static UV bs_prime_count(uint32_t n, uint32_t const* const primes, uint32_t last
     if (primes[mid] <= n)  i = mid+1;
     else                   j = mid;
   }
+  /* if (i-1 != _XS_prime_count(2, n)) croak("wrong count for %lu: %lu vs. %lu\n", n, i-1, _XS_prime_count(2, n)); */
   return i-1;
 }
 
 #define FAST_DIV(x,y) \
   ( ((x) <= 4294967295U) ? (uint32_t)(x)/(uint32_t)(y) : (x)/(y) )
 
-/* Use Mapes' method to calculate phi(x,a) for small a.  This is really
- * convenient and a little Perl script will spit this code out for whatever
- * limit we select.  It gets unwieldy with large a values.
- */
-static UV mapes(UV x, UV a)
-{
-  IV val;
-  if (a == 0)  return x;
-  if (a == 1)  return x-x/2;
-  val = x-x/2-x/3+x/6;
-  if (a >= 3) val += 0-x/5+x/10+x/15-x/30;
-  if (a >= 4) val += 0-x/7+x/14+x/21-x/42+x/35-x/70-x/105+x/210;
-  if (a >= 5) val += 0-x/11+x/22+x/33-x/66+x/55-x/110-x/165+x/330+x/77-x/154-x/231+x/462-x/385+x/770+x/1155-x/2310;
-  if (a >= 6) val += 0-x/13+x/26+x/39-x/78+x/65-x/130-x/195+x/390+x/91-x/182-x/273+x/546-x/455+x/910+x/1365-x/2730+x/143-x/286-x/429+x/858-x/715+x/1430+x/2145-x/4290-x/1001+x/2002+x/3003-x/6006+x/5005-x/10010-x/15015+x/30030;
-  if (a >= 7) val += 0-x/17+x/34+x/51-x/102+x/85-x/170-x/255+x/510+x/119-x/238-x/357+x/714-x/595+x/1190+x/1785-x/3570+x/187-x/374-x/561+x/1122-x/935+x/1870+x/2805-x/5610-x/1309+x/2618+x/3927-x/7854+x/6545-x/13090-x/19635+x/39270+x/221-x/442-x/663+x/1326-x/1105+x/2210+x/3315-x/6630-x/1547+x/3094+x/4641-x/9282+x/7735-x/15470-x/23205+x/46410-x/2431+x/4862+x/7293-x/14586+x/12155-x/24310-x/36465+x/72930+x/17017-x/34034-x/51051+x/102102-x/85085+x/170170+x/255255-x/510510;
-  return (UV) val;
-}
+/* static uint32_t sprime[] = {0,2, 3, 5, 7, 11, 13, 17, 19, 23};   */
+/* static uint32_t sprimorial[] = {1,2,6,30,210,2310,30030,510510}; */
+/* static uint32_t stotient[]   = {1,1,2, 8, 48, 480, 5760, 92160}; */
+static const uint16_t _s0[ 1] = {0};
+static const uint16_t _s1[ 2] = {0,1};
+static const uint16_t _s2[ 6] = {0,1,1,1,1,2};
+static const uint16_t _s3[30] = {0,1,1,1,1,1,1,2,2,2,2,3,3,4,4,4,4,5,5,6,6,6,6,7,7,7,7,7,7,8};
+static uint16_t _s4[210];
+static uint16_t _s5[2310];
+static uint16_t _s6[30030];
+static const uint16_t* sphicache[7] = { _s0,_s1,_s2,_s3,_s4,_s5,_s6 };
+static int sphi_init = 0;
 
-#define mapes7(x) (((x) <= 4294967295U) ? mapes7_32(x) : mapes7_64(x))
-static UV mapes7_64(UV x) {    /* A tiny bit faster setup for a=7 */
-  UV val = x-x/2-x/3-x/5+x/6-x/7+x/10-x/11-x/13+x/14+x/15-x/17+x/21+x/22+x/26
-          -x/30+x/33+x/34+x/35+x/39-x/42+x/51+x/55+x/65-x/66-x/70+x/77-x/78
-          +x/85+x/91-x/102-x/105-x/110+x/119-x/130+x/143-x/154-x/165-x/170
-          -x/182+x/187-x/195+x/210+x/221-x/231-x/238-x/255-x/273-x/286+x/330
-          -x/357-x/374-x/385+x/390-x/429-x/442-x/455+x/462+x/510+x/546-x/561
-          -x/595-x/663+x/714;
-  if (x >= 715) {
-    val += 0-x/715+x/770+x/858+x/910-x/935-x/1001-x/1105+x/1122+x/1155+x/1190
-            -x/1309+x/1326+x/1365+x/1430-x/1547+x/1785+x/1870+x/2002+x/2145
-            +x/2210-x/2310-x/2431+x/2618-x/2730+x/2805+x/3003+x/3094+x/3315
-            -x/3570+x/3927-x/4290+x/4641+x/4862+x/5005-x/5610-x/6006+x/6545
-            -x/6630+x/7293+x/7735-x/7854;
-    if (x >= 9282)
-      val += 0-x/9282-x/10010+x/12155-x/13090-x/14586-x/15015-x/15470+x/17017
-              -x/19635-x/23205-x/24310+x/30030-x/34034-x/36465+x/39270+x/46410
-              -x/51051+x/72930-x/85085+x/102102+x/170170+x/255255-x/510510;
+#define PHIC 7
+
+static UV tablephi(UV x, uint32_t a) {
+  switch (a) {
+    case 0: return x;
+    case 1: return x-x/2;
+    case 2: return x-x/2-x/3+x/6;
+    case 3: return (x/    30U) *     8U + sphicache[3][x %     30U];
+    case 4: return (x/   210U) *    48U + sphicache[4][x %    210U];
+    case 5: return (x/  2310U) *   480U + sphicache[5][x %   2310U];
+    case 6: return (x/ 30030U) *  5760U + sphicache[6][x %  30030U];
+#if PHIC >= 7
+    case 7:  {
+               UV xp  = x / 17U;
+               return ((x /30030U) * 5760U + sphicache[6][x  % 30030U]) -
+                      ((xp/30030U) * 5760U + sphicache[6][xp % 30030U]);
+             }
+#endif
+#if PHIC >= 8
+    case 8: {
+               UV xp  = x / 17U;
+               UV x2  = x / 19U;
+               UV x2p = x2 / 17U;
+               return ((x  /30030U) * 5760U + sphicache[6][x  % 30030U]) -
+                      ((xp /30030U) * 5760U + sphicache[6][xp % 30030U]) -
+                      ((x2 /30030U) * 5760U + sphicache[6][x2 % 30030U]) +
+                      ((x2p/30030U) * 5760U + sphicache[6][x2p% 30030U]);
+             }
+#endif
+    default: croak("a %u too large for tablephi\n", a);
   }
-  return val;
 }
-
-static uint32_t mapes7_32(uint32_t x) {
-  uint32_t val = x-x/2-x/3-x/5+x/6-x/7+x/10-x/11-x/13+x/14+x/15-x/17+x/21
-          +x/22+x/26-x/30+x/33+x/34+x/35+x/39-x/42+x/51+x/55+x/65-x/66-x/70
-          +x/77-x/78+x/85+x/91-x/102-x/105-x/110+x/119-x/130+x/143-x/154
-          -x/165-x/170-x/182+x/187-x/195+x/210+x/221-x/231-x/238-x/255-x/273
-          -x/286+x/330-x/357-x/374-x/385+x/390-x/429-x/442-x/455+x/462+x/510
-          +x/546-x/561-x/595-x/663+x/714;
-  if (x >= 715) {
-    val += 0-x/715+x/770+x/858+x/910-x/935-x/1001-x/1105+x/1122+x/1155+x/1190
-            -x/1309+x/1326+x/1365+x/1430-x/1547+x/1785+x/1870+x/2002+x/2145
-            +x/2210-x/2310-x/2431+x/2618-x/2730+x/2805+x/3003+x/3094+x/3315
-            -x/3570+x/3927-x/4290+x/4641+x/4862+x/5005-x/5610-x/6006+x/6545
-            -x/6630+x/7293+x/7735-x/7854;
-    if (x >= 9282)
-      val += 0-x/9282-x/10010+x/12155-x/13090-x/14586-x/15015-x/15470+x/17017
-              -x/19635-x/23205-x/24310+x/30030-x/34034-x/36465+x/39270+x/46410
-              -x/51051+x/72930-x/85085+x/102102+x/170170+x/255255-x/510510;
+static void phitableinit(void) {
+  if (sphi_init == 0) {
+    int x;
+    for (x = 0; x <   210; x++)
+      _s4[x] = ((x/  30)*  8+_s3[x%  30])-(((x/ 7)/  30)*  8+_s3[(x/ 7)%  30]);
+    for (x = 0; x <  2310; x++)
+      _s5[x] = ((x/ 210)* 48+_s4[x% 210])-(((x/11)/ 210)* 48+_s4[(x/11)% 210]);
+    for (x = 0; x < 30030; x++)
+      _s6[x] = ((x/2310)*480+_s5[x%2310])-(((x/13)/2310)*480+_s5[(x/13)%2310]);
+    sphi_init = 1;
   }
-  return val;
 }
 
-/* Max memory = 2*A*X bytes, e.g. 2*400*24000 = 18.3 MB */
-#define PHICACHEA 257
-#define PHICACHEX 32769
+
+/* Max memory = 2*X*A bytes, e.g. 2*65536*256 = 32 MB */
+#define PHICACHEA 512
+#define PHICACHEX 65536
 typedef struct
 {
   uint32_t max[PHICACHEA];
@@ -365,6 +316,7 @@ static void phicache_init(cache_t* cache) {
     cache->val[a] = 0;
     cache->max[a] = 0;
   }
+  phitableinit();
 }
 static void phicache_free(cache_t* cache) {
   int a;
@@ -381,6 +333,8 @@ static void phicache_free(cache_t* cache) {
 
 static void phi_cache_insert(uint32_t x, uint32_t a, IV sum, cache_t* cache) {
   uint32_t cap = ( (x+32) >> 5) << 5;
+  /* If sum is too large for the cache, just ignore it. */
+  if (sum < SHRT_MIN || sum > SHRT_MAX) return;
   if (cache->val[a] == 0) {
     Newz(0, cache->val[a], cap, int16_t);
     cache->max[a] = cap;
@@ -391,46 +345,29 @@ static void phi_cache_insert(uint32_t x, uint32_t a, IV sum, cache_t* cache) {
       cache->val[a][i] = 0;
     cache->max[a] = cap;
   }
-  if (sum < SHRT_MIN || sum > SHRT_MAX)
-    croak("phi(%u,%u) 16-bit overflow: sum = %ld\n", x, a, sum);
-  if (cache->val[a] == 0)
-    croak("phi cache allocation failure");
-  cache->val[a][x] = sum;
+  cache->val[a][x] = (int16_t) sum;
 }
 
 static IV _phi3(UV x, UV a, int sign, const uint32_t* const primes, const uint32_t lastidx, cache_t* cache)
 {
   IV sum;
-
-  if (a < 3)
-    return sign * ((a==0) ? x : (a==1) ? x-x/2 : x-x/2-x/3+x/6);
+  if (a <= 1)
+    return sign * ((a == 0) ? x : x-x/2);
   else if (PHI_CACHE_POPULATED(x, a))
     return sign * cache->val[a][x];
+  else if (a <= PHIC)
+    sum = sign * tablephi(x,a);
   else if (x < primes[a+1])
     sum = sign;
-  else if (1 && x <= primes[lastidx] && x < primes[a]*primes[a])
+  else if (x <= primes[lastidx] && x < primes[a+1]*primes[a+1])
     sum = sign * (bs_prime_count(x, primes, lastidx) - a + 1);
   else {
-    UV a2;
-    if (a*a > x) {
-      UV ix = isqrt(x);
-      UV iters = bs_prime_count(ix, primes, a+1);
-      sum = sign * (x - a + iters);
-      for (a2 = 1; a2 <= iters; a2++)
-        sum += _phi3( FAST_DIV(x, primes[a2]), a2-1, -sign, primes, lastidx, cache);
-    } else if (a >= 7) {
-      if (PHI_CACHE_POPULATED(x, 7))
-        sum = sign * cache->val[7][x];
-      else
-        sum = sign * mapes7(x);
-      for (a2 = 8; a2 <= a; a2++)
-        sum += _phi3( FAST_DIV(x,primes[a2]), a2-1, -sign, primes, lastidx, cache);
-    } else {
-      if (PHI_CACHE_POPULATED(x, a))
-        sum = sign * cache->val[a][x];
-      else
-        sum = sign * mapes(x, a);
-    }
+    UV a2, iters = (a*a > x)  ?  bs_prime_count( isqrt(x), primes, a)  :  a;
+    UV c = (iters > PHIC) ? PHIC : iters;
+    IV phixc = PHI_CACHE_POPULATED(x, c) ? cache->val[c][x] : (IV)tablephi(x,c);
+    sum = sign * (iters - a + phixc);
+    for (a2 = c+1; a2 <= iters; a2++)
+      sum += _phi3(FAST_DIV(x,primes[a2]), a2-1, -sign, primes, lastidx, cache);
   }
   if (a < PHICACHEA && x < PHICACHEX)
     phi_cache_insert(x, a, sign * sum, cache);
@@ -488,7 +425,6 @@ static void vcarray_insert(vcarray_t* l, UV val, IV count)
       if (verbose>2) printf("REALLOCing list %p, new size %lu (%luk)\n",l->a,new_size, new_size*sizeof(vc_t)/1024);
       Renew( l->a, new_size, vc_t );
     }
-    if (l->a == 0) croak("could not allocate list\n");
     l->size = new_size;
   }
   /* printf(" inserting %lu %ld\n", val, count); */
@@ -511,10 +447,10 @@ static void vcarray_merge(vcarray_t* a, vcarray_t* b)
 
   /* Merge anything in B that appears in A. */
   for (ai = 0, bi = 0, bj = 0; bi < bn; bi++) {
-    /* Skip forward in A until empty or aa[ai].v <= ba[bi].v */
     UV bval = ba[bi].v;
-    while (ai < an && aa[ai].v > bval)
-      ai++;
+    /* Skip forward in A until empty or aa[ai].v <= ba[bi].v */
+    while (ai+8 < an && aa[ai+8].v > bval)  ai += 8;
+    while (ai   < an && aa[ai  ].v > bval)  ai++;
     /* if A empty then copy the remaining elements */
     if (ai >= an) {
       if (bi == bj)
@@ -550,16 +486,17 @@ static void vcarray_merge(vcarray_t* a, vcarray_t* b)
   /* merge A and B.  Very simple using reverse merge. */
   ai = an-1;
   bi = bn-1;
-  for (k = kn-1; k >= 0; k--) {
-    if (ai < 0) { /* A is exhausted, just filling in B */
-      if (bi < 0) croak("ran out of data during merge");
-      aa[k] = ba[bi--];
-    } else if (bi < 0) { /* We've caught up with A */
-      break;
-    } else if (aa[ai].v < ba[bi].v) {
-      aa[k] = aa[ai--];
+  for (k = kn-1; k >= 0 && bi >= 0; k--) {
+    UV bval = ba[bi].v;
+    long startai = ai;
+    while (ai >= 15 && aa[ai-15].v < bval) ai -= 16;
+    while (ai >=  3 && aa[ai- 3].v < bval) ai -= 4;
+    while (ai >=  0 && aa[ai   ].v < bval) ai--;
+    if (startai > ai) {
+      k = k - (startai - ai) + 1;
+      memmove(aa+k, aa+ai+1, (startai-ai) * sizeof(vc_t));
     } else {
-      if (aa[ai].v == ba[bi].v) croak("deduplication error");
+      if (ai >= 0 && aa[ai].v == bval) croak("deduplication error");
       aa[k] = ba[bi--];
     }
   }
@@ -602,13 +539,12 @@ static UV phi(UV x, UV a)
   vc_t* arr;
   cache_t pcache; /* Cache for recursive phi */
 
+  phitableinit();
   if (a == 1)  return ((x+1)/2);
-  if (a <= 7)  return mapes(x, a);
+  if (a <= PHIC)  return tablephi(x, a);
 
   lastidx = a+1;
   primes = generate_small_primes(lastidx);
-  if (primes == 0)
-    croak("Could not generate primes for phi(%lu,%lu)\n", x, a);
   lastprime = primes[lastidx];
   if (x < lastprime)  { Safefree(primes); return (x > 0) ? 1 : 0; }
   phicache_init(&pcache);
@@ -617,7 +553,7 @@ static UV phi(UV x, UV a)
   a2 = vcarray_create();
   vcarray_insert(&a1, x, 1);
 
-  while (a > 7) {
+  while (a > PHIC) {
     UV primea = primes[a];
     UV sval_last = 0;
     IV sval_count = 0;
@@ -676,7 +612,7 @@ static UV phi(UV x, UV a)
   #pragma omp parallel for reduction(+: sum) schedule(dynamic, 16)
 #endif
   for (i = 0; i < a1.n; i++)
-    sum += arr[i].c * mapes7( arr[i].v );
+    sum += arr[i].c * tablephi( arr[i].v, PHIC );
   vcarray_destroy(&a1);
   Safefree(primes);
   return (UV) sum;
@@ -706,7 +642,7 @@ static UV Pk_2_p(UV n, UV a, UV b, const uint32_t* primes, uint32_t lastidx)
 }
 static UV Pk_2(UV n, UV a, UV b)
 {
-  UV lastprime = ((b*SIEVE_MULT+1) > 203280221) ? 203280221 : b*SIEVE_MULT+1;
+  UV lastprime = ((b*3+1) > 203280221) ? 203280221 : b*3+1;
   const uint32_t* primes = generate_small_primes(lastprime);
   UV P2 = Pk_2_p(n, a, b, primes, lastprime);
   Safefree(primes);
@@ -723,7 +659,16 @@ UV _XS_legendre_pi(UV n)
     return _XS_prime_count(2, n);
 
   a = _XS_legendre_pi(isqrt(n));
-  phina = phi(n, a);
+  /* phina = phi(n, a); */
+  { /* The small phi routine is faster for large a */
+    cache_t pcache;
+    const uint32_t* primes = 0;
+    primes = generate_small_primes(a+1);
+    phicache_init(&pcache);
+    phina = phi_small(n, a, primes, a+1, &pcache);
+    phicache_free(&pcache);
+    Safefree(primes);
+  }
   return phina + a - 1;
 }
 
@@ -782,7 +727,6 @@ UV _XS_lehmer_pi(UV n)
   if (verbose > 0) printf("lehmer %lu stage 3: %lu small primes\n", n, lastprime);
   TIMING_START;
   primes = generate_small_primes(lastprime);
-  if (primes == 0) croak("Error generating primes.\n");
   lastpc = primes[lastprime];
   TIMING_END_PRINT("small primes")
 
@@ -844,7 +788,6 @@ UV _XS_LMOS_pi(UV n)
   if (lastprime > 203280221) lastprime = 203280221;
   if (lastprime < n13) lastprime = n13;
   primes = generate_small_primes(lastprime);
-  if (primes == 0) croak("Error generating primes.\n");
 
   New(0, mu, n13+1, signed char);
   memset(mu, 1, sizeof(signed char) * (n13+1));
@@ -903,36 +846,6 @@ UV _XS_LMOS_pi(UV n)
   return sum;
 }
 
-static const unsigned char primes_small[] =
-  {0,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97,
-   101,103,107,109,113,127,131,137,139,149,151,157,163,167,173,179,181,191};
-#define NPRIMES_SMALL (sizeof(primes_small)/sizeof(primes_small[0]))
-
-UV _XS_legendre_phi(UV x, UV a) {
-  /* For small values, calculate directly */
-  if (a < 3)  return (a == 0) ? x : (a == 1) ? x-x/2 : x-x/2-x/3+x/6;
-  if (a <= 7) return mapes(x, a);
-  /* For large values, do our non-recursive phi */
-  if (a > NPRIMES_SMALL) return phi(x,a);
-  /* Otherwise, recurse */
-  {
-    UV i;
-    UV sum = mapes7(x);
-    for (i = 8; i <= a; i++) {
-      uint32_t p = primes_small[i];
-      UV xp = x/p;
-      if (xp < p) {
-        while (x < primes_small[a])
-          a--;
-        return (sum - a + i - 1);
-      }
-      sum -= _XS_legendre_phi(xp, i-1);
-    }
-    return sum;
-  }
-}
-
-
 #ifdef PRIMESIEVE_STANDALONE
 int main(int argc, char *argv[])
 {
@@ -952,7 +865,6 @@ int main(int argc, char *argv[])
 
   gettimeofday(&t0, 0);
 
-  SET_PPS_PARALLEL;
   if      (!strcasecmp(method, "lehmer"))   { pi = _XS_lehmer_pi(n);      }
   else if (!strcasecmp(method, "meissel"))  { pi = _XS_meissel_pi(n);     }
   else if (!strcasecmp(method, "legendre")) { pi = _XS_legendre_pi(n);    }
@@ -967,4 +879,14 @@ int main(int argc, char *argv[])
   printf("%8s Pi(%lu) = %lu   in %10.5fs\n", method, n, pi, t / 1000000.0);
   return(0);
 }
+#endif
+
+#else
+
+#include "lehmer.h"
+UV _XS_LMOS_pi(UV n)      { if (n==0) return 0; croak("Not compiled with Lehmer support"); }
+UV _XS_lehmer_pi(UV n)    { if (n==0) return 0; croak("Not compiled with Lehmer support"); }
+UV _XS_meissel_pi(UV n)   { if (n==0) return 0; croak("Not compiled with Lehmer support"); }
+UV _XS_legendre_pi(UV n)  { if (n==0) return 0; croak("Not compiled with Lehmer support"); }
+
 #endif

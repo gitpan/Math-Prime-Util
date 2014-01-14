@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use Test::More;
-use Math::Prime::Util qw/factor factor_exp all_factors is_prime/;
+use Math::Prime::Util qw/factor factor_exp all_factors divisor_sum is_prime/;
 
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
 my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
@@ -80,10 +80,42 @@ my %all_factors = (
       3 => [1,3],
       2 => [1,2],
       1 => [1],
-      0 => [],
+      0 => [0,1],
 );
 
-plan tests =>  (3 * scalar @testn) + scalar(keys %all_factors) + 10*9 + 8 + 1;
+my %prime_factors = (
+ 456789 => [3,43,3541],
+ 123456 => [2,2,2,2,2,2,3,643],
+ 115553 => [115553],
+  30107 => [7,11,17,23],
+      5 => [5],
+      4 => [2,2],
+      3 => [3],
+      2 => [2],
+      1 => [],
+      0 => [0],
+);
+
+my %factor_exponents = (
+ 456789 => [[3,1],[43,1],[3541,1]],
+ 123456 => [[2,6],[3,1],[643,1]],
+ 115553 => [[115553,1]],
+  30107 => [[7,1],[11,1],[17,1],[23,1]],
+      5 => [[5,1]],
+      4 => [[2,2]],
+      3 => [[3,1]],
+      2 => [[2,1]],
+      1 => [],
+      0 => [[0,1]],
+);
+
+plan tests => (3 * scalar @testn)
+            + 2*scalar(keys %prime_factors)
+            + 4*scalar(keys %all_factors)
+            + 2*scalar(keys %factor_exponents)
+            + 10*8  # 10 extra factoring tests * 8 algorithms
+            + 8
+            + 1;
 
 foreach my $n (@testn) {
   my @f = factor($n);
@@ -95,7 +127,7 @@ foreach my $n (@testn) {
 
   # Are they all prime?
   my $isprime = 1; $isprime *= is_prime($_) for @f;
-  if ($n < 2) {
+  if ($n < 1) {
     ok( !$isprime, "   each factor is not prime" );
   } else {
     ok(  $isprime, "   each factor is prime" );
@@ -105,16 +137,28 @@ foreach my $n (@testn) {
   is_deeply( [factor_exp($n)], [linear_to_exp(@f)], "   factor_exp looks right" );
 }
 
-while (my($n, $divisors) = each(%all_factors)) {
-  is_deeply( [all_factors($n)], $divisors, "all_factors($n)" );
+while (my($n, $factors) = each(%prime_factors)) {
+  is_deeply( [factor($n)], $factors, "factors($n)" );
+  is( scalar factor($n), scalar @$factors, "scalar factors($n)" );
 }
 
+while (my($n, $divisors) = each(%all_factors)) {
+  is_deeply( [all_factors($n)], $divisors, "all_factors($n)" );
+  is( scalar all_factors($n), scalar @$divisors, "scalar all_factors($n)" );
+  is( divisor_sum($n,0), scalar @$divisors, "divisor_sum($n,0)" );
+  my $sum = 0;  foreach my $f (@$divisors) { $sum += $f; }
+  is( divisor_sum($n), $sum, "divisor_sum($n)" );
+}
+
+while (my($n, $factors) = each(%factor_exponents)) {
+  is_deeply( [factor_exp($n)], $factors, "factor_exp($n)" );
+  is( scalar factor_exp($n), scalar @$factors, "scalar factor_exp($n)" );
+}
 
 extra_factor_test("trial_factor",  sub {Math::Prime::Util::trial_factor(shift)});
 extra_factor_test("fermat_factor", sub {Math::Prime::Util::fermat_factor(shift)});
 extra_factor_test("holf_factor",   sub {Math::Prime::Util::holf_factor(shift)});
 extra_factor_test("squfof_factor", sub {Math::Prime::Util::squfof_factor(shift)});
-extra_factor_test("rsqufof_factor", sub {Math::Prime::Util::rsqufof_factor(shift)});
 extra_factor_test("pbrent_factor", sub {Math::Prime::Util::pbrent_factor(shift)});
 extra_factor_test("prho_factor",   sub {Math::Prime::Util::prho_factor(shift)});
 extra_factor_test("pminus1_factor",sub {Math::Prime::Util::pminus1_factor(shift)});
@@ -127,7 +171,7 @@ sub extra_factor_test {
   my $fname = shift;
   my $fsub = shift;
 
-  is_deeply( [ sort {$a<=>$b} $fsub->(1)   ], [1],       "$fname(1)" );
+  is_deeply( [ sort {$a<=>$b} $fsub->(1)   ], [],        "$fname(1)" );
   is_deeply( [ sort {$a<=>$b} $fsub->(4)   ], [2, 2],    "$fname(4)" );
   is_deeply( [ sort {$a<=>$b} $fsub->(9)   ], [3, 3],    "$fname(9)" );
   is_deeply( [ sort {$a<=>$b} $fsub->(11)  ], [11],      "$fname(11)" );
@@ -141,7 +185,7 @@ sub extra_factor_test {
 
 # Factor in scalar context
 is( scalar factor(0), 1, "scalar factor(0) should be 1" );
-is( scalar factor(1), 1, "scalar factor(1) should be 1" );
+is( scalar factor(1), 0, "scalar factor(1) should be 0" );
 is( scalar factor(3), 1, "scalar factor(3) should be 1" );
 is( scalar factor(4), 2, "scalar factor(4) should be 2" );
 is( scalar factor(5), 1, "scalar factor(5) should be 1" );

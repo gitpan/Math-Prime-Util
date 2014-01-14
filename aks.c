@@ -26,23 +26,17 @@
 
 #include "ptypes.h"
 #include "aks.h"
+#define FUNC_isqrt 1
+#define FUNC_log2floor 1
 #include "util.h"
 #include "cache.h"
 #include "mulmod.h"
-
-static UV log2floor(UV n) {
-  UV log2n = 0;
-  while (n >>= 1)
-    log2n++;
-  return log2n;
-}
 
 /* Bach and Sorenson (1993) would be better */
 static int is_perfect_power(UV n) {
   UV b, last;
   if ((n <= 3) || (n == UV_MAX)) return 0;
   if ((n & (n-1)) == 0)  return 1;          /* powers of 2    */
-  last = log2floor(n-1) + 1;
 #if (BITS_PER_WORD == 32) || (DBL_DIG > 19)
   if (1) {
 #elif DBL_DIG == 10
@@ -53,13 +47,16 @@ static int is_perfect_power(UV n) {
   if ( n < (UV) pow(10, DBL_DIG) ) {
 #endif
     /* Simple floating point method.  Fast, but need enough mantissa. */
-    b = isqrt(n); if (b*b == n)  return 1; /* perfect square */
-    for (b = 3; b < last; b = _XS_next_prime(b)) {
-      UV root = pow(n, 1.0 / (double)b) + 0.5;
+    b = isqrt(n);
+    if (b*b == n)  return 1; /* perfect square */
+    last = log2floor(n-1) + 1;
+    for (b = 3; b < last; b = next_prime(b)) {
+      UV root = (UV) (pow(n, 1.0 / (double)b) + 0.5);
       if ( ((UV)(pow(root, b)+0.5)) == n)  return 1;
     }
   } else {
     /* Dietzfelbinger, algorithm 2.3.5 (without optimized exponential) */
+    last = log2floor(n-1) + 1;
     for (b = 2; b <= last; b++) {
       UV a = 1;
       UV c = n;
@@ -84,6 +81,7 @@ static int is_perfect_power(UV n) {
   return 0;
 }
 
+/* Naive znorder.  Works well here because limit will be very small. */
 static UV order(UV r, UV n, UV limit) {
   UV j;
   UV t = 1;
@@ -110,20 +108,44 @@ static void poly_print(UV* poly, UV r)
 
 static void poly_mod_mul(UV* px, UV* py, UV* res, UV r, UV mod)
 {
+  UV degpx, degpy;
   UV i, j, pxi, pyj, rindex;
 
   memset(res, 0, r * sizeof(UV));
-  for (i = 0; i < r; i++) {
-    pxi = px[i];
-    if (pxi == 0)  continue;
-    for (j = 0; j < r; j++) {
-      pyj = py[j];
-      if (pyj == 0)  continue;
-      rindex = (i+j) < r ? i+j : i+j-r; /* (i+j) % r */
+
+  /* Determine max degree of px and py */
+  for (degpx = r-1; degpx > 0 && !px[degpx]; degpx--) ; /* */
+  for (degpy = r-1; degpy > 0 && !py[degpy]; degpy--) ; /* */
+  /* We can sum at least j values at once */
+  j = (mod >= HALF_WORD) ? 0 : (UV_MAX / ((mod-1)*(mod-1)));
+
+  if (j >= degpx || j >= degpy) {
+    for (rindex = 0; rindex < r; rindex++) {
+      UV sum = 0;
+      j = rindex;
+      for (i = 0; i <= degpx; i++) {
+        if (j <= degpy)
+          sum += px[i] * py[j];
+        j = (j == 0) ? r-1 : j-1;
+      }
+      res[rindex] = sum % mod;
+    }
+  } else {
+    for (i = 0; i <= degpx; i++) {
+      pxi = px[i];
+      if (pxi == 0)  continue;
       if (mod < HALF_WORD) {
-        res[rindex] = (res[rindex] + (pxi*pyj) ) % mod;
+        for (j = 0; j <= degpy; j++) {
+          pyj = py[j];
+          rindex = i+j;   if (rindex >= r)  rindex -= r;
+          res[rindex] = (res[rindex] + (pxi*pyj) ) % mod;
+        }
       } else {
-        res[rindex] = muladdmod(pxi, pyj, res[rindex], mod);
+        for (j = 0; j <= degpy; j++) {
+          pyj = py[j];
+          rindex = i+j;   if (rindex >= r)  rindex -= r;
+          res[rindex] = muladdmod(pxi, pyj, res[rindex], mod);
+        }
       }
     }
   }
@@ -142,14 +164,16 @@ static void poly_mod_sqr(UV* px, UV* res, UV r, UV mod)
   maxpx = s;
   /* 1D convolution */
   for (d = 0; d <= 2*degree; d++) {
+    UV *pp1, *pp2, *ppend;
     UV s_beg = (d <= degree) ? 0 : d-degree;
     UV s_end = ((d/2) <= maxpx) ? d/2 : maxpx;
     if (s_end < s_beg) continue;
     sum = 0;
-    for (s = s_beg; s < s_end; s++) {
-      c = px[s];
-      sum += 2*c * px[d-s];
-    }
+    pp1 = px + s_beg;
+    pp2 = px + d - s_beg;
+    ppend = px + s_end;
+    while (pp1 < ppend)
+      sum += 2 * *pp1++  *  *pp2--;
     /* Special treatment for last point */
     c = px[s_end];
     sum += (s_end*2 == d)  ?  c*c  :  2*c*px[d-s_end];
@@ -213,7 +237,7 @@ int _XS_is_aks_prime(UV n)
 {
   UV sqrtn, limit, r, rlimit, a;
   double log2n;
-  int verbose = _XS_get_verbose();
+  int verbose;
 
   if (n < 2)
     return 0;
@@ -227,6 +251,7 @@ int _XS_is_aks_prime(UV n)
   log2n = log(n) / log(2);   /* C99 has a log2() function */
   limit = (UV) floor(log2n * log2n);
 
+  verbose = _XS_get_verbose();
   if (verbose) { printf("# aks limit is %lu\n", (unsigned long) limit); }
 
   for (r = 2; r < n; r++) {

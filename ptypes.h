@@ -2,15 +2,40 @@
 #define MPU_PTYPES_H
 
 #ifdef _MSC_VER
- /* No stdint.h for MS C, so we lose the chance to possibly optimize
-  * some operations on 64-bit machines running a 32-bit Perl.  It's probably
-  * a rare enough case that we don't need to be too concerned.  If we do want,
-  * see:  http://gauss.cs.ucsb.edu/~aydin/CombBLAS/html/stdint_8h_source.html
-  * for some ideas.
+ /* No stdint.h for MS C, but all the types can be defined.
   *
-  *  Thanks to Sisyphus for bringing the MSC issue to my attention (and even
-  *  submitting a working patch!).
+  * Thanks to Sisyphus and bulk88 for all the help with MSC,
+  * including working patches.
   */
+typedef unsigned __int8  uint8_t;
+typedef unsigned __int16 uint16_t;
+typedef unsigned __int32 uint32_t;
+typedef unsigned __int64 uint64_t;
+typedef __int64 int64_t;
+typedef __int32 int32_t;
+typedef __int16 int16_t;
+typedef __int8 int8_t;
+#define inline __inline
+
+#ifdef _M_X64
+#  define __x86_64__
+#  define __x86_64
+#  define __amd64__
+#  define __amd64
+#endif
+#ifdef _M_IX86
+#  define __i386__
+#  define __i386
+#  define i386
+#  define _X86_
+#endif
+#ifdef _M_IA64
+#  define __ia64__
+#  define __ia64
+#  define __IA64__
+#  define __itanium__
+#endif
+
 #elif defined(__sun) || defined(__sun__)
  /* stdint.h is only in Solaris 10+. */
  #if defined(__SunOS_5_10) || defined(__SunOS_5_11) || defined(__SunOS_5_12)
@@ -50,6 +75,10 @@
 #endif
 
 
+/* See:
+ *   http://www.nntp.perl.org/group/perl.perl5.porters/2013/09/msg207524.html
+ * for some discussion.
+ */
 #ifdef HAS_QUAD
   #define BITS_PER_WORD  64
   #define UVCONST(x)     U64_CONST(x)
@@ -65,6 +94,9 @@
     #undef HAVE_STD_U64
     #define HAVE_STD_U64 1
   #endif
+#elif defined(_MSC_VER)   /* We set up the types earlier */
+ #undef HAVE_STD_U64
+ #define HAVE_STD_U64 1
 #endif
 
 #define MAXBIT        (BITS_PER_WORD-1)
@@ -72,5 +104,29 @@
 #define NBYTES(bits)  ( ((bits)+8-1) / 8 )
 
 #define MPUassert(c,text) if (!(c)) { croak("Math::Prime::Util internal error: " text); }
+
+/* The ASSUME bits are from perl 5.19.6 perl.h */
+
+#ifndef __has_builtin
+#  define __has_builtin(x) 0 /* not a clang style compiler */
+#endif
+
+#ifndef DEBUGGING
+#  if (__GNUC__ == 4 && __GNUC_MINOR__ >= 5 || __GNUC__ > 5) || __has_builtin(__builtin_unreachable)
+#    define MPUASSUME(x) ((x) ? (void) 0 : __builtin_unreachable())
+#  elif defined(_MSC_VER)
+#    define MPUASSUME(x) __assume(x)
+#  elif defined(__ARMCC_VERSION) /* untested */
+#    define MPUASSUME(x) __promise(x)
+#  else
+/* a random compiler might define assert to its own special optimization token
+   so pass it through to C lib as a last resort */
+#    define MPUASSUME(x) assert(x)
+#  endif
+#else
+#  define MPUASSUME(x) assert(x)
+#endif
+
+#define MPUNOT_REACHED MPUASSUME(0)
 
 #endif

@@ -14,85 +14,104 @@
  * This file is part of the Math::Prime::Util Perl module, but it should
  * not be difficult to turn it into standalone code.
  *
- * The main references I used were:
+ * The structure of the main routine is based on Christian Bau's earlier work.
+ *
+ * References:
  *  - Christian Bau's paper and example implementation, 2003, Christian Bau
  *    This was of immense help.  References to "step #" refer to this preprint.
  *  - "Computing Pi(x): the combinatorial method", 2006, Tomás Oliveira e Silva
  *  - "Computing Pi(x): The Meissel, Lehmer, Lagarias, Miller, Odlyzko Method"
  *    1996, Deléglise and Rivat.
  *
- * Comparisons to the other prime counting implementations here:
+ * Comparisons to the other prime counting implementations in this package:
  *
- * Meissel: Combinatorial phi.  Simple implementation.
- * Lehmer:  Combinatorial phi.  Memory use grows rapidly.
- * LMOS:    Combinatorial phi.  Very basic LMO implementation.
- * LMO:     Sieve phi.  10-50x faster than LMOS, better growth rate,
- *          Much, much better memory use than the others.
+ * Sieve:   Segmented, single threaded, thread-safe.  Small table enhanced,
+ *          fastest for n < 60M.  Bad growth rate (like all sieves will have).
+ * Legendre:Simple.  Recursive caching phi.
+ * Meissel: Simple.  Non-recursive phi, lots of memory.
+ * Lehmer:  Non-recursive phi, tries to restrict memory.
+ * LMOS:    Simple.  Non-recursive phi, less memory than Lehmer above.
+ * LMO:     Sieve phi.  Much faster and less memory than the others.
  *
- * Performance is slightly worse than Christian Bau's implementation, but
- * in theory this implementation has more parallelization opportunities.
- * Timing below is single core using MPU.
+ * Timing below is single core Haswell 4770K using Math::Prime::Util.
  *
- *  |   n   |  Meissel |  Lehmer  |   LMOS   |    LMO    |
- *  +-------+----------+----------+----------+-----------+
- *  | 10^19 |          |          |          | 3765.02   |
- *  | 10^18 |          |          |          |  778.21   |
- *  | 10^17 |          |          | 8844.2   |  163.77   |
- *  | 10^16 | 1410.2   | 1043.6   | 1058.9   |   34.81   |
- *  | 10^15 |  137.1   |  137.3   |  142.7   |    7.905  |
- *  | 10^14 |   26.18  |   21.74  |   21.29  |    1.726  |
- *  | 10^13 |    5.155 |    3.947 |    3.353 |    0.405  |
- *  | 10^12 |    1.059 |    0.700 |    0.626 |    0.0936 |
- *  | 10^11 |    0.227 |    0.138 |    0.124 |    0.0227 |
- *  | 10^10 |    0.0509|    0.0309|    0.0286|    0.00589|
+ *  |   n   | Legendre |  Meissel |  Lehmer  |   LMOS   |    LMO    |
+ *  +-------+----------+----------+----------+----------+-----------+
+ *  | 10^19 |          |          |          |          | 2493.4    |
+ *  | 10^18 |          |          |          |          |  498.16   |
+ *  | 10^17 |10459.3   | 4348.3   | 6109.7   | 3478.0   |  103.03   |
+ *  | 10^16 | 1354.6   |  510.8   |  758.6   |  458.4   |   21.64   |
+ *  | 10^15 |  171.2   |   97.1   |  106.4   |   68.11  |    4.707  |
+ *  | 10^14 |   23.56  |   18.59  |   16.51  |   10.44  |    1.032  |
+ *  | 10^13 |    3.783 |    3.552 |    2.803 |    1.845 |    0.237  |
+ *  | 10^12 |    0.755 |    0.697 |    0.505 |    0.378 |    54.9ms |
+ *  | 10^11 |    0.165 |    0.144 |    93.7ms|    81.6ms|    13.80ms|
+ *  | 10^10 |    35.9ms|    29.9ms|    19.9ms|    17.8ms|     3.64ms|
+ *
+ * Run with high memory limits: Meissel uses 1GB for 10^16, ~3GB for 10^17.
+ * Lehmer is limited at high n values by sieving speed.  It is much faster
+ * using parallel primesieve, though cannot come close to LMO.
  */
 
 /* Below this size, just sieve (with table speedup). */
 #define SIEVE_LIMIT  60000000
-/* Adjust to get best performance */
+/* Adjust to get best performance.  Alpha from TOS paper. */
 #define M_FACTOR(n)     (UV) ((double)n * (log(n)/log(5.2)) * (log(log(n))-1.4))
 /* Size of segment used for previous primes, must be >= 21 */
 #define PREV_SIEVE_SIZE 512
 /* Phi sieve multiplier, adjust for best performance and memory use. */
 #define PHI_SIEVE_MULT 13
 
+#define FUNC_isqrt 1
 #define FUNC_icbrt 1
 #include "lmo.h"
 #include "util.h"
 #include "cache.h"
 #include "sieve.h"
 
-typedef unsigned char  uint8;
-typedef unsigned short uint16;
-typedef uint32_t       uint32;
-
-static const unsigned char byte_ones[256] =
-  {0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,
-   1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,
-   1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,
-   2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,
-   1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,
-   2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,
-   2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,
-   3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,4,5,5,6,5,6,6,7,5,6,6,7,6,7,7,8};
-
-static uint32_t bitcount(uint32_t b) {
-  /* The simple table method is faster than __builtin_popcount or
-   * using a 11-bit word table.  It is slower than the Nahalem asm. */
-#if 1
-  return byte_ones[b&0xFF] + byte_ones[(b>>8)&0xFF] + byte_ones[(b>>16)&0xFF] + byte_ones[b>>24];
+#ifdef _MSC_VER
+  typedef unsigned __int8   uint8;
+  typedef unsigned __int16  uint16;
+  typedef unsigned __int32  uint32;
 #else
-  uint32 ret;
-  __asm__("popcnt %1, %0" : "=r" (ret) : "r" (b));
-  return ret;
+  typedef unsigned char  uint8;
+  typedef unsigned short uint16;
+  typedef uint32_t       uint32;
 #endif
-}
 
-/* static uint32 count_one_bits(const unsigned char* m, uint32 nbytes) {
-  uint32 count = 0;
-  while (nbytes--)  count += byte_ones[*m++];
-  return count;
-} */
+/* UV is either uint32 or uint64 depending on Perl.  We use this native size
+ * for the basic unit of the phi sieve.  It can be easily overridden here. */
+typedef UV sword_t;
+#define SWORD_BITS  BITS_PER_WORD
+#define SWORD_ONES  UV_MAX
+#define SWORD_MASKBIT(bits)  (UVCONST(1) << ((bits) % SWORD_BITS))
+#define SWORD_CLEAR(s,bits)  s[bits/SWORD_BITS] &= ~SWORD_MASKBIT(bits)
+
+/* GCC 3.4 - 4.1 has broken 64-bit popcount.
+ * GCC 4.2+ can generate awful code when it doesn't have asm (GCC bug 36041).
+ * When the asm is present (e.g. compile with -march=native on a platform that
+ * has them, like Nahelem+), then it is almost as fast as the direct asm. */
+#if SWORD_BITS == 64
+ #if defined(__POPCNT__) && defined(__GNUC__) && (__GNUC__> 4 || (__GNUC__== 4 && __GNUC_MINOR__> 1))
+   #define bitcount(b)  __builtin_popcountll(b)
+ #else
+   static sword_t bitcount(sword_t b) {
+     b -= (b >> 1) & 0x5555555555555555;
+     b = (b & 0x3333333333333333) + ((b >> 2) & 0x3333333333333333);
+     b = (b + (b >> 4)) & 0x0f0f0f0f0f0f0f0f;
+     return (b * 0x0101010101010101) >> 56;
+   }
+ #endif
+#else
+   /* An 8-bit table version is usually a little faster, but this is simpler. */
+   static sword_t bitcount(sword_t b) {
+     b -= (b >> 1) & 0x55555555;
+     b = (b & 0x33333333) + ((b >> 2) & 0x33333333);
+     b = (b + (b >> 4)) & 0x0f0f0f0f;
+     return (b * 0x01010101) >> 24;
+   }
+#endif
+
 
 /* Create array of small primes: 0,2,3,5,...,prev_prime(n+1) */
 static uint32_t* make_primelist(uint32 n, uint32* number_of_primes)
@@ -102,18 +121,29 @@ static uint32_t* make_primelist(uint32 n, uint32* number_of_primes)
   double logn = log(n);
   uint32 max_index = (n < 67)     ? 18
                    : (n < 355991) ? 15+(n/(logn-1.09))
-                   : (n/log(n)) * (1.0+1.0/logn+2.51/(logn*logn));
+                   : (n/logn) * (1.0+1.0/logn+2.51/(logn*logn));
   *number_of_primes = 0;
   New(0, plist, max_index+1, uint32_t);
-  if (plist == 0)
-    croak("Can not allocate small primes\n");
   plist[0] = 0;
+  /* We could do a simple SoE here.  This is not time critical. */
   START_DO_FOR_EACH_PRIME(2, n) {
     plist[++i] = p;
   } END_DO_FOR_EACH_PRIME;
   *number_of_primes = i;
   return plist;
 }
+#if 0  /* primesieve 5.0 example */
+#include <primesieve.h>
+static uint32_t* make_primelist(uint32 n, uint32* number_of_primes) {
+  uint32_t plist;
+  uint32_t* psprimes = generate_primes(2, n, number_of_primes, UINT_PRIMES);
+  New(0, plist, *number_of_primes + 1, uint32_t);
+  plist[0] = 0;
+  memcpy(plist+1, psprimes, *number_of_primes * sizeof(uint32_t));
+  primesieve_free(psprimes);
+  return plist;
+}
+#endif
 
 /* Given a max prime in small prime list, return max prev prime input */
 static uint32 prev_sieve_max(UV maxprime) {
@@ -122,8 +152,8 @@ static uint32 prev_sieve_max(UV maxprime) {
 }
 
 /* Simple SoE filling a segment */
-static void _prev_sieve_fill(uint32 start, uint8* sieve, const uint32_t* primes) {
-  uint32 i, j, p;
+static void _prev_sieve_fill(UV start, uint8* sieve, const uint32_t* primes) {
+  UV i, j, p;
   memset( sieve, 0xFF, PREV_SIEVE_SIZE );
   for (i = 2, p = 3; p*p < start + (16*PREV_SIEVE_SIZE); p = primes[++i])
     for (j = (start == 0) ? p*p/2 : (p-1) - ((start+(p-1))/2) % p;
@@ -159,9 +189,10 @@ static uint32 prev_sieve_prime(uint32 n, uint8* sieve, uint32* segment_start, ui
 }
 
 /* Create factor table.
- * In lehmer.c we create mu and lpf arrays, which I suspect is faster.
- * Here we use Christian Bau's method, which is more memory efficient.
- * TODO: Neither the speed nor space really matter, but we should measure them.
+ * In lehmer.c we create mu and lpf arrays.  Here we use Christian Bau's
+ * method, which is slightly more memory efficient and also a bit faster than
+ * the code there (which does not use our fast ranged moebius).  It makes
+ * very little difference -- mainly using this table is more convenient.
  *
  * In a uint16 we have stored:
  *    0     moebius(n) = 0
@@ -179,13 +210,12 @@ static uint16* ft_create(uint32 max)
   uint32 max_prime = (tableLimit - 1) / 3 + 1;
 
   New(0, factor_table, tableSize, uint16);
-  if (factor_table == 0)  return 0;
 
   /* Set all values to 65535 (a large prime), set 0 to 65534. */
   factor_table[0] = 65534;
   for (i = 1; i < tableSize; ++i)
     factor_table[i] = 65535;
-  
+
   /* Process each odd. */
   for (i = 1; i < tableSize; ++i) {
     uint32 factor, max_factor;
@@ -214,23 +244,119 @@ static uint16* ft_create(uint32 max)
   return factor_table;
 }
 
+#define PHIC 6
 
-static UV mapes(UV x, uint32 a)
+/* static const uint8_t _s0[ 1] = {0};
+  static const uint8_t _s1[ 2] = {0,1};
+  static const uint8_t _s2[ 6] = {0,1,1,1,1,2}; */
+static const uint8_t _s3[30] = {0,1,1,1,1,1,1,2,2,2,2,3,3,4,4,4,4,5,5,6,6,6,6,7,7,7,7,7,7,8};
+static const uint8_t _s4[210]= {0,1,1,1,1,1,1,1,1,1,1,2,2,3,3,3,3,4,4,5,5,5,5,6,6,6,6,6,6,7,7,8,8,8,8,8,8,9,9,9,9,10,10,11,11,11,11,12,12,12,12,12,12,13,13,13,13,13,13,14,14,15,15,15,15,15,15,16,16,16,16,17,17,18,18,18,18,18,18,19,19,19,19,20,20,20,20,20,20,21,21,21,21,21,21,21,21,22,22,22,22,23,23,24,24,24,24,25,25,26,26,26,26,27,27,27,27,27,27,27,27,28,28,28,28,28,28,29,29,29,29,30,30,30,30,30,30,31,31,32,32,32,32,33,33,33,33,33,33,34,34,35,35,35,35,35,35,36,36,36,36,36,36,37,37,37,37,38,38,39,39,39,39,40,40,40,40,40,40,41,41,42,42,42,42,42,42,43,43,43,43,44,44,45,45,45,45,46,46,47,47,47,47,47,47,47,47,47,47,48};
+static UV tablephi(UV x, uint32 a)
 {
-  UV val;
-  if (a == 0)  return x;
-  if (a == 1)  return x-x/2;
-  val = x-x/2-x/3+x/6;
-  if (a >= 3) val += 0-x/5+x/10+x/15-x/30;
-  if (a >= 4) val += 0-x/7+x/14+x/21-x/42+x/35-x/70-x/105+x/210;
-  if (a >= 5) val += 0-x/11+x/22+x/33-x/66+x/55-x/110-x/165+x/330+x/77-x/154-x/231+x/462-x/385+x/770+x/1155-x/2310;
-  if (a >= 6) val += 0-x/13+x/26+x/39-x/78+x/65-x/130-x/195+x/390+x/91-x/182-x/273+x/546-x/455+x/910+x/1365-x/2730+x/143-x/286-x/429+x/858-x/715+x/1430+x/2145-x/4290-x/1001+x/2002+x/3003-x/6006+x/5005-x/10010-x/15015+x/30030;
-  if (a >= 7) val += 0-x/17+x/34+x/51-x/102+x/85-x/170-x/255+x/510+x/119-x/238-x/357+x/714-x/595+x/1190+x/1785-x/3570+x/187-x/374-x/561+x/1122-x/935+x/1870+x/2805-x/5610-x/1309+x/2618+x/3927-x/7854+x/6545-x/13090-x/19635+x/39270+x/221-x/442-x/663+x/1326-x/1105+x/2210+x/3315-x/6630-x/1547+x/3094+x/4641-x/9282+x/7735-x/15470-x/23205+x/46410-x/2431+x/4862+x/7293-x/14586+x/12155-x/24310-x/36465+x/72930+x/17017-x/34034-x/51051+x/102102-x/85085+x/170170+x/255255-x/510510;
-  return (UV) val;
+  switch (a) {
+    case 0: return x;
+    case 1: return x-x/2;
+    case 2: return x-x/2-x/3+x/6;
+    case 3: return (x/    30U) *     8U + _s3[x %     30U];
+    case 4: return (x/   210U) *    48U + _s4[x %    210U];
+    case 5: {
+              UV xp  = x / 11U;
+              return ((x /210) * 48 + _s4[x  % 210]) -
+                     ((xp/210) * 48 + _s4[xp % 210]);
+             }
+    case 6:
+    default:{
+              UV xp  = x / 11U;
+              UV x2  = x / 13U;
+              UV x2p = x2 / 11U;
+              return ((x  /210) * 48 + _s4[x  % 210]) -
+                     ((xp /210) * 48 + _s4[xp % 210]) -
+                     ((x2 /210) * 48 + _s4[x2 % 210]) +
+                     ((x2p/210) * 48 + _s4[x2p% 210]);
+            }
+    /* case 7: return tablephi(x,a-1)-tablephi(x/17,a-1); */  /* Hack hack */
+  }
 }
 
+/****************************************************************************/
+/*              Legendre Phi.  Not used by LMO, but exported.               */
+/****************************************************************************/
+
+/*
+ * Choices include:
+ *   1) recursive, memory-less.  We use this for small values.
+ *   2) recursive, caching.  We use a this for larger values w/ 32MB cache.
+ *   3) a-walker sorted list.  lehmer.c has this implementation.  It is
+ *      faster for some values, but big and memory intensive.
+ */
+static UV _phi_recurse(UV x, UV a) {
+  UV i, c = (a > PHIC) ? PHIC : a;
+  UV sum = tablephi(x, c);
+  if (a > c) {
+    UV p  = _XS_nth_prime(c);
+    UV pa = _XS_nth_prime(a);
+    for (i = c+1; i <= a; i++) {
+      UV xp;
+      p = next_prime(p);
+      xp = x/p;
+      if (xp < p) {
+        while (x < pa) {
+          a--;
+          pa = prev_prime(pa);
+        }
+        return (sum - a + i - 1);
+      }
+      sum -= legendre_phi(xp, i-1);
+    }
+  }
+  return sum;
+}
+
+#define PHICACHEA 256
+#define PHICACHEX 65536
+#define PHICACHE_EXISTS(x,a) \
+  ((x < PHICACHEX && a < PHICACHEA) ? cache[a*PHICACHEX+x] : 0)
+static IV _phi(UV x, UV a, int sign, const uint32_t* const primes, const uint32_t lastidx, uint16_t* cache)
+{
+  IV sum;
+  if      (PHICACHE_EXISTS(x,a))  return sign * cache[a*PHICACHEX+x];
+  else if (a <= PHIC)             return sign * tablephi(x, a);
+  else if (x < primes[a+1])       sum = sign;
+  else {
+    /* sum = _phi(x, a-1, sign, primes, lastidx, cache) +              */
+    /*       _phi(x/primes[a], a-1, -sign, primes, lastidx, cache);    */
+    UV a2, iters = (a*a > x)  ?  _XS_prime_count(2,isqrt(x))  :  a;
+    UV c = (iters > PHIC) ? PHIC : iters;
+    IV phixc = PHICACHE_EXISTS(x,c) ? cache[a*PHICACHEX+x] : tablephi(x,c);
+    sum = sign * (iters - a + phixc);
+    for (a2 = c+1; a2 <= iters; a2++)
+      sum += _phi(x/primes[a2], a2-1, -sign, primes, lastidx, cache);
+  }
+  if (x < PHICACHEX && a < PHICACHEA && sign*sum <= SHRT_MAX)
+    cache[a*PHICACHEX+x] = sign * sum;
+  return sum;
+}
+UV legendre_phi(UV x, UV a) {
+  /* TODO: tune these */
+  if ( (x > PHIC && a > 200) || (x > 1000000000 && a > 30) ) {
+    uint16_t* cache;
+    uint32_t* primes;
+    uint32_t lastidx;
+    UV res, max_cache_a = (a >= PHICACHEA) ? PHICACHEA : a+1;
+    Newz(0, cache, PHICACHEX * max_cache_a, uint16_t);
+    primes = make_primelist(_XS_nth_prime(a+1), &lastidx);
+    res = (UV) _phi(x, a, 1, primes, lastidx, cache);
+    Safefree(primes);
+    Safefree(cache);
+    return res;
+  }
+  return _phi_recurse(x, a);
+}
+/****************************************************************************/
+
+
 typedef struct {
-  uint32_t *sieve;                 /* segment bit mask */
+  sword_t  *sieve;                 /* segment bit mask */
   uint8    *word_count;            /* bit count in each 64-bit word */
   uint32   *word_count_sum;        /* cumulative sum of word_count */
   UV       *totals;                /* total bit count for all phis at index */
@@ -245,22 +371,15 @@ typedef struct {
   uint32    last_prime_to_remove;  /* index of last prime p, p^2 in segment */
 } sieve_t;
 
-/* Size of phi sieve in 32-bit words.  Multiple of 2*2*3*5*7*11 bytes. */
+/* Size of phi sieve in words.  Multiple of 3*5*7*11 words. */
 #define PHI_SIEVE_WORDS (1155 * PHI_SIEVE_MULT)
 
 /* Bit counting using cumulative sums.  A bit slower than using a running sum,
  * but a little simpler and can be run in parallel. */
-static void make_sieve_counts(const uint32_t* sieve, uint32 sieve_size, uint8* sieve_word_count) {
-  uint32 lwords = (sieve_size + 127) / 128;
-  while (lwords--) {
-    *sieve_word_count++ = bitcount(sieve[0]) + bitcount(sieve[1]);
-    sieve += 2;
-  }
-}
 static uint32 make_sieve_sums(uint32 sieve_size, const uint8* sieve_word_count, uint32* sieve_word_count_sum) {
-  uint32 i, bc, lwords = (sieve_size + 127) / 128;
+  uint32 i, bc, words = (sieve_size + 2*SWORD_BITS-1) / (2*SWORD_BITS);
   sieve_word_count_sum[0] = 0;
-  for (i = 0, bc = 0; i+7 < lwords; i += 8) {
+  for (i = 0, bc = 0; i+7 < words; i += 8) {
     const uint8* cntptr = sieve_word_count + i;
     uint32* sumptr = sieve_word_count_sum + i;
     sumptr[1] = bc += cntptr[0];
@@ -272,17 +391,16 @@ static uint32 make_sieve_sums(uint32 sieve_size, const uint8* sieve_word_count, 
     sumptr[7] = bc += cntptr[6];
     sumptr[8] = bc += cntptr[7];
   }
-  for (; i < lwords; i++)
+  for (; i < words; i++)
     sieve_word_count_sum[i+1] = sieve_word_count_sum[i] + sieve_word_count[i];
-  return sieve_word_count_sum[lwords];
+  return sieve_word_count_sum[words];
 }
 
-static UV _sieve_phi(UV segment_x, const uint32_t* sieve, const uint32* sieve_word_count_sum) {
+static UV _sieve_phi(UV segment_x, const sword_t* sieve, const uint32* sieve_word_count_sum) {
   uint32 bits = (segment_x + 1) / 2;
-  uint32 words = bits / 32;
-  uint32 sieve_sum = sieve_word_count_sum[words/2];
-  if (words & 1) sieve_sum += bitcount( sieve[words-1] );
-  sieve_sum += bitcount( sieve[words] & ~(0xfffffffful << (bits % 32)) );
+  uint32 words = bits / SWORD_BITS;
+  uint32 sieve_sum = sieve_word_count_sum[words];
+  sieve_sum += bitcount( sieve[words] & ~(SWORD_ONES << (bits % SWORD_BITS)) );
   return sieve_sum;
 }
 
@@ -291,11 +409,11 @@ static UV _sieve_phi(UV segment_x, const uint32_t* sieve, const uint32* sieve_wo
  * clever, and does the job. */
 
 #define sieve_zero(sieve, si, wordcount) \
-  { uint32 index = si/32; \
-    uint32 mask = 1UL << (si % 32); \
+  { uint32  index = si/SWORD_BITS; \
+    sword_t mask  = SWORD_MASKBIT(si); \
     if (sieve[index] & mask) { \
       sieve[index] &= ~mask; \
-      wordcount[index/2]--; \
+      wordcount[index]--; \
     }  }
 
 #define sieve_case_zero(casenum, skip, si, p, size, mult, sieve, wordcount) \
@@ -307,7 +425,7 @@ static UV _sieve_phi(UV segment_x, const uint32_t* sieve, const uint32* sieve_wo
 static void remove_primes(uint32 index, uint32 last_index, sieve_t* s, const uint32_t* primes)
 {
   uint32    size = (s->size + 1) / 2;
-  uint32_t *sieve = s->sieve;
+  sword_t  *sieve = s->sieve;
   uint8    *word_count = s->word_count;
 
   s->phi_total = s->totals[last_index];
@@ -341,10 +459,10 @@ static void remove_primes(uint32 index, uint32 last_index, sieve_t* s, const uin
   s->totals[last_index] += make_sieve_sums(s->size, s->word_count, s->word_count_sum);
 }
 
-static void word_tile (uint32_t* source, uint32 from, uint32 to) {
+static void word_tile (sword_t* source, uint32 from, uint32 to) {
   while (from < to) {
     uint32 words = (2*from > to) ? to-from : from;
-    memcpy(source+from, source, 4*words);
+    memcpy(source+from, source, sizeof(sword_t)*words);
     from += words;
   }
 }
@@ -352,7 +470,7 @@ static void word_tile (uint32_t* source, uint32 from, uint32 to) {
 static void init_segment(sieve_t* s, UV segment_start, uint32 size, uint32 start_prime_index, uint32 sieve_last, const uint32_t* primes)
 {
   uint32    i, words;
-  uint32_t* sieve = s->sieve;
+  sword_t*  sieve = s->sieve;
   uint8*    word_count = s->word_count;
 
   s->start = segment_start;
@@ -376,45 +494,40 @@ static void init_segment(sieve_t* s, UV segment_start, uint32 size, uint32 start
       break;
     s->last_prime_to_remove++;
     s->first_bit_index[s->last_prime_to_remove] = (p2 - segment_start - 1) / 2;
-    s->multiplier[s->last_prime_to_remove] = (p % 30) * 8 / 30;
+    s->multiplier[s->last_prime_to_remove] = (uint8) ((p % 30) * 8 / 30);
   }
 
-  memset(sieve, 0xFF, 3*4);        /* Set first 3 words to all 1 bits */
+  memset(sieve, 0xFF, 3*sizeof(sword_t));  /* Set first 3 words to all 1 bits */
   if (start_prime_index >= 3)      /* Remove multiples of 3. */
-    for (i = 3/2; i < 3 * 32; i += 3)
-      sieve[i / 32] &= ~(1ul << (i % 32));
+    for (i = 3/2; i < 3 * SWORD_BITS; i += 3)
+      SWORD_CLEAR(sieve, i);
 
   word_tile(sieve, 3, 15);         /* Copy to first 15 = 3*5 words */
   if (start_prime_index >= 3)      /* Remove multiples of 5. */
-    for (i = 5/2; i < 15 * 32; i += 5)
-      sieve[i / 32] &= ~(1ul << (i % 32));
+    for (i = 5/2; i < 15 * SWORD_BITS; i += 5)
+      SWORD_CLEAR(sieve, i);
 
   word_tile(sieve, 15, 105);       /* Copy to first 105 = 3*5*7 words */
   if (start_prime_index >= 4)      /* Remove multiples of 7. */
-    for (i = 7/2; i < 105 * 32; i += 7)
-      sieve[i / 32] &= ~(1ul << (i % 32));
+    for (i = 7/2; i < 105 * SWORD_BITS; i += 7)
+      SWORD_CLEAR(sieve, i);
 
   word_tile(sieve, 105, 1155);     /* Copy to first 1155 = 3*5*7*11 words */
   if (start_prime_index >= 5)      /* Remove multiples of 11. */
-    for (i = 11/2; i < 1155 * 32; i += 11)
-      sieve[i / 32] &= ~(1ul << (i % 32));
+    for (i = 11/2; i < 1155 * SWORD_BITS; i += 11)
+      SWORD_CLEAR(sieve, i);
 
   size = (size+1) / 2;             /* size to odds */
-  words = (size + 31) / 32;        /* sieve size in 32-bit words */
+  words = (size + SWORD_BITS-1) / SWORD_BITS;   /* sieve size in words */
   word_tile(sieve, 1155, words);   /* Copy first 1155 words to rest */
   /* Zero all unused bits and words */
-  if (size % 32)
-    sieve[words-1] &= ~ (0xffffffffUL << (size % 32));
-  memset(sieve + words, 0x00, 4*(PHI_SIEVE_WORDS+2-words));
+  if (size % SWORD_BITS)
+    sieve[words-1] &= ~(SWORD_ONES << (size % SWORD_BITS));
+  memset(sieve + words, 0x00, sizeof(sword_t)*(PHI_SIEVE_WORDS+2 - words));
 
-  /* Now remove the rest of the primes and create counts+sums. */
-  make_sieve_counts(sieve, s->size, word_count);
-  for (i = 6; i <= start_prime_index; i++) {
-    if (i >= s->first_prime && i <= s->last_prime) {
-      uint32 b = (primes[i] - segment_start - 1) / 2;
-      sieve_zero(sieve, b, word_count);
-    }
-  }
+  /* Create counts, remove primes (updating counts and sums). */
+  for (i = 0; i < words; i++)
+    word_count[i] = (uint8) bitcount(sieve[i]);
   remove_primes(6, start_prime_index, s, primes);
 }
 
@@ -438,7 +551,7 @@ UV _XS_LMO_pi(UV n)
   uint16   *factor_table;
   sieve_t   ss;
 
-  const uint32 c = 7;  /* We can use out Mapes function for c <= 7 */
+  const uint32 c = PHIC;  /* We can use our fast function for this */
 
   /* For "small" n, use our table+segment sieve. */
   if (n < SIEVE_LIMIT || n < 10000)  return _XS_prime_count(2, n);
@@ -450,20 +563,18 @@ UV _XS_LMO_pi(UV n)
   K3 = simple_pi(N3);        /* Pi(N3) */
 
   /* M is N^1/3 times a tunable performance factor. */
-  M = M_FACTOR(N3);
+  M = (N3 > 500) ? M_FACTOR(N3) : N3+N3/2;
   if (M >= N2) M = N2 - 1;         /* M must be smaller than N^1/2 */
   if (M < N3) M = N3;              /* M must be at least N^1/3 */
 
   /* Create the array of small primes, and least-prime-factor/moebius table */
   primes = make_primelist( M + 500, &nprimes );
   factor_table = ft_create( M );
-  if (primes == 0 || factor_table == 0)
-    croak("Allocation failure in LMO Pi\n");
 
   /* Create other arrays */
-  New(0, ss.sieve,           PHI_SIEVE_WORDS   + 2, uint32_t);
-  New(0, ss.word_count,      PHI_SIEVE_WORDS/2 + 2, uint8);
-  New(0, ss.word_count_sum,  PHI_SIEVE_WORDS/2 + 2, uint32);
+  New(0, ss.sieve,           PHI_SIEVE_WORDS   + 2, sword_t);
+  New(0, ss.word_count,      PHI_SIEVE_WORDS   + 2, uint8);
+  New(0, ss.word_count_sum,  PHI_SIEVE_WORDS   + 2, uint32);
   New(0, ss.totals,          K3+2, UV);
   New(0, ss.prime_index,     K3+2, uint32);
   New(0, ss.first_bit_index, K3+2, uint32);
@@ -501,7 +612,7 @@ UV _XS_LMO_pi(UV n)
   end = (M+1)/2;
 
   /* Start at index K2, which is the prime preceeding N^1/2 */
-  prime = prev_sieve_prime(N2+1);
+  prime = prev_sieve_prime( (N2 >= ps_start) ? ps_start : N2+1 );
   prime_index = K2 - 1;
   step7_max = K3;
 
@@ -510,7 +621,7 @@ UV _XS_LMO_pi(UV n)
   for (j = 0; j < end; j++) {
     uint32 lpf = factor_table[j];
     if (lpf > primes[c]) {
-      phi_value = mapes(n / (2*j+1), c);   /* x = 2j+1 */
+      phi_value = tablephi(n / (2*j+1), c);   /* x = 2j+1 */
       if (lpf & 0x01) sum2 += phi_value; else sum1 += phi_value;
     }
   }
@@ -522,7 +633,7 @@ UV _XS_LMO_pi(UV n)
     for (j = (1+M/pc_1)/2; j < end; j++) {
       uint32 lpf = factor_table[j];
       if (lpf > pc_1) {
-        phi_value = mapes(n / (pc_1 * (2*j+1)), c);   /* x = 2j+1 */
+        phi_value = tablephi(n / (pc_1 * (2*j+1)), c);   /* x = 2j+1 */
         if (lpf & 0x01) sum1 += phi_value; else sum2 += phi_value;
       }
     }
@@ -546,8 +657,8 @@ UV _XS_LMO_pi(UV n)
 
   for (sieve_start = 0; sieve_start < last_phi_sieve; sieve_start = sieve_end) {
     /* This phi segment goes from sieve_start to sieve_end. */
-    sieve_end = ((sieve_start + 64*PHI_SIEVE_WORDS) <  last_phi_sieve)
-              ?   sieve_start + 64*PHI_SIEVE_WORDS  :  last_phi_sieve;
+    sieve_end = ((sieve_start + 2*SWORD_BITS*PHI_SIEVE_WORDS) <  last_phi_sieve)
+              ?   sieve_start + 2*SWORD_BITS*PHI_SIEVE_WORDS  :  last_phi_sieve;
     /* Only divisors s.t. sieve_start <= N / divisor < sieve_end considered. */
     least_divisor = n / sieve_end;
     /* Initialize the sieve segment and all associated variables. */
@@ -575,13 +686,14 @@ UV _XS_LMO_pi(UV n)
      * phi(n / (x*primes[k+1]), k).  The inner for loop can be parallelized. */
     for (; k < step7_max; k++) {
       remove_primes(k, k, &ss, primes);
-      if (ss.prime_index[k] >= k+2) {
+      j = ss.prime_index[k];
+      if (j >= k+2) {
         UV pk = primes[k+1];
-        UV endj = ss.prime_index[k];
+        UV endj = j;
         while (endj > 7 && endj-7 >= k+2 && pk*primes[endj-7] > least_divisor) endj -= 8;
         while (            endj   >= k+2 && pk*primes[endj  ] > least_divisor) endj--;
         /* Now that we know how far to go, do the summations */
-        for (j = ss.prime_index[k]; j > endj; j--)
+        for ( ; j > endj; j--)
           sum1 += sieve_phi(n / (pk*primes[j]));
         ss.prime_index[k] = endj;
       }

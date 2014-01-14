@@ -37,8 +37,15 @@
   #define floorl(x)   (long double) floor( (double) (x) )
 #endif
 
-#ifndef INFINITY
+#ifdef LDBL_INFINITY
+  #undef INFINITY
+  #define INFINITY LDBL_INFINITY
+#elif !defined(INFINITY)
   #define INFINITY (DBL_MAX + DBL_MAX)
+#endif
+
+#ifndef LDBL_EPSILON
+  #define LDBL_EPSILON 1e-16
 #endif
 
 #define KAHAN_INIT(s) \
@@ -56,11 +63,20 @@
 
 
 #include "ptypes.h"
+#define FUNC_isqrt 1
+#define FUNC_lcm_ui 1
+#define FUNC_ctz 1
+#define FUNC_log2floor 1
+#define FUNC_next_prime_in_sieve 1
+#define FUNC_prev_prime_in_sieve 1
 #include "util.h"
 #include "sieve.h"
 #include "primality.h"
 #include "cache.h"
 #include "lmo.h"
+#include "factor.h"
+#include "mulmod.h"
+#include "constants.h"
 
 static int _verbose = 0;
 void _XS_set_verbose(int v) { _verbose = v; }
@@ -69,6 +85,36 @@ int _XS_get_verbose(void) { return _verbose; }
 static int _call_gmp = 0;
 void _XS_set_callgmp(int v) { _call_gmp = v; }
 int  _XS_get_callgmp(void) { return _call_gmp; }
+
+/* GCC 3.4 - 4.1 has broken 64-bit popcount.
+ * GCC 4.2+ can generate awful code when it doesn't have asm (GCC bug 36041).
+ * When the asm is present (e.g. compile with -march=native on a platform that
+ * has them, like Nahelem+), then it is almost as fast as the direct asm. */
+#if BITS_PER_WORD == 64
+ #if defined(__POPCNT__) && defined(__GNUC__) && (__GNUC__> 4 || (__GNUC__== 4 && __GNUC_MINOR__> 1))
+   #define popcnt(b)  __builtin_popcountll(b)
+ #else
+   static UV popcnt(UV b) {
+     b -= (b >> 1) & 0x5555555555555555;
+     b = (b & 0x3333333333333333) + ((b >> 2) & 0x3333333333333333);
+     b = (b + (b >> 4)) & 0x0f0f0f0f0f0f0f0f;
+     return (b * 0x0101010101010101) >> 56;
+   }
+ #endif
+#else
+   static UV popcnt(UV b) {
+     b -= (b >> 1) & 0x55555555;
+     b = (b & 0x33333333) + ((b >> 2) & 0x33333333);
+     b = (b + (b >> 4)) & 0x0f0f0f0f;
+     return (b * 0x01010101) >> 24;
+   }
+#endif
+
+#if defined(__GNUC__)
+ #define word_unaligned(m,wordsize)  ((uintptr_t)m & (wordsize-1))
+#else  /* uintptr_t is part of C99 */
+ #define word_unaligned(m,wordsize)  ((unsigned int)m & (wordsize-1))
+#endif
 
 
 static const unsigned char byte_zeros[256] =
@@ -83,34 +129,27 @@ static const unsigned char byte_zeros[256] =
 static UV count_zero_bits(const unsigned char* m, UV nbytes)
 {
   UV count = 0;
+#if BITS_PER_WORD == 64
+  if (nbytes >= 16) {
+    while ( word_unaligned(m,sizeof(UV)) && nbytes--)
+      count += byte_zeros[*m++];
+    if (nbytes >= 8) {
+      UV* wordptr = (UV*)m;
+      UV nwords = nbytes / 8;
+      UV nzeros = nwords * 64;
+      m += nwords * 8;
+      nbytes %= 8;
+      while (nwords--)
+        nzeros -= popcnt(*wordptr++);
+      count += nzeros;
+    }
+  }
+#endif
   while (nbytes--)
     count += byte_zeros[*m++];
   return count;
 }
 
-
-/* Does trial division or prob tests, assuming x not divisible by 2, 3, or 5 */
-static int _is_prime7(UV n)
-{
-  UV limit, i;
-
-  if (n > MPU_PROB_PRIME_BEST)
-    return _XS_is_prob_prime(n);  /* We know this works for all 64-bit n */
-
-  limit = isqrt(n);
-  i = 7;
-  while (1) {   /* trial division, skipping multiples of 2/3/5 */
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 4;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 6;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 2;
-    if (i > limit) break;  if ((n % i) == 0) return 0;  i += 6;
-  }
-  return 2;
-}
 
 
 /* We'll use this little static sieve to quickly answer small values of
@@ -147,17 +186,15 @@ static const unsigned char prime_sieve30[] =
 /* Return of 2 if n is prime, 0 if not.  Do it fast. */
 int _XS_is_prime(UV n)
 {
-  if (n < UVCONST(2000000000)) {
-    UV d, m;
-    unsigned char mtab;
+  if (n <= 10)
+    return (n == 2 || n == 3 || n == 5 || n == 7) ? 2 : 0;
+
+  if (n < UVCONST(200000000)) {
+    UV d = n/30;
+    UV m = n - d*30;
+    unsigned char mtab = masktab30[m];  /* Bitmask in mod30 wheel */
     const unsigned char* sieve;
-    int isprime = -1;
-
-    if (n <= 10)  return (n == 2 || n == 3 || n == 5 || n == 7) ? 2 : 0;
-
-    d = n/30;
-    m = n - d*30;
-    mtab = masktab30[m];  /* Bitmask in mod30 wheel */
+    int isprime;
 
     /* Return 0 if a multiple of 2, 3, or 5 */
     if (mtab == 0)
@@ -170,101 +207,71 @@ int _XS_is_prime(UV n)
     if (!(n%7) || !(n%11) || !(n%13)) return 0;
 
     /* Check primary cache */
+    isprime = -1;
     if (n <= get_prime_cache(0, &sieve))
       isprime = 2*((sieve[d] & mtab) == 0);
     release_prime_cache(sieve);
     if (isprime >= 0)
       return isprime;
   }
-  return _XS_is_prob_prime(n);
+  return is_prob_prime(n);
 }
 
 
-UV _XS_next_prime(UV n)
+UV next_prime(UV n)
 {
-  UV d, m;
+  UV d, m, sieve_size, next;
   const unsigned char* sieve;
-  UV sieve_size;
 
-  if (n <= 10) {
-    switch (n) {
-      case 0: case 1:  return  2; break;
-      case 2:          return  3; break;
-      case 3: case 4:  return  5; break;
-      case 5: case 6:  return  7; break;
-      default:         return 11; break;
-    }
-  }
   if (n < 30*NPRIME_SIEVE30) {
-    START_DO_FOR_EACH_SIEVE_PRIME(prime_sieve30, n+1, 30*NPRIME_SIEVE30)
-      return p;
-    END_DO_FOR_EACH_SIEVE_PRIME;
+    next = next_prime_in_sieve(prime_sieve30, n,30*NPRIME_SIEVE30);
+    if (next != 0) return next;
   }
 
-  /* Overflow */
-#if BITS_PER_WORD == 32
-  if (n >= UVCONST(4294967291))  return 0;
-#else
-  if (n >= UVCONST(18446744073709551557))  return 0;
-#endif
+  if (n >= MPU_MAX_PRIME) return 0; /* Overflow */
 
   sieve_size = get_prime_cache(0, &sieve);
-  if (n < sieve_size) {
-    START_DO_FOR_EACH_SIEVE_PRIME(sieve, n+1, sieve_size)
-      { release_prime_cache(sieve); return p; }
-    END_DO_FOR_EACH_SIEVE_PRIME;
-    /* Not found, so must be larger than the cache size */
-    n = sieve_size;
-  }
+  next = (n < sieve_size)  ?  next_prime_in_sieve(sieve, n, sieve_size)  :  0;
   release_prime_cache(sieve);
+  if (next != 0) return next;
 
   d = n/30;
   m = n - d*30;
   /* Move forward one, knowing we may not be on the wheel */
   if (m == 29) { d++; m = 1; } else  { m = nextwheel30[m]; }
-  while (!_is_prime7(d*30+m)) {
+  n = d*30+m;
+  while (!is_prob_prime(n)) {
     /* Move forward one, knowing we are on the wheel */
-    m = nextwheel30[m];  if (m == 1) d++;
+    n += wheeladvance30[m];
+    m = nextwheel30[m];
   }
-  return(d*30+m);
+  return(n);
 }
 
 
-UV _XS_prev_prime(UV n)
+UV prev_prime(UV n)
 {
-  UV d, m;
   const unsigned char* sieve;
-  UV sieve_size;
+  UV d, m, prev;
 
-  if (n <= 7)
-    return (n <= 2) ? 0 : (n <= 3) ? 2 : (n <= 5) ? 3 : 5;
+  if (n < 30*NPRIME_SIEVE30)
+    return prev_prime_in_sieve(prime_sieve30, n);
+
+  if (n < get_prime_cache(0, &sieve)) {
+    prev = prev_prime_in_sieve(sieve, n);
+    release_prime_cache(sieve);
+    return prev;
+  }
+  release_prime_cache(sieve);
 
   d = n/30;
   m = n - d*30;
-
-  if (n < 30*NPRIME_SIEVE30) {
-    do {
-      m = prevwheel30[m];
-      if (m==29) { MPUassert(d>0, "d 0 in prev_prime");  d--; }
-    } while (prime_sieve30[d] & masktab30[m]);
-    return(d*30+m);
-  }
-
-  sieve_size = get_prime_cache(0, &sieve);
-  if (n < sieve_size) {
-    do {
-      m = prevwheel30[m];
-      if (m==29) { MPUassert(d>0, "d 0 in prev_prime");  d--; }
-    } while (sieve[d] & masktab30[m]);
-    release_prime_cache(sieve);
-  } else {
-    release_prime_cache(sieve);
-    do {
-      m = prevwheel30[m];
-      if (m==29) { MPUassert(d>0, "d 0 in prev_prime");  d--; }
-    } while (!_is_prime7(d*30+m));
-  }
-  return(d*30+m);
+  do {
+    m = prevwheel30[m];
+    if (m==29) d--;
+    n = d*30+m;
+  } while (!is_prob_prime(n));
+  return n;
 }
 
 
@@ -276,7 +283,7 @@ UV _XS_prev_prime(UV n)
  * (2) we hit maxcount: set position to the index of the maxcount'th prime
  *     and return count (which will be equal to maxcount).
  */
-static UV count_segment_maxcount(const unsigned char* sieve, UV nbytes, UV maxcount, UV* pos)
+static UV count_segment_maxcount(const unsigned char* sieve, UV base, UV nbytes, UV maxcount, UV* pos)
 {
   UV count = 0;
   UV byte = 0;
@@ -289,11 +296,22 @@ static UV count_segment_maxcount(const unsigned char* sieve, UV nbytes, UV maxco
   if ( (nbytes == 0) || (maxcount == 0) )
     return 0;
 
+  /* Do fixed-length word counts to start, with possible overcounting */
+  while ((count+64) < maxcount && sieveptr < maxsieve) {
+    UV top = base + 3*maxcount;
+    UV div = (top <       8000) ? 8 :     /* 8 cannot overcount */
+             (top <    1000000) ? 4 :
+             (top <   10000000) ? 3 : 2;
+    UV minbytes = (maxcount-count)/div;
+    if (minbytes > (UV)(maxsieve-sieveptr)) minbytes = maxsieve-sieveptr;
+    count += count_zero_bits(sieveptr, minbytes);
+    sieveptr += minbytes;
+  }
   /* Count until we reach the end or >= maxcount */
   while ( (sieveptr < maxsieve) && (count < maxcount) )
     count += byte_zeros[*sieveptr++];
-  /* If we went one too far, back up.  Count will always be < maxcount */
-  if (count >= maxcount)
+  /* If we went too far, back up. */
+  while (count >= maxcount)
     count -= byte_zeros[*--sieveptr];
   /* We counted this many bytes */
   byte = sieveptr - sieve;
@@ -317,21 +335,20 @@ static UV count_segment_maxcount(const unsigned char* sieve, UV nbytes, UV maxco
  */
 static UV count_segment_ranged(const unsigned char* sieve, UV nbytes, UV lowp, UV highp)
 {
-  UV count = 0;
-
-  UV lo_d = lowp/30;
-  UV lo_m = lowp - lo_d*30;
-  UV hi_d = highp/30;
-  UV hi_m = highp - hi_d*30;
+  UV count, hi_d, lo_d, lo_m;
 
   MPUassert( sieve != 0, "count_segment_ranged incorrect args");
+  if (nbytes == 0) return 0;
+
+  count = 0;
+  hi_d = highp/30;
 
   if (hi_d >= nbytes) {
     hi_d = nbytes-1;
     highp = hi_d*30+29;
   }
 
-  if ( (nbytes == 0) || (highp < lowp) )
+  if (highp < lowp)
     return 0;
 
 #if 0
@@ -342,6 +359,8 @@ static UV count_segment_ranged(const unsigned char* sieve, UV nbytes, UV lowp, U
   return count;
 #endif
 
+  lo_d = lowp/30;
+  lo_m = lowp - lo_d*30;
   /* Count first fragment */
   if (lo_m > 1) {
     UV upper = (highp <= (lo_d*30+29)) ? highp : (lo_d*30+29);
@@ -350,19 +369,17 @@ static UV count_segment_ranged(const unsigned char* sieve, UV nbytes, UV lowp, U
     END_DO_FOR_EACH_SIEVE_PRIME;
     lowp = upper+2;
     lo_d = lowp/30;
-    lo_m = lowp - lo_d*30;
   }
   if (highp < lowp)
     return count;
 
   /* Count bytes in the middle */
   {
+    UV hi_m = highp - hi_d*30;
     UV count_bytes = hi_d - lo_d + (hi_m == 29);
     if (count_bytes > 0) {
       count += count_zero_bits(sieve+lo_d, count_bytes);
       lowp += 30*count_bytes;
-      lo_d = lowp/30;
-      lo_m = lowp - lo_d*30;
     }
   }
   if (highp < lowp)
@@ -436,7 +453,7 @@ static const unsigned short step_counts_30k[] =  /* starts at 7 */
    1903,1970,1962,1905,1905};
 #define NSTEP_COUNTS_30K  (sizeof(step_counts_30k)/sizeof(step_counts_30k[0]))
 
-/* mpu '$step=300_000; $pc=prime_count(20*$step); print "$pc\n", join(",", map { $spc=$pc; $pc=prime_count($_*$step); $pc-$spc; } 21..100), "\n"' */
+/* mpu '$step=300_000; $pc=prime_count(20*$step); print "$pc\n", join(",", map { $spc=$pc; $pc=prime_count($_*$step); $pc-$spc; } 21..212), "\n"' */
 static const unsigned short step_counts_300k[] =  /* starts at 6M */
   {19224,19086,19124,19036,18942,18893,18870,18853,18837,18775,18688,18674,
    18594,18525,18639,18545,18553,18424,18508,18421,18375,18366,18391,18209,
@@ -542,33 +559,20 @@ UV _XS_prime_count(UV low, UV high)
     }
 
     low_d = segment_size;
+    if (30*low_d > low)  low = 30*low_d;
   }
   release_prime_cache(cache_sieve);
 
   /* More primes needed.  Repeatedly segment sieve. */
-  segment = get_prime_segment(&segment_size);
-  if (segment == 0)
-    croak("Could not get segment memory");
-
-  while (low_d <= high_d)
   {
-    UV seghigh_d = ((high_d - low_d) < segment_size)
-                   ? high_d
-                   : (low_d + segment_size-1);
-    UV range_d = seghigh_d - low_d + 1;
-    UV seglow  = (low_d*30 < low) ? low : low_d*30;
-    UV seghigh = (seghigh_d == high_d) ? high : (seghigh_d*30+29);
-
-    if (sieve_segment(segment, low_d, seghigh_d) == 0) {
-      release_prime_segment(segment);
-      croak("Could not segment sieve from %"UVuf" to %"UVuf, low_d*30+1, 30*seghigh_d+29);
+    void* ctx = start_segment_primes(low, high, &segment);
+    UV seg_base, seg_low, seg_high;
+    while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
+      segment_size = seg_high/30 - seg_low/30 + 1;
+      count += count_segment_ranged(segment, segment_size, seg_low-seg_base, seg_high-seg_base);
     }
-
-    count += count_segment_ranged(segment, segment_size, seglow - low_d*30, seghigh - low_d*30);
-
-    low_d += range_d;
+    end_segment_primes(ctx);
   }
-  release_prime_segment(segment);
 
   return count;
 }
@@ -587,12 +591,12 @@ static const unsigned short primes_small[] =
 /* The nth prime will be less or equal to this number */
 static UV _XS_nth_prime_upper(UV n)
 {
-  double fn = (double) n;
-  double flogn, flog2n, upper;
+  double fn, flogn, flog2n, upper;
 
   if (n < NPRIMES_SMALL)
     return primes_small[n];
 
+  fn     = (double) n;
   flogn  = log(n);
   flog2n = log(flogn);    /* Note distinction between log_2(n) and log^2(n) */
 
@@ -619,11 +623,7 @@ static UV _XS_nth_prime_upper(UV n)
    */
   /* Watch out for  overflow */
   if (upper >= (double)UV_MAX) {
-#if BITS_PER_WORD == 32
-    if (n <= UVCONST(203280221)) return UVCONST(4294967291);
-#else
-    if (n <= UVCONST(425656284035217743)) return UVCONST(18446744073709551557);
-#endif
+    if (n <= MPU_MAX_PRIME_IDX) return MPU_MAX_PRIME;
     croak("nth_prime_upper(%"UVuf") overflow", n);
   }
 
@@ -658,7 +658,7 @@ UV _XS_nth_prime(UV n)
     segment_size = get_prime_cache(upper_limit, &cache_sieve) / 30;
     /* Count up everything in the cached sieve. */
     if (segment_size > 0)
-      count += count_segment_maxcount(cache_sieve, segment_size, target, &p);
+      count += count_segment_maxcount(cache_sieve, 0, segment_size, target, &p);
     release_prime_cache(cache_sieve);
   } else {
     /* A binary search on RiemannR is nice, but ends up either often being
@@ -681,7 +681,7 @@ UV _XS_nth_prime(UV n)
     if (count >= n) { /* Too far.  Walk backwards */
       if (_XS_is_prime(lower_limit)) count--;
       for (p = 0; p <= (count-n); p++)
-        lower_limit = _XS_prev_prime(lower_limit);
+        lower_limit = prev_prime(lower_limit);
       return lower_limit;
     }
     count -= 3;
@@ -696,8 +696,6 @@ UV _XS_nth_prime(UV n)
   /* Start segment sieving.  Get memory to sieve into. */
   segbase = segment_size;
   segment = get_prime_segment(&segment_size);
-  if (segment == 0)
-    croak("Could not get segment memory");
 
   while (count < target) {
     /* Limit the segment size if we know the answer comes earlier */
@@ -705,13 +703,10 @@ UV _XS_nth_prime(UV n)
       segment_size = (upper_limit - segbase*30 + 30) / 30;
 
     /* Do the actual sieving in the range */
-    if (sieve_segment(segment, segbase, segbase + segment_size-1) == 0) {
-      release_prime_segment(segment);
-      croak("Could not segment sieve from %"UVuf" to %"UVuf, 30*segbase+1, 30*(segbase+segment_size)+29);
-    }
+    sieve_segment(segment, segbase, segbase + segment_size-1);
 
     /* Count up everything in this segment */
-    count += count_segment_maxcount(segment, segment_size, target-count, &p);
+    count += count_segment_maxcount(segment, 30*segbase, segment_size, target-count, &p);
 
     if (count < target)
       segbase += segment_size;
@@ -721,7 +716,7 @@ UV _XS_nth_prime(UV n)
   return ( (segbase*30) + p );
 }
 
-/* Return a char array with lo-hi+1 elements.  mu[k-lo] = µ(k) for k = lo .. hi.
+/* Return a char array with lo-hi+1 elements. mu[k-lo] = µ(k) for k = lo .. hi.
  * It is the callers responsibility to call Safefree on the result. */
 #define PGTLO(p,lo)  ((p) >= lo) ? (p) : ((p)*(lo/(p)) + ((lo%(p))?(p):0))
 #define P2GTLO(pinit, p, lo) \
@@ -731,67 +726,14 @@ signed char* _moebius_range(UV lo, UV hi)
   signed char* mu;
   UV i;
   UV sqrtn = isqrt(hi);
-#if 0
-  /* Simple char method.  Needs way too many primes. */
-  New(0, mu, hi-lo+1, signed char);
-  if (mu == 0)
-    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
-  memset(mu, 1, hi-lo+1);
-  if (lo == 0)  mu[0] = 0;
-  prime_precalc( _XS_nth_prime_upper(hi) );
-  START_DO_FOR_EACH_PRIME(2, hi) {
-    UV p2 = p*p;
-    for (i = PGTLO(p2, lo); i <= hi; i += p2)
-      mu[i-lo] = 0;
-    for (i = PGTLO(p, lo); i <= hi; i += p)
-      mu[i-lo] = -mu[i-lo];
-  } END_DO_FOR_EACH_PRIME
-#endif
 
-#if 0
-  /* This implementation follows Deléglise & Rivat (1996), which is a
-   * segmented version of Lioen & van de Lune (1994).  Downside is that it
-   * uses an array of IV's, so too much memory.  Pawleicz (2011) shows a small
-   * variation but seems to just be a rearrangement -- there is no time or
-   * space difference on my machines. */
-  IV* A;
-  New(0, A, hi-lo+1, IV);
-  if (A == 0)
-    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
-  for (i = lo; i <= hi; i++)
-    A[i-lo] = 1;
-  START_DO_FOR_EACH_PRIME(2, sqrtn) {
-    UV p2 = p*p;
-    for (i = PGTLO(p2, lo); i <= hi; i += p2)
-      A[i-lo] = 0;
-    for (i = PGTLO(p, lo); i <= hi; i += p)
-      A[i-lo] *= -(IV)p;
-  } END_DO_FOR_EACH_PRIME
-  New(0, mu, hi-lo+1, signed char);
-  if (mu == 0)
-    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
-  memset(mu, 0, hi-lo+1);
-  for (i = lo; i <= hi; i++) {
-    IV a = A[i-lo];
-    if (a != 0)
-      mu[i-lo] = (a != (IV)i && -a != (IV)i)  ?  (a<0) - (a>0)
-                                              :  (a>0) - (a<0);
-  }
-  Safefree(A);
-#endif
-
-#if 1
   /* Kuznetsov indicates that the Deléglise & Rivat (1996) method can be
    * modified to work on logs, which allows us to operate with no
-   * intermediate memory at all.  There isn't really any time savings. */
-  unsigned char* A;
+   * intermediate memory at all.  Same time as the D&R method, less memory. */
   unsigned char logp;
   UV nextlog;
 
   Newz(0, mu, hi-lo+1, signed char);
-  if (mu == 0)
-    croak("Could not get memory for %"UVuf" moebius results\n", hi-lo+1);
-  A = (unsigned char*) mu;
   if (sqrtn*sqrtn != hi) sqrtn++;  /* ceil sqrtn */
 
   logp = 1; nextlog = 3; /* 2+1 */
@@ -802,33 +744,42 @@ signed char* _moebius_range(UV lo, UV hi)
       nextlog = ((nextlog-1)*4)+1;
     }
     for (i = PGTLO(p, lo); i <= hi; i += p)
-      A[i-lo] += logp;
+      mu[i-lo] += logp;
     for (i = PGTLO(p2, lo); i <= hi; i += p2)
-      A[i-lo] |= 0x80;
+      mu[i-lo] |= 0x80;
   } END_DO_FOR_EACH_PRIME
 
-  logp = 0; nextlog = lo;
-  while (nextlog >>= 1)  logp++;
+  logp = log2floor(lo);
   nextlog = 2UL << logp;
   for (i = lo; i <= hi; i++) {
-    unsigned char a = A[i-lo];
+    unsigned char a = mu[i-lo];
     if (i >= nextlog) {  logp++;  nextlog *= 2;  } /* logp is log(p)/log(2) */
-    if (a & 0x80)       { mu[i-lo] = 0; }
-    else if (a >= logp) { mu[i-lo] =  1 - 2*(a&1); }
-    else                { mu[i-lo] = -1 + 2*(a&1); }
+    if (a & 0x80)       { a = 0; }
+    else if (a >= logp) { a =  1 - 2*(a&1); }
+    else                { a = -1 + 2*(a&1); }
+    mu[i-lo] = a;
   }
   if (lo == 0)  mu[0] = 0;
-#endif
+
   return mu;
 }
 
 UV* _totient_range(UV lo, UV hi) {
   UV* totients;
-  UV i;
+  UV i, seg_base, seg_low, seg_high;
+  unsigned char* segment;
+  void* ctx;
+
   if (hi < lo) croak("_totient_range error hi %lu < lo %lu\n", hi, lo);
   New(0, totients, hi-lo+1, UV);
-  if (totients == 0)
-    croak("Could not get memory for %"UVuf" totients\n", hi);
+
+  /* Do via factoring if very small or if we have a small range */
+  if (hi < 100 || hi/(hi-lo+1) > 1000) {
+    for (i = lo; i <= hi; i++)
+      totients[i-lo] = totient(i);
+    return totients;
+  }
+
   for (i = lo; i <= hi; i++) {
     UV v = i;
     if (i % 2 == 0)  v -= v/2;
@@ -836,39 +787,26 @@ UV* _totient_range(UV lo, UV hi) {
     if (i % 5 == 0)  v -= v/5;
     totients[i-lo] = v;
   }
-  START_DO_FOR_EACH_PRIME(lo, hi) {
-    totients[p-lo] = p-1;
-  } END_DO_FOR_EACH_PRIME
-  START_DO_FOR_EACH_PRIME(7, hi/2) {
-    for (i = P2GTLO(2*p,p,lo); i <= hi; i += p)
-      totients[i-lo] -= totients[i-lo]/p;
-  } END_DO_FOR_EACH_PRIME
+
+  ctx = start_segment_primes(7, hi/2, &segment);
+  while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
+    START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {
+      p += seg_base;
+      for (i = P2GTLO(2*p,p,lo); i <= hi; i += p)
+        totients[i-lo] -= totients[i-lo]/p;
+    } END_DO_FOR_EACH_SIEVE_PRIME
+  }
+  end_segment_primes(ctx);
+
+  /* Fill in all primes */
+  for (i = lo | 1; i <= hi; i += 2)
+    if (totients[i-lo] == i)
+      totients[i-lo]--;
+
   return totients;
 }
 
-IV _XS_mertens(UV n) {
-#if 0
-  /* Benito and Varona 2008, theorem 3.  Segment. */
-  IV* mu;
-  UV k;
-  UV limit = 1000000;
-  UV n3 = n/3;
-  IV sum = 0;
-  UV startk = 1;
-  UV endk = limit;
-  prime_precalc( (UV) (sqrt(n)+0.5) );
-  while (startk <= n3) {
-    if (endk > n3) endk = n3;
-    mu = _moebius_range(startk, endk);
-    for (k = startk; k <= endk; k++)
-      if (mu[k-startk] != 0)
-        sum += mu[k-startk] * ((n-k)/(2*k));
-    Safefree(mu);
-    startk = endk+1;
-    endk += limit;
-  }
-  return -sum;
-#else
+IV mertens(UV n) {
   /* See Deléglise and Rivat (1996) for O(n^2/3 log(log(n))^1/3) algorithm.
    * This implementation uses their lemma 2.1 directly, so is ~ O(n).
    * In serial it is quite a bit faster than segmented summation of mu
@@ -909,66 +847,303 @@ IV _XS_mertens(UV n) {
   Safefree(M);
   Safefree(mu);
   return sum;
-#endif
 }
 
-double _XS_chebyshev_theta(UV n)
+
+/* How many times does 2 divide n? */
+#define padic2(n)  ctz(n)
+#define IS_MOD8_3OR5(x)  (((x)&7)==3 || ((x)&7)==5)
+
+static int kronecker_uu_sign(UV a, UV b, int s) {
+  while (a) {
+    int r = padic2(a);
+    if (r) {
+      if ((r&1)  &&  IS_MOD8_3OR5(b))  s = -s;
+      a >>= r;
+    }
+    if (a & b & 2)  s = -s;
+    { UV t = b % a;  b = a;  a = t; }
+  }
+  return (b == 1) ? s : 0;
+}
+
+int kronecker_uu(UV a, UV b) {
+  int r, s;
+  if (b & 1)   return kronecker_uu_sign(a, b, 1);
+  if (!(a&1))  return 0;
+  s = 1;
+  r = padic2(b);
+  if (r) {
+    if ((r&1) && IS_MOD8_3OR5(a))  s = -s;
+    b >>= r;
+  }
+  return kronecker_uu_sign(a, b, s);
+}
+
+int kronecker_su(IV a, UV b) {
+  int r, s;
+  if (a >= 0)  return kronecker_uu(a, b);
+  if (b == 0)  return (a == 1 || a == -1) ? 1 : 0;
+  s = 1;
+  r = padic2(b);
+  if (r) {
+    if (!(a&1))  return 0;
+    if ((r&1) && IS_MOD8_3OR5(a))  s = -s;
+    b >>= r;
+  }
+  a %= (IV) b;
+  if (a < 0)  a += b;
+  return kronecker_uu_sign(a, b, s);
+}
+
+int kronecker_ss(IV a, IV b) {
+  if (a >= 0 && b >= 0)
+    return (b & 1)  ?  kronecker_uu_sign(a, b, 1)  :  kronecker_uu(a,b);
+  if (b >= 0)
+    return kronecker_su(a, b);
+  return kronecker_su(a, -b) * ((a < 0) ? -1 : 1);
+}
+
+UV totient(UV n) {
+  UV i, nfacs, totient, lastf, facs[MPU_MAX_FACTORS+1];
+  if (n <= 1) return n;
+  nfacs = factor(n, facs);
+  totient = 1;
+  lastf = 0;
+  for (i = 0; i < nfacs; i++) {
+    UV f = facs[i];
+    if (f == lastf) { totient *= f;               }
+    else            { totient *= f-1;  lastf = f; }
+  }
+  return totient;
+}
+
+static const UV jordan_overflow[5] =
+#if BITS_PER_WORD == 64
+  {UVCONST(4294967311), 2642249, 65537, 7133, 1627};
+#else
+  {UVCONST(     65537),    1627,   257,   85,   41};
+#endif
+UV jordan_totient(UV k, UV n) {
+  UV factors[MPU_MAX_FACTORS+1];
+  int nfac, i;
+  UV j, totient;
+  if (k == 0 || n <= 1) return (n == 1);
+  if (k > 6 || (k > 1 && n >= jordan_overflow[k-2])) return 0;
+
+  totient = 1;
+  nfac = factor(n,factors);
+  for (i = 0; i < nfac; i++) {
+    UV p = factors[i];
+    UV pk = p;
+    for (j = 1; j < k; j++)  pk *= p;
+    totient *= (pk-1);
+    while (i+1 < nfac && p == factors[i+1]) {
+      i++;
+      totient *= pk;
+    }
+  }
+  return totient;
+}
+
+UV carmichael_lambda(UV n) {
+  UV fac[MPU_MAX_FACTORS+1];
+  UV exp[MPU_MAX_FACTORS+1];
+  int i, nfactors;
+  UV j, lambda = 1;
+
+  if (n < 8) return totient(n);
+  if ((n & (n-1)) == 0) return n >> 2;
+
+  nfactors = factor_exp(n, fac, exp);
+  if (fac[0] == 2 && exp[0] > 2)  exp[0]--;
+  for (i = 0; i < nfactors; i++) {
+    UV pk = fac[i]-1;
+    for (j = 1; j < exp[i]; j++)
+      pk *= fac[i];
+    lambda = lcm_ui(lambda, pk);
+  }
+  return lambda;
+}
+
+int moebius(UV n) {
+  UV factors[MPU_MAX_FACTORS+1];
+  UV i, nfactors;
+
+  if (n <= 1) return (int)n;
+  if ( n >= 49 && (!(n% 4) || !(n% 9) || !(n%25) || !(n%49)) )
+    return 0;
+
+  nfactors = factor(n, factors);
+  for (i = 1; i < nfactors; i++)
+    if (factors[i] == factors[i-1])
+      return 0;
+  return (nfactors % 2) ? -1 : 1;
+}
+
+UV exp_mangoldt(UV n) {
+  if      (n <= 1)           return 1;
+  else if ((n & (n-1)) == 0) return 2;     /* Power of 2 */
+  else if ((n & 1) == 0)     return 1;     /* Even number (not 2) */
+  else {
+    UV i, factors[MPU_MAX_FACTORS+1];
+    UV nfactors = factor(n, factors);
+    for (i = 1; i < nfactors; i++)
+      if (factors[i] != factors[0])
+        return 1;
+    return factors[0];
+  }
+}
+
+
+UV znorder(UV a, UV n) {
+  UV fac[MPU_MAX_FACTORS+1];
+  UV exp[MPU_MAX_FACTORS+1];
+  int i, nfactors;
+  UV j, phi, k = 1;
+
+  if (n <= 1) return n;   /* znorder(x,0) = 0, znorder(x,1) = 1          */
+  if (a <= 1) return a;   /* znorder(0,x) = 0, znorder(1,x) = 1  (x > 1) */
+  if (gcd_ui(a,n) > 1)  return 0;
+
+  /* Abhijit Das, algorithm 1.7, applied to Carmichael Lambda */
+  phi = carmichael_lambda(n);
+  nfactors = factor_exp(phi, fac, exp);
+  for (i = 0; i < nfactors; i++) {
+    UV b, ek, pi = fac[i], ei = exp[i];
+    UV phidiv = phi / pi;
+    for (j = 1; j < ei; j++)
+      phidiv /= pi;
+    b = powmod(a, phidiv, n);
+    for (ek = 0; b != 1; b = powmod(b, pi, n)) {
+      if (ek++ >= ei) return 0;
+      k *= pi;
+    }
+  }
+  return k;
+}
+
+UV znprimroot(UV n) {
+  UV fac[MPU_MAX_FACTORS+1];
+  UV exp[MPU_MAX_FACTORS+1];
+  UV a, phi;
+  int i, nfactors;
+  if (n <= 4) return (n == 0) ? 0 : n-1;
+  if (n % 4 == 0)  return 0;
+  phi = totient(n);
+  /* Check if a primitive root exists. */
+  if (!is_prob_prime(n) && phi != carmichael_lambda(n))  return 0;
+  nfactors = factor_exp(phi, fac, exp);
+  for (i = 0; i < nfactors; i++)
+    exp[i] = phi / fac[i];  /* exp[i] = phi(n) / i-th-factor-of-phi(n) */
+  for (a = 2; a < n; a++) {
+    if (kronecker_uu(a, n) == 0)  continue;
+    for (i = 0; i < nfactors; i++)
+      if (powmod(a, exp[i], n) == 1)
+        break;
+    if (i == nfactors) return a;
+  }
+  return 0;
+}
+
+/* Calculate 1/a mod p.  From William Hart. */
+UV modinverse(UV a, UV p) {
+  IV u1 = 1, u3 = a;
+  IV v1 = 0, v3 = p;
+  IV t1 = 0, t3 = 0;
+  IV quot;
+  while (v3) {
+    quot = u3 - v3;
+    if (u3 < (v3<<2)) {
+      if (quot < v3) {
+        if (quot < 0) {
+          t1 = u1; u1 = v1; v1 = t1;
+          t3 = u3; u3 = v3; v3 = t3;
+        } else {
+          t1 = u1 - v1; u1 = v1; v1 = t1;
+          t3 = u3 - v3; u3 = v3; v3 = t3;
+        }
+      } else if (quot < (v3<<1)) {
+        t1 = u1 - (v1<<1); u1 = v1; v1 = t1;
+        t3 = u3 - (v3<<1); u3 = v3; v3 = t3;
+      } else {
+        t1 = u1 - v1*3; u1 = v1; v1 = t1;
+        t3 = u3 - v3*3; u3 = v3; v3 = t3;
+      }
+    } else {
+      quot = u3 / v3;
+      t1 = u1 - v1*quot; u1 = v1; v1 = t1;
+      t3 = u3 - v3*quot; u3 = v3; v3 = t3;
+    }
+ }
+ if (u1 < 0) u1 += p;
+ return u1;
+}
+
+UV divmod(UV a, UV b, UV n) {   /* a / b  mod n */
+  UV binv = modinverse(b, n);
+  if (binv == 0)  return 0;
+  return mulmod(a, binv, n);
+}
+
+/* Find smallest n where a = g^n mod p
+ * This implementation is just a stupid placeholder.
+ * When prho or bsgs gets working well, lower the trial limit
+ */
+#define DLP_TRIAL_NUM  1000000
+UV znlog(UV a, UV g, UV p) {
+  UV k;
+  const int verbose = _XS_get_verbose();
+  if (a <= 1 || g == 0 || p < 2)
+    return 0;
+  k = dlp_trial(a, g, p, DLP_TRIAL_NUM);
+  if (k != 0 || p <= DLP_TRIAL_NUM)
+    return k;
+  if (verbose) printf("  dlp trial failed.  Trying prho\n");
+  k = dlp_prho(a, g, p, 1000000);
+  if (k != 0)
+    return k;
+  if (verbose) printf("  dlp prho failed.  Back to trial\n");
+  k = dlp_trial(a, g, p, p);
+  return k;
+}
+
+long double chebyshev_function(UV n, int which)
 {
+  long double logp, logn = logl(n);
+  UV sqrtn = which ? isqrt(n) : 0;  /* for theta, p <= sqrtn always false */
   KAHAN_INIT(sum);
 
-  if (n < 10000) {    /* all in one */
-    START_DO_FOR_EACH_PRIME(2, n) {
-      KAHAN_SUM(sum, logl(p));
-    } END_DO_FOR_EACH_PRIME
-  } else {            /* Segmented */
+  if (n < primes_small[NPRIMES_SMALL-1]) {
+    UV p, pi;
+    for (pi = 1;  (p = primes_small[pi]) <= n; pi++) {
+      logp = logl(p);
+      if (p <= sqrtn) logp *= floorl(logn/logp+1e-15);
+      KAHAN_SUM(sum, logp);
+    }
+  } else {
     UV seg_base, seg_low, seg_high;
     unsigned char* segment;
     void* ctx;
-    KAHAN_SUM(sum, logl(2));
-    KAHAN_SUM(sum, logl(3));
-    KAHAN_SUM(sum, logl(5));
+    if (!which) {
+      KAHAN_SUM(sum,logl(2)); KAHAN_SUM(sum,logl(3)); KAHAN_SUM(sum,logl(5));
+    } else {
+      KAHAN_SUM(sum, logl(2) * floorl(logn/logl(2) + 1e-15));
+      KAHAN_SUM(sum, logl(3) * floorl(logn/logl(3) + 1e-15));
+      KAHAN_SUM(sum, logl(5) * floorl(logn/logl(5) + 1e-15));
+    }
     ctx = start_segment_primes(7, n, &segment);
     while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
       START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {
-        KAHAN_SUM(sum, logl(seg_base + p));
+        p += seg_base;
+        logp = logl(p);
+        if (p <= sqrtn) logp *= floorl(logn/logp+1e-15);
+        KAHAN_SUM(sum, logp);
       } END_DO_FOR_EACH_SIEVE_PRIME
     }
     end_segment_primes(ctx);
   }
-  return (double) sum;
-}
-double _XS_chebyshev_psi(UV n)
-{
-  long double logn = logl(n);
-  UV sqrtn = isqrt(n);
-  KAHAN_INIT(sum);
-
-  if (n < 10000) {
-    START_DO_FOR_EACH_PRIME(2, n) {
-      long double logp = logl(p);
-      KAHAN_SUM(sum, (p > (n/p)) ? logp : logp * floorl(logn/logp + 1e-15));
-    } END_DO_FOR_EACH_PRIME
-    return (double) sum;
-  }
-
-  START_DO_FOR_EACH_PRIME(2, sqrtn) {
-    long double logp = logl(p);
-    KAHAN_SUM(sum, logp * floorl(logn/logp + 1e-15));
-  } END_DO_FOR_EACH_PRIME
-
-  { /* Segment from sqrt(n) to n */
-    UV seg_base, seg_low, seg_high;
-    unsigned char* segment;
-    void* ctx;
-    ctx = start_segment_primes(sqrtn+1, n, &segment);
-    while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
-      START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {
-        KAHAN_SUM(sum, logl(seg_base + p));
-      } END_DO_FOR_EACH_SIEVE_PRIME
-    }
-    end_segment_primes(ctx);
-  }
-  return (double) sum;
+  return sum;
 }
 
 
@@ -996,8 +1171,7 @@ double _XS_chebyshev_psi(UV n)
 static long double const euler_mascheroni = 0.57721566490153286060651209008240243104215933593992L;
 static long double const li2 = 1.045163780117492784844588889194613136522615578151L;
 
-double _XS_ExponentialIntegral(double x) {
-  long double const tol = 1e-16;
+long double _XS_ExponentialIntegral(long double x) {
   long double val, term;
   unsigned int n;
   KAHAN_INIT(sum);
@@ -1008,16 +1182,16 @@ double _XS_ExponentialIntegral(double x) {
     /* Continued fraction, good for x < -1 */
     long double lc = 0;
     long double ld = 1.0L / (1.0L - (long double)x);
-    long double old, t, n2;
     val = ld * (-expl(x));
     for (n = 1; n <= 100000; n++) {
+      long double old, t, n2;
       t = (long double)(2*n + 1) - (long double) x;
       n2 = n * n;
       lc = 1.0L / (t - n2 * lc);
       ld = 1.0L / (t - n2 * ld);
       old = val;
       val *= ld/lc;
-      if ( fabsl(val-old) <= tol*fabsl(val) )
+      if ( fabsl(val-old) <= LDBL_EPSILON*fabsl(val) )
         break;
     }
   } else if (x < 0) {
@@ -1039,7 +1213,7 @@ double _XS_ExponentialIntegral(double x) {
     long double sumn = C6p[0]-x*(C6p[1]-x*(C6p[2]-x*(C6p[3]-x*(C6p[4]-x*(C6p[5]-x*C6p[6])))));
     long double sumd = C6q[0]-x*(C6q[1]-x*(C6q[2]-x*(C6q[3]-x*(C6q[4]-x*(C6q[5]-x*C6q[6])))));
     val = logl(-x) - sumn/sumd;
-  } else if (x < -logl(tol)) {
+  } else if (x < -logl(LDBL_EPSILON)) {
     /* Convergent series */
     long double fact_n = x;
     for (n = 2; n <= 200; n++) {
@@ -1047,8 +1221,8 @@ double _XS_ExponentialIntegral(double x) {
       fact_n *= (long double)x * invn;
       term = fact_n * invn;
       KAHAN_SUM(sum, term);
-      /* printf("C  after adding %.8lf, val = %.8lf\n", term, sum); */
-      if ( term < tol*sum) break;
+      /* printf("C  after adding %.20Lf, val = %.20Lf\n", term, sum); */
+      if ( term < LDBL_EPSILON*sum) break;
     }
     KAHAN_SUM(sum, euler_mascheroni);
     KAHAN_SUM(sum, logl(x));
@@ -1061,13 +1235,13 @@ double _XS_ExponentialIntegral(double x) {
     for (n = 1; n <= 200; n++) {
       long double last_term = term;
       term = term * ( (long double)n * invx );
-      if (term < tol*sum) break;
+      if (term < LDBL_EPSILON*sum) break;
       if (term < last_term) {
         KAHAN_SUM(sum, term);
-        /* printf("A  after adding %.8lf, sum = %.8lf\n", term, sum); */
+        /* printf("A  after adding %.20llf, sum = %.20llf\n", term, sum); */
       } else {
         KAHAN_SUM(sum, (-last_term/3) );
-        /* printf("A  after adding %.8lf, sum = %.8lf\n", -last_term/3, sum); */
+        /* printf("A  after adding %.20llf, sum = %.20llf\n", -last_term/3, sum); */
         break;
       }
     }
@@ -1078,12 +1252,12 @@ double _XS_ExponentialIntegral(double x) {
   return val;
 }
 
-double _XS_LogarithmicIntegral(double x) {
+long double _XS_LogarithmicIntegral(long double x) {
   if (x == 0) return 0;
   if (x == 1) return -INFINITY;
   if (x == 2) return li2;
-  if (x <= 0) croak("Invalid input to LogarithmicIntegral:  x must be > 0");
-  return _XS_ExponentialIntegral(log(x));
+  if (x < 0) croak("Invalid input to LogarithmicIntegral:  x must be >= 0");
+  return _XS_ExponentialIntegral(logl(x));
 }
 
 /* Thanks to Kim Walisch for this idea */
@@ -1093,7 +1267,7 @@ UV _XS_Inverse_Li(UV x) {
   UV lo = (UV) (n*logn);
   UV hi = (UV) (n*logn * 2 + 2);
 
-  if (x < 1)  return 0;
+  if (x == 0)  return 0;
   if (hi <= lo) hi = UV_MAX;
   while (lo < hi) {
     UV mid = lo + (hi-lo)/2;
@@ -1168,7 +1342,6 @@ static const long double riemann_zeta_table[] = {
  * we had quad floats, we could use the 9-term polynomial.
  */
 long double ld_riemann_zeta(long double x) {
-  long double const tol = 1e-17;
   int i;
 
   if (x < 0)  croak("Invalid input to RiemannZeta:  x must be >= 0");
@@ -1220,7 +1393,7 @@ long double ld_riemann_zeta(long double x) {
     for (i = 5; i <= 1000000; i++) {
       long double term = powl(i, -x);
       KAHAN_SUM(sum, term);
-      if (term < tol*sum) break;
+      if (term < LDBL_EPSILON*sum) break;
     }
     KAHAN_SUM(sum, powl(4, -x) );
     KAHAN_SUM(sum, powl(3, -x) );
@@ -1254,7 +1427,7 @@ long double ld_riemann_zeta(long double x) {
     for (i = 2; i < 11; i++) {
       b = powl( i, -x );
       s += b;
-      if (fabsl(b/s) < tol)
+      if (fabsl(b/s) < LDBL_EPSILON)
          return s;
     }
     s = s + b*w/(x-1.0) - 0.5 * b;
@@ -1266,7 +1439,7 @@ long double ld_riemann_zeta(long double x) {
       t = a*b/A[i];
       s = s + t;
       t = fabsl(t/s);
-      if (t < tol)
+      if (t < LDBL_EPSILON)
         break;
       a *= x + k + 1.0;
       b /= w;
@@ -1275,8 +1448,7 @@ long double ld_riemann_zeta(long double x) {
   }
 }
 
-double _XS_RiemannR(double x) {
-  long double const tol = 1e-16;
+long double _XS_RiemannR(long double x) {
   long double part_term, term, flogx;
   unsigned int k;
   KAHAN_INIT(sum);
@@ -1293,7 +1465,7 @@ double _XS_RiemannR(double x) {
     term = part_term / (k + k * ld_riemann_zeta(k+1));
     KAHAN_SUM(sum, term);
     /* printf("R  after adding %.15lg, sum = %.15lg\n", term, sum); */
-    if (fabsl(term/sum) < tol) break;
+    if (fabsl(term/sum) < LDBL_EPSILON) break;
   }
 
   return sum;

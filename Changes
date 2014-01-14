@@ -1,5 +1,79 @@
 Revision history for Perl module Math::Prime::Util
 
+0.36  2014-01-13
+
+    [API Changes]
+
+    - factor behavior for 0 and 1 more consistent.  The results for
+      factor, factor_exp, divisors, and divisor_sum now match Pari,
+      and the omega(1)/Omega(1) exception is removed.
+
+      Thanks to Hugo van der Sanden for bringing this up.
+
+    - all_factors changed to divisors.  The old name still remains aliased.
+
+    [ADDED]
+
+    - forcomposites    like forprimes, but on composites.  See Pari 2.6.x.
+    - fordivisors      calls a block for each divisor
+    - kronecker        Kronecker symbol (extension of Jacobi symbol)
+    - znprimroot       Primitive root modulo n
+    - gcd              Greatest common divisor
+    - lcm              Least common multiple
+    - legendre_phi     Legendre's sum
+
+    [FUNCTIONALITY AND PERFORMANCE]
+
+    - Win32 fixes from bulk88 / bulkdd.  Thanks!
+
+    - XS redundancy removal and fixes from bulk88 and leont.  Smaller DLL.
+      This almost includes not compiling a number of prime count methods
+      (Legendre, Meissel, Lehmer, and LMOS) that are not used.  Using
+      "-DLEHMER" in the Makefile will compile them, but there should not
+      be any reason to do so.
+
+    - Big XS interface reorg.  Most functions now go straight to XS, which
+      reduces their overhead.  Input number validation is much faster for
+      the general case.  Those two combined meant the '-nobigint' import
+      no longer serves any good purpose.
+
+    - More functions will go from XS directly to the GMP module, bypassing
+      the Perl layer entirely.  The upside is less overhead, both for the
+      case of having GMP, and without.  In the contrived case of having XS
+      turned off but the GMP module enabled, things will run slower since
+      they no longer go to GMP.
+
+    - Test suite should run faster.  Combination of small speedups to hot
+      spots as well as pushing a few slow tasks to EXTENDED_TESTING (these
+      are generally things never used, like pure Perl AKS).
+
+    - Some 5.6.2-is-broken workarounds.
+
+    - Some LMO edge cases:  small numbers that only show up if a #define is
+      changed, and counts > 18440000000000000000.  Tested through 2^64-1 now.
+
+    - LMO much faster if -march=native is used for gcc on a platform with
+      asm popcnt (e.g. Nahalem+, Barcelona+, ARM Neon, SPARC, Power7, etc.).
+
+    - divisors (all_factors) faster for native size numbers with many factors.
+
+    - Switch from mapes to a cached primorial/totient small phi method in
+      lehmer.c.  Significant for LMOS and Legendre (no longer used or compiled,
+      see earlier.  Thanks to Kim Walisch for questioning my earlier decision.
+
+    - Rewrite sieve composite map.  Segment sieving is faster.  It's a little
+      faster than primegen for me, but still slower than primesieve and yafu.
+
+    - znorder uses Carmichael Lambda instead of Euler Phi.  Faster.
+
+    - While Math::BigInt has the bgcd and blcm functions, they are slow for
+      native numbers, even with the Pari or GMP back ends.  The gcd/lcm here
+      are 20-100x faster.  LCM also returns results consistent with Pari.
+
+    - Removed the old SQUFOF code, so the racing version is the only one.  It
+      was already the only one being used.
+
+
 0.35  2013-12-08
 
     [API Changes]
@@ -95,8 +169,8 @@ Revision history for Perl module Math::Prime::Util
 
     [ADDED]
 
-    - is_proven_prime
-    - is_proven_prime_with_cert
+    - is_provable_prime
+    - is_provable_prime_with_cert
     - carmichael_lambda
     - znorder
     - prime_iterator_object

@@ -2,8 +2,11 @@
 use warnings;
 use strict;
 use Math::Prime::Util ':all';
-use Math::BigInt lib=>"GMP";
+use Math::BigInt lib=>"GMP,Pari";
 
+if (!Math::Prime::Util::prime_get_config->{gmp}) {
+  print "\nYou should install Math::Prime::Util::GMP.\n\n";
+}
 $|++;
 
 print "random prime proofs: 50, 100, 200, 300, 400 +/- 50 digits\n";
@@ -47,7 +50,7 @@ sub test_proofs {
     my $bits = int(rand($size-$minsize)) + $minsize;
     my $n;
     if      ($prime_method eq 'cpmaurer') {
-      $n = Crypt::Primes::maurer(Size=>$bits); 
+      $n = Crypt::Primes::maurer(Size=>$bits);
     } elsif ($prime_method eq 'pari') {
       # This is ~4x faster, has awful distribution.  Still much slower than MPU.
       # $n = Math::Pari::nextprime( ...makerandom... );

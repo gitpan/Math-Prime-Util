@@ -29,7 +29,7 @@ my @primes = qw/
 /;
 
 my @composites = qw/
-0 1 4 6 8 9 10 12 14 15 16 18 20 21 22
+0 4 6 8 9 10 12 14 15 16 18 20 21 22
 9 2047 1373653 25326001 3215031751
 561 1105 1729 2465 2821 6601 8911 10585 15841 29341 41041 46657 52633
 62745 63973 75361 101101 340561 488881 852841 1857241 6733693
@@ -41,27 +41,27 @@ my @composites = qw/
 
 # pseudoprimes to various small prime bases
 my %pseudoprimes = (
-   2 => [ qw/2047 3277 4033 4681 8321 15841 29341 42799 49141 52633 65281 74665 80581 85489 88357 90751/ ],
-   3 => [ qw/121 703 1891 3281 8401 8911 10585 12403 16531 18721 19345 23521 31621 44287 47197 55969 63139 74593 79003 82513 87913 88573 97567/ ],
-   5 => [ qw/781 1541 5461 5611 7813 13021 14981 15751 24211 25351 29539 38081 40501 44801 53971 79381/ ],
-   7 => [ qw/25 325 703 2101 2353 4525 11041 14089 20197 29857 29891 39331 49241 58825 64681 76627 78937 79381 87673 88399 88831/ ],
-  11 => [ qw/133 793 2047 4577 5041 12403 13333 14521 17711 23377 43213 43739 47611 48283 49601 50737 50997 56057 58969 68137 74089 85879 86347 87913 88831/ ],
-  13 => [ qw/85 1099 5149 7107 8911 9637 13019 14491 17803 19757 20881 22177 23521 26521 35371 44173 45629 54097 56033 57205 75241 83333 85285 86347/ ],
-  17 => [ qw/9 91 145 781 1111 2821 4033 4187 5365 5833 6697 7171 15805 19729 21781 22791 24211 26245 31621 33001 33227 34441 35371 38081 42127 49771 71071 74665 77293 78881 88831 96433 97921 98671/ ],
-  19 => [ qw/9 49 169 343 1849 2353 2701 4033 4681 6541 6697 7957 9997 12403 13213 13747 15251 16531 18769 19729 24761 30589 31621 31861 32477 41003 49771 63139 64681 65161 66421 68257 73555 96049/ ],
-  23 => [ qw/169 265 553 1271 2701 4033 4371 4681 6533 6541 7957 8321 8651 8911 9805 14981 18721 25201 31861 34133 44173 47611 47783 50737 57401 62849 82513 96049/ ],
-  29 => [ qw/15 91 341 469 871 2257 4371 4411 5149 6097 8401 11581 12431 15577 16471 19093 25681 28009 29539 31417 33001 48133 49141 54913 79003/ ],
-  31 => [ qw/15 49 133 481 931 6241 8911 9131 10963 11041 14191 17767 29341 56033 58969 68251 79003 83333 87061 88183/ ],
-  37 => [ qw/9 451 469 589 685 817 1333 3781 8905 9271 18631 19517 20591 25327 34237 45551 46981 47587 48133 59563 61337 68101 68251 73633 79381 79501 83333 84151 96727/ ],
-  61 => [ qw/217 341 1261 2701 3661 6541 6697 7613 13213 16213 22177 23653 23959 31417 50117 61777 63139 67721 76301 77421 79381 80041/ ],
-  73 => [ qw/205 259 533 1441 1921 2665 3439 5257 15457 23281 24617 26797 27787 28939 34219 39481 44671 45629 64681 67069 76429 79501 93521/ ],
- psp2       => [ qw/341 561 645 1105 1387 1729 1905 2047 2465 2701 2821 3277 4033 4369 4371 4681 5461 6601 7957 8321 8481 8911 10261 10585/ ],
- psp3       => [ qw/91 121 286 671 703 949 1105 1541 1729 1891 2465 2665 2701 2821 3281 3367 3751 4961 5551 6601 7381 8401 8911 10585 11011/ ],
- lucas      => [ qw/9179 10877 11419 11663 13919 14839 16109 16211 18407 18971 19043/ ],
- slucas     => [ qw/5459 5777 10877 16109 18971 22499 24569 25199 40309 58519 75077/ ],
- eslucas    => [ qw/989 3239 5777 10877 27971 29681 30739 31631 39059 72389 73919 75077 100127/ ],
- aeslucas1  => [ qw/989 3239 5777 10469 10877 27971 29681 30739 31631 39059 72389 73919 75077 100127/ ],
- aeslucas2  => [ qw/3239 4531 5777 10877 12209 21899 31631 31831 32129 34481 36079 37949 47849 50959/ ],
+   2 => [ qw/2047   42799 4335241 1078467589/ ],
+   3 => [ qw/121    44287 4252381 1075490821/ ],
+   5 => [ qw/781    38081 4265257 1075156291/ ],
+   7 => [ qw/25 325 29857 4411681 1074439981/ ],
+  11 => [ qw/133    43213 4224533 1076929261/ ],
+  13 => [ qw/85     35371 4336879 1079159203/ ],
+  17 => [ qw/9 91   71071 4224533 1076237119/ ],
+  19 => [ qw/9 49   49771 4384693 1074718783/ ],
+  23 => [ qw/169    25201 4219129 1079063371/ ],
+  29 => [ qw/15 91  48133 4219129 1075151447/ ],
+  31 => [ qw/15 49  29341 4270657 1073833843/ ],
+  37 => [ qw/9 451  59563 4287817 1075430539/ ],
+  61 => [ qw/217    79381 4219129 1079326249/ ],
+  73 => [ qw/205    34219 4321153 1074220489/ ],
+ psp2       => [ qw/341 561       29341 4259905 1073823745/ ],
+ psp3       => [ qw/91 121        44287 4252381 1073827147/ ],
+ lucas      => [ qw/9179 10877    44099 4259789 1074039119/ ],
+ slucas     => [ qw/5459 5777     75077 4309631 1080085439/ ],
+ eslucas    => [ qw/989 3239 5777 72389 4226777 1076503199/ ],
+ aeslucas1  => [ qw/989 10469     39059 4269341 1076503199/ ],
+ aeslucas2  => [ qw/4531 12209    62479 4403027 1074695441/ ],
 );
 # Test a pseudoprime larger than 2^32.
 push @{$pseudoprimes{2}}, 75792980677 if $use64;
@@ -138,11 +138,11 @@ my %pivals32 = (
           4294967295 => 203280221,
 );
 my %pivals_small = map { $_ => $pivals32{$_} }
-                   grep {$_ <= 200000}
+                   grep {$_ <= 80000}
                    keys %pivals32;
 
 my %pi_intervals = (
-  "1e10 +2**16" => 2821,
+  "1e9 +2**14"  => 785,
   "17 to 13"    => 0,
   "3 to 17"     => 6,
   "4 to 17"     => 5,
@@ -176,7 +176,7 @@ my %nthprimes32 = (
           100000000 => 2038074743,
 );
 my %nthprimes_small = map { $_ => $nthprimes32{$_} }
-                      grep { $extra ? ($_ <= 2_000_000) : ($_ <= 20_000) }
+                      grep { $extra ? ($_ <= 2_000_000) : ($_ <= 5_000) }
                       keys %nthprimes32;
 
 my %eivals = (
@@ -254,22 +254,24 @@ plan tests => 2 +
               4 + scalar(keys %pseudoprimes) +
               scalar(keys %eivals) + scalar(keys %livals) + scalar(keys %rvals) + scalar(keys %rzvals) +
               ($extra ? 4 : 0) +  # Bigfloat RiemannZeta
-              1 + 1 +    # factor
-              10 + 8*3 + # factoring subs
-              10 +       # AKS
+              1 + 1 +             # factor
+              10 + 7*3 +          # factoring subs
+              1 +                 # HOLF
+              ($extra ? 3 : 0) +  # HOLF extra
+              10 +                # AKS
               ($use64 ? 3 : 2) +  # Lucas and BLS75 primality proofs
-              4 +        # M-R and Lucas on bigint
-              13 +       # Misc util.pm functions
-              scalar(keys %ipp) +
+              4 +                 # M-R and Lucas on bigint
+              13 +                # Misc util.pm functions
+              scalar(keys %ipp) + # is_prob_prime
               1;
 
 use Math::Prime::Util qw/primes prime_count_approx prime_count_lower
                          prime_get_config prime_set_config
-                         consecutive_integer_lcm moebius mertens euler_phi
-                         exp_mangoldt chebyshev_theta chebyshev_psi
+                         consecutive_integer_lcm
+                         chebyshev_theta chebyshev_psi
                          is_prob_prime
                         /;
-use Math::BigInt try => 'GMP';
+use Math::BigInt;
 use Math::BigFloat;
 require_ok 'Math::Prime::Util::PP';
 require_ok 'Math::Prime::Util::PrimalityProving';
@@ -286,7 +288,7 @@ require_ok 'Math::Prime::Util::PrimalityProving';
     *prev_prime     = \&Math::Prime::Util::PP::prev_prime;
 
     *is_pseudoprime = \&Math::Prime::Util::PP::is_pseudoprime;
-    *miller_rabin   = \&Math::Prime::Util::PP::miller_rabin;
+    *is_strong_pseudoprime = \&Math::Prime::Util::PP::is_strong_pseudoprime;
     *is_lucas_pseudoprime = \&Math::Prime::Util::PP::is_lucas_pseudoprime;
     *is_strong_lucas_pseudoprime = \&Math::Prime::Util::PP::is_strong_lucas_pseudoprime;
     *is_extra_strong_lucas_pseudoprime = \&Math::Prime::Util::PP::is_extra_strong_lucas_pseudoprime;
@@ -296,10 +298,18 @@ require_ok 'Math::Prime::Util::PrimalityProving';
 
     *factor         = \&Math::Prime::Util::PP::factor;
 
+    *moebius        = \&Math::Prime::Util::_generic_moebius;
+    *euler_phi      = \&Math::Prime::Util::_generic_euler_phi;
+    *mertens        = \&Math::Prime::Util::_generic_mertens;
+    *exp_mangoldt   = \&Math::Prime::Util::_generic_exp_mangoldt;
+
     *RiemannR            = \&Math::Prime::Util::PP::RiemannR;
     *RiemannZeta         = \&Math::Prime::Util::PP::RiemannZeta;
     *LogarithmicIntegral = \&Math::Prime::Util::PP::LogarithmicIntegral;
     *ExponentialIntegral = \&Math::Prime::Util::PP::ExponentialIntegral;
+
+# Turn off use of BRS - ECM tries to use this.
+prime_set_config( irand => sub { int(rand(4294967296.0)) } );
 
 ###############################################################################
 
@@ -398,10 +408,10 @@ while (my($n, $nth) = each (%nthprimes_small)) {
 
 ###############################################################################
 
-is( miller_rabin(0, 2), 0, "MR with 0 shortcut composite");
-is( miller_rabin(1, 2), 0, "MR with 0 shortcut composite");
-is( miller_rabin(2, 2), 1, "MR with 2 shortcut prime");
-is( miller_rabin(3, 2), 1, "MR with 3 shortcut prime");
+is( is_strong_pseudoprime(0, 2), 0, "MR with 0 shortcut composite");
+is( is_strong_pseudoprime(1, 2), 0, "MR with 0 shortcut composite");
+is( is_strong_pseudoprime(2, 2), 1, "MR with 2 shortcut prime");
+is( is_strong_pseudoprime(3, 2), 1, "MR with 3 shortcut prime");
 
 while (my($base, $ppref) = each (%pseudoprimes)) {
   my $npseudos = scalar @$ppref;
@@ -420,7 +430,7 @@ while (my($base, $ppref) = each (%pseudoprimes)) {
   } elsif ($base eq 'lucas') {
      @gotmr = map { is_lucas_pseudoprime($_) } @$ppref;
   } else {
-     @gotmr = map { miller_rabin($_, $base) } @$ppref;
+     @gotmr = map { is_strong_pseudoprime($_, $base) } @$ppref;
   }
   is_deeply(\@gotmr, \@expmr, "$npseudos pseudoprimes (base $base)");
 }
@@ -529,10 +539,6 @@ if ($extra) {
   # 1013 4294967197 4294967291
   my $nbig = Math::BigInt->new("18686551294184381720251");
   my @nfac;
-  @nfac = sort {$a<=>$b} Math::Prime::Util::PP::holf_factor($nbig);
-  is(scalar @nfac, 2, "holf finds a factor of 18686551294184381720251");
-  is($nfac[0] * $nfac[1], $nbig, "holf found a correct factor");
-  ok($nfac[0] != 1 && $nfac[1] != 1, "holf didn't return a degenerate factor");
   @nfac = sort {$a<=>$b} Math::Prime::Util::PP::prho_factor($nbig);
   is(scalar @nfac, 2, "prho finds a factor of 18686551294184381720251");
   is($nfac[0] * $nfac[1], $nbig, "prho found a correct factor");
@@ -563,6 +569,17 @@ if ($extra) {
   is(scalar @nfac, 2, "fermat finds a factor of 73786976930493367637");
   is($nfac[0] * $nfac[1], $nbig, "fermat found a correct factor");
   ok($nfac[0] != 1 && $nfac[1] != 1, "fermat didn't return a degenerate factor");
+  if ($extra) {
+    @nfac = sort {$a<=>$b} Math::Prime::Util::PP::holf_factor($nbig);
+    is(scalar @nfac, 2, "holf finds a factor of 18686551294184381720251");
+    is($nfac[0] * $nfac[1], $nbig, "holf found a correct factor");
+    ok($nfac[0] != 1 && $nfac[1] != 1, "holf didn't return a degenerate factor");
+  }
+  {
+    $nbig = Math::BigInt->new("99999999999979999998975857");
+    @nfac = sort {$a<=>$b} Math::Prime::Util::PP::holf_factor($nbig);
+    is_deeply(\@nfac, [9999999998987,10000000001011], "holf correctly factors 99999999999979999998975857");
+  }
   SKIP: {
     # Unfortunately we can't guarantee this isn't found in stage 1.
     skip "ecm stage 2", 3 unless $extra;
@@ -582,10 +599,11 @@ is( is_aks_prime(4), 0, "AKS: 4 is composite" );
 is( is_aks_prime(64), 0, "AKS: 64 is composite (perfect power)" );
 is( is_aks_prime(65), 0, "AKS: 65 is composite (caught in trial)" );
 is( is_aks_prime(23), 1, "AKS: 23 is prime (r >= n)" );
-is( is_aks_prime(101), 1, "AKS: 101 is prime (passed anr test)" );
 is( is_aks_prime(70747), 0, "AKS: 70747 is composite (n mod r)" );
 SKIP: {
-  skip "Skipping PP AKS test on 32-bit machine", 1 unless $use64 || $extra;
+  skip "Skipping PP AKS test without EXTENDED_TESTING", 2 unless $extra;
+  diag "32-bit Perl will be very slow for AKS" unless $use64;
+  is( is_aks_prime(101), 1, "AKS: 101 is prime (passed anr test)" );
   is( is_aks_prime(74513), 0, "AKS: 74513 is composite (failed anr test)" );
 }
 
@@ -607,8 +625,8 @@ if ($use64) {
 
 {
   my $n = Math::BigInt->new("168790877523676911809192454171451");
-  is( miller_rabin( $n, 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47), 1, "168790877523676911809192454171451 looks prime with bases 2..52" );
-  is( miller_rabin( $n, 53), 0, "168790877523676911809192454171451 found composite with base 53" );
+  is( is_strong_pseudoprime( $n, 2,3,5,7,11,13,17,19,23,29,31,37,41,43,47), 1, "168790877523676911809192454171451 looks prime with bases 2..52" );
+  is( is_strong_pseudoprime( $n, 53), 0, "168790877523676911809192454171451 found composite with base 53" );
   is ( is_strong_lucas_pseudoprime($n), 0, "168790877523676911809192454171451 is not a strong Lucas pseudoprime" );
   SKIP: {
     skip "Old Perl+bigint segfaults in F-U code", 1 if $] < 5.008;

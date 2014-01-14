@@ -9,7 +9,7 @@ use warnings;
 # a small memory leak.  So running the test suite through valgrind will show
 # some small leaks in this test, which has nothing to do with the module.
 
-my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
+my $extra = 0+(defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING});
 my $use64 = ~0 > 4294967295;
 my $broken64 = (18446744073709550592 == ~0);
 
@@ -76,14 +76,16 @@ plan tests =>  0
              + 6*2*$extra # more PC tests
              + 2*scalar(keys %factors)
              + scalar(keys %allfactors)
-             + 10  # moebius, euler_phi, jordan totient, divsum, znorder
+             + 13+3*$extra  # moebius, euler_phi, jordan totient, divsum, etc.
              + 2   # liouville
+             + 3   # gcd
+             + 3   # lcm
              + 15  # random primes
              + 2   # miller-rabin random
-             + 0;
+             + 1;
 
 # Using GMP makes these tests run about 2x faster on some machines
-use bigint try => 'GMP';   #  <--------------- large numbers ahead!  > 2^64
+use bigint try => 'GMP,Pari'; #  <--------------- large numbers ahead!  > 2^64
 use Math::BigFloat;
 
 use Math::Prime::Util qw/
@@ -97,13 +99,18 @@ use Math::Prime::Util qw/
   nth_prime_approx
   factor
   factor_exp
-  all_factors
+  divisors
+  kronecker
   moebius
   euler_phi
+  carmichael_lambda
   jordan_totient
   divisor_sum
   znorder
+  znprimroot
   liouville
+  gcd
+  lcm
   pn_primorial
   ExponentialIntegral
   LogarithmicIntegral
@@ -129,16 +136,21 @@ use Math::Prime::Util qw/
 #        LogarithmicIntegral
 #        RiemannR
 
+my $usegmp = Math::Prime::Util::prime_get_config->{gmp};
 my $bignumver = $bigint::VERSION;
 my $bigintver = $Math::BigInt::VERSION;
 my $bigintlib = Math::BigInt->config()->{lib};
-$bigintlib =~ s/^Math::BigInt:://;
-my $mpugmpver = Math::Prime::Util::prime_get_config->{gmp}
-                ? $Math::Prime::Util::GMP::VERSION : "<none>";
+   $bigintlib =~ s/^Math::BigInt:://;
+my $mpugmpver = $usegmp ? $Math::Prime::Util::GMP::VERSION : "<none>";
 diag "BigInt $bignumver/$bigintver, lib: $bigintlib.  MPU::GMP $mpugmpver\n";
+
+# Turn off use of BRS - ECM tries to use this.
+prime_set_config( irand => sub { int(rand(4294967296.0)) } );
 
 
 ###############################################################################
+
+$_ = 'this should not change';
 
 foreach my $n (@primes) {
   ok( is_prime($n), "$n is prime" );
@@ -151,8 +163,10 @@ foreach my $n (@composites) {
 foreach my $n (@proveprimes) {
   ok( is_prime($n), "$n is prime" );
   SKIP: {
-    skip "Large proof on 32-bit machine.", 1
+    skip "Large proof on 32-bit machine without EXTENDED_TESTING.", 1
       if !$use64 && !$extra && $n > 2**66;
+    skip "Large proof without GMP or EXTENDED_TESTING.", 1
+      if !$usegmp && !$extra && $n > 2**66;
     skip "Skipping provable primes on broken 64-bit", 1 if $broken64;
     ok( is_provable_prime($n), "$n is provably prime" );
   }
@@ -207,40 +221,64 @@ SKIP: {
     is_deeply( [factor_exp($n)], [linear_to_exp(@$factors)], "factor_exp($n)" );
   }
   while (my($n, $allfactors) = each(%allfactors)) {
-    is_deeply( [all_factors($n)], $allfactors, "all_factors($n)" );
+    is_deeply( [divisors($n)], $allfactors, "divisors($n)" );
   }
 }
 
 ###############################################################################
 
 SKIP: {
-  skip "Your 64-bit Perl is broken, skipping moebius, totient, etc.", 10 if $broken64;
+  skip "Your 64-bit Perl is broken, skipping moebius, totient, etc.", 13+3*$extra if $broken64;
   my $n;
   $n = 618970019642690137449562110;
   is( moebius($n), -1, "moebius($n)" );
   is( euler_phi($n), 145857122964987051805507584, "euler_phi($n)" );
-  $n = 48981631802481400359696467;
-  is( jordan_totient(5,$n), 281946200770875813001683560563488308767928594805846855593191749929654015729263525162226378019837608857421063724603387506651820000, "jordan_totient(5,$n)" );
-  is( divisor_sum( $n, sub { my $d=shift; $d**5 * moebius($n/$d); }), 281946200770875813001683560563488308767928594805846855593191749929654015729263525162226378019837608857421063724603387506651820000, "jordan totient using divisor_sum and moebius" );
+  is( carmichael_lambda($n), 3271601336256, "carmichael_lambda($n)" );
+
+  $n = 2188536338969724335807;
+  is( jordan_totient(5,$n), 50207524710890617788554288878260755791080217791665431423557510096680804997771551711694188532723268222129800, "jordan_totient(5,$n)" );
+  is( divisor_sum( $n, sub { my $d=shift; $d**5 * moebius($n/$d); }), 50207524710890617788554288878260755791080217791665431423557510096680804997771551711694188532723268222129800, "jordan totient using divisor_sum and moebius" );
+
+  if ($extra) {
+    $n = 48981631802481400359696467;
+    is( jordan_totient(5,$n), "281946200770875813001683560563488308767928594805846855593191749929654015729263525162226378019837608857421063724603387506651820000", "jordan_totient(5,$n)" );
+    is( divisor_sum( $n, sub { my $d=shift; $d**5 * moebius($n/$d); }), "281946200770875813001683560563488308767928594805846855593191749929654015729263525162226378019837608857421063724603387506651820000", "jordan totient using divisor_sum and moebius" );
+  }
+
   # Done wrong, the following will have a bunch of extra zeros.
   my $hundredfac = Math::BigInt->new(100)->bfac;
   is( divisor_sum($hundredfac), 774026292208877355243820142464115597282472420387824628823543695735957009720184359087194959566149232506852422409529601312686157396490982598473425595924480000000, "Divisor sum of 100!" );
   # These should yield bigint results.
   # Quoted 0 to prevent error in perl 5.8.2 + bigint 0.23 (0 turns into NaN)
-  is( divisor_sum(pn_primorial(71),"0"), 2361183241434822606848, "Divisor count(353#)" );
-  is( divisor_sum(pn_primorial(71),1), 592169807666179080336898884075191344863843751107274613826065194910163387683715846870630955555390054490059876013007363004327526400000000000000000, "Divisor sum(353#)" );
-  is( divisor_sum(pn_primorial(71),2), "12949784465615028275107011121945805610528825503288465119226912396970037707579655747291137846306343809131200618880146749230653882973421307691846381555612687582146340434261447200658536708625570145324567757917046739100833453606420350207262720000000000000000000000000000000000000000000000000", "sigma_2(353#)" );
+  is( divisor_sum(pn_primorial(27),"0"), 134217728, "Divisor count(103#)" );
+  is( divisor_sum(pn_primorial(27),1), "123801167235014219383860918985791897600000", "Divisor sum(103#)" );
+  is( divisor_sum(pn_primorial(27),2), "872887488619258559049272439859735080160421720974947767918289356800000000000000000", "sigma_2(103#)" );
+  if ($extra) {
+    is( divisor_sum(pn_primorial(71),"0"), 2361183241434822606848, "Divisor count(353#)" );
+  }
   # Calc/FastCalc are slugs with this function, so tone things down.
   #is( znorder(82734587234,927208363107752634625923555185111613055040823736157),
   #    4360156780036190093445833597286118936800,
   #    "znorder" );
   is(znorder(8267,927208363107752634625923),2843344277735759285436,"znorder 1");
   is(znorder(902,827208363107752634625947),undef,"znorder 2");
+
+  is( kronecker(878944444444444447324234,216539985579699669610468715172511426009), -1, "kronecker(..., ...)" );
+
+  is( znprimroot(333822190384002421914469856494764513809), 3, "znprimroot(333822190384002421914469856494764513809)" );
+
 }
 
 ###############################################################################
 is( liouville(  560812147176208202656339069), -1, "liouville(a x b x c) = -1" );
 is( liouville(10571644062695614514374497899),  1, "liouville(a x b x c x d) = 1" );
+###############################################################################
+is( gcd(921166566073002915606255698642,1168315374100658224561074758384,951943731056111403092536868444), 14, "gcd(a,b,c)" );
+is( gcd(1214969109355385138343690512057521757303400673155500334102084,1112036111724848964580068879654799564977409491290450115714228), 42996, "gcd(a,b)" );
+is( gcd(745845206184162095041321,61540282492897317017092677682588744425929751009997907259657808323805386381007), 1, "gcd of two primes = 1" );
+is( lcm(9999999998987,10000000001011), 99999999999979999998975857, "lcm(p1,p2)" );
+is( lcm(892478777297173184633,892478777297173184633), 892478777297173184633, "lcm(p1,p1)" );
+is( lcm(23498324,32497832409432,328732487324,328973248732,3487234897324), 1124956497899814324967019145509298020838481660295598696, "lcm(a,b,c,d,e)" );
 
 ###############################################################################
 
@@ -255,25 +293,25 @@ SKIP: {
   ok( is_prime($randprime), "random range prime is prime");
 
   $randprime = random_ndigit_prime(25);
-  cmp_ok( $randprime, '>', 10**24, "random 25-digit prime isn't too small");
-  cmp_ok( $randprime, '<', 10**25, "random 25-digit prime isn't too big");
-  ok( is_prime($randprime), "random 25-digit prime is prime");
+  cmp_ok( $randprime, '>', 10**24, "random 25-digit prime is not too small");
+  cmp_ok( $randprime, '<', 10**25, "random 25-digit prime is not too big");
+  ok( is_prime($randprime), "random 25-digit prime is just right");
 }
 
 $randprime = random_nbit_prime(80);
-cmp_ok( $randprime, '>', 2**79, "random 80-bit prime isn't too small");
-cmp_ok( $randprime, '<', 2**80, "random 80-bit prime isn't too big");
-ok( is_prime($randprime), "random 80-bit prime is prime");
+cmp_ok( $randprime, '>', 2**79, "random 80-bit prime is not too small");
+cmp_ok( $randprime, '<', 2**80, "random 80-bit prime is not too big");
+ok( is_prime($randprime), "random 80-bit prime is just right");
 
-$randprime = random_strong_prime(256);
-cmp_ok( $randprime, '>', 2**255, "random 256-bit strong prime isn't too small");
-cmp_ok( $randprime, '<', 2**256, "random 256-bit strong prime isn't too big");
-ok( is_prime($randprime), "random 80-bit strong prime is prime");
+$randprime = random_strong_prime(190);
+cmp_ok( $randprime, '>', 2**189, "random 190-bit strong prime is not too small");
+cmp_ok( $randprime, '<', 2**190, "random 190-bit strong prime is not too big");
+ok( is_prime($randprime), "random 190-bit strong prime is just right");
 
 $randprime = random_maurer_prime(80);
-cmp_ok( $randprime, '>', 2**79, "random 80-bit Maurer prime isn't too small");
-cmp_ok( $randprime, '<', 2**80, "random 80-bit Maurer prime isn't too big");
-ok( is_prime($randprime), "random 80-bit Maurer prime is prime");
+cmp_ok( $randprime, '>', 2**79, "random 80-bit Maurer prime is not too small");
+cmp_ok( $randprime, '<', 2**80, "random 80-bit Maurer prime is not too big");
+ok( is_prime($randprime), "random 80-bit Maurer prime is just right");
 
 ###############################################################################
 
@@ -283,6 +321,8 @@ do { $randprime += 2 } while is_prime($randprime);
 is( miller_rabin_random( $randprime, 40 ), "0", "80-bit composite fails Miller-Rabin with 40 random bases" );
 
 ###############################################################################
+
+is( $_, 'this should not change', "Nobody clobbered \$_" );
 
 
 sub check_pcbounds {

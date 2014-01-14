@@ -41,6 +41,7 @@
             "Tie::Array" : "0",
             "XSLoader" : "0.01",
             "base" : "0",
+            "constant" : "0",
             "perl" : "5.006002"
          }
       },
@@ -64,5 +65,5 @@
          "url" : "https://github.com/danaj/Math-Prime-Util"
       }
    },
-   "version" : "0.35"
+   "version" : "0.36"
 }

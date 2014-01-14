@@ -5,7 +5,9 @@ use warnings;
 use Test::More;
 use Math::Prime::Util
    qw/moebius mertens euler_phi jordan_totient divisor_sum exp_mangoldt
-      chebyshev_theta chebyshev_psi carmichael_lambda znorder liouville/;
+      chebyshev_theta chebyshev_psi carmichael_lambda znorder liouville
+      znprimroot znlog kronecker legendre_phi gcd lcm
+     /;
 
 my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
@@ -56,7 +58,7 @@ if ($extra && $use64) {
   223092870 => 3516,
 
     6433477 => 900,     # 30^2
-  109851909 => -4096,   # A084235, 2^12  
+  109851909 => -4096,   # A084235, 2^12
 
       2**14 =>  -32,    # A084236
       2**15 =>   26,
@@ -77,7 +79,7 @@ if ($extra && $use64) {
 }
 
 my %totients = (
-     123456 => 41088, 
+     123456 => 41088,
      123457 => 123456,
   123456789 => 82260072,
 );
@@ -96,7 +98,7 @@ my %jordan_totients = (
   # A059377
   4 => [1, 15, 80, 240, 624, 1200, 2400, 3840, 6480, 9360, 14640, 19200, 28560, 36000, 49920, 61440, 83520, 97200, 130320, 149760, 192000, 219600, 279840, 307200, 390000, 428400, 524880, 576000, 707280, 748800, 923520, 983040, 1171200],
   # A059378
-  5 => [1, 31, 242, 992, 3124, 7502, 16806, 31744, 58806, 96844, 161050, 240064, 371292, 520986, 756008, 1015808, 1419856, 1822986, 2476098, 3099008, 4067052, 4992550, 6436342, 7682048, 9762500, 11510052, 14289858, 16671552, 20511148],
+  5 => [1, 31, 242, 992, 3124, 7502, 16806, 31744, 58806, 96844, 161050, 240064, 371292, 520986, 756008, 1015808, 1419856, 1822986, 2476098, 3099008, 4067052, 4992550, 6436342, 7682048, 9762500, 11510052, 14289858, 16671552, 20511148, 23436248, 28629150, 32505856, 38974100, 44015536, 52501944, 58335552, 69343956, 76759038, 89852664, 99168256, 115856200, 126078612, 147008442, 159761600, 183709944, 199526602, 229345006, 245825536, 282458442, 302637500, 343605152, 368321664],
   # A069091
   6 => [1, 63, 728, 4032, 15624, 45864, 117648, 258048, 530712, 984312, 1771560, 2935296, 4826808, 7411824, 11374272, 16515072, 24137568, 33434856, 47045880, 62995968, 85647744, 111608280, 148035888, 187858944, 244125000, 304088904, 386889048],
   # A069092
@@ -113,6 +115,8 @@ my %sigmak = (
   # A001158
   3 => [1, 9, 28, 73, 126, 252, 344, 585, 757, 1134, 1332, 2044, 2198, 3096, 3528, 4681, 4914, 6813, 6860, 9198, 9632, 11988, 12168, 16380, 15751, 19782, 20440, 25112, 24390, 31752, 29792, 37449, 37296, 44226, 43344, 55261, 50654, 61740, 61544],
 );
+
+my @tau4 = (1,4,4,10,4,16,4,20,10,16,4,40,4,16,16,35,4,40,4,40,16,16,4,80,10,16,20,40,4,64,4,56,16,16,16,100,4,16,16,80,4,64,4,40,40,16,4,140,10,40,16,40,4,80,16,80,16,16,4,160,4,16,40,84,16,64,4,40,16,64,4,200,4,16,40,40,16);
 
 my %mangoldt = (
 -13 => 1,
@@ -162,6 +166,10 @@ if ($extra) {
   $chebyshev1{1234567} = 1233272.80087825;
   $chebyshev2{1234567} = 1234515.17962833;
 }
+if (!$usexs && !$extra) {
+  delete $chebyshev1{$_} for grep { $_ > 50000 } keys %chebyshev1;
+  delete $chebyshev2{$_} for grep { $_ > 50000 } keys %chebyshev2;
+}
 
 my @A002322 = (0,1,1,2,2,4,2,6,2,6,4,10,2,12,6,4,4,16,6,18,4,6,10,22,2,20,12,18,6,28,4,30,8,10,16,12,6,36,18,12,4,40,6,42,10,12,22,46,4,42,20,16,12,52,18,20,6,18,28,58,4,60,30,6,16,12,10,66,16,22,12,70,6,72,36,20,18,30,12,78,4,54,40,82,6,16,42,28,10,88,12,12,22,30,46,36,8,96,42,30,20,100,16,102,12,12,52,106,18,108,20,36,12,112,18,44,28,12,58,48,4,110,60,40,30,100,6,126,32,42,12,130,10,18,66,36,16,136,22,138,12,46,70,60,12,28,72,42,36,148,20,150,18,48,30,60,12,156,78,52,8,66,54,162,40,20,82,166,6,156,16,18,42,172,28,60,20,58,88,178,12,180,12,60,22,36,30,80,46,18,36,190,16,192,96,12,42,196,30,198,20);
 
@@ -190,6 +198,147 @@ my @mult_orders = (
   [31407,2147475467,266],
 );
 
+my %primroots = (
+   -11 => 2,
+     0 => undef,
+     1 => 0,
+     2 => 1,
+     3 => 2,
+     4 => 3,
+     5 => 2,
+     6 => 5,
+     7 => 3,
+     8 => undef,
+     9 => 2,
+    10 => 3,          # 3 is the smallest root.  Pari gives the other root 7.
+      1729 => undef,  # Pari goes into an infinite loop.
+   5109721 =>  94,
+  17551561 =>  97,
+  90441961 => 113,
+1407827621 =>   2,
+1520874431 =>  17,
+1685283601 => 164,
+ 100000001 => undef,  # Without an early exit, this will essentially hang.
+);
+if ($use64) {
+  $primroots{2232881419280027} = 6;         # factor divide goes to FP
+  $primroots{14123555781055773271} = 6;     # bmodpow hits RT 71548
+  $primroots{89637484042681} = 335;         # smallest root is large
+}
+
+my @kroneckers = (
+  [ 109981, 737777,  1],
+  [ 737779, 121080, -1],
+  [-737779, 121080,  1],
+  [ 737779,-121080, -1],
+  [-737779,-121080, -1],
+  [12345,331,-1],
+  [1001,9907,-1],
+  [19,45,1],
+  [8,21,-1],
+  [5,21,1],
+  [5,1237,-1],
+  [10, 49, 1],
+  [123,4567,-1],
+  [3,18,0], [3,-18,0],
+  [-2, 0, 0],  [-1, 0, 1],  [ 0, 0, 0],  [ 1, 0, 1],  [ 2, 0, 0],
+  [-2, 1, 1],  [-1, 1, 1],  [ 0, 1, 1],  [ 1, 1, 1],  [ 2, 1, 1],
+  [-2,-1,-1],  [-1,-1,-1],  [ 0,-1, 1],  [ 1,-1, 1],  [ 2,-1, 1],
+  # Some cases trying to make sure we're not turning UVs into IVs
+  [ 3686556869,  428192857,  1],
+  [-1453096827,  364435739, -1],
+  [ 3527710253, -306243569, 1],
+  [-1843526669, -332265377, 1],
+  [  321781679, 4095783323, -1],
+  [  454249403,  -79475159, -1],
+);
+if ($use64) {
+  push @kroneckers, [17483840153492293897, 455592493, 1];
+  push @kroneckers, [-1402663995299718225, 391125073, 1];
+  push @kroneckers, [16715440823750591903, -534621209, -1];
+  push @kroneckers, [13106964391619451641,16744199040925208803, 1];
+  push @kroneckers, [11172354269896048081,10442187294190042188,-1];
+  push @kroneckers, [-5694706465843977004,9365273357682496999,-1];
+}
+
+my @legendre_sums = (
+  [ 89, 4, 21 ],
+  [ 46, 4, 11 ],
+  [ 47, 4, 12 ],
+  [ 48, 4, 12 ],
+  [ 52, 4, 12 ],
+  [ 53, 4, 13 ],
+  [10000, 5, 2077],
+  [526, 7, 95],
+  [588, 6, 111],
+  [100000, 5, 20779],
+  [5882, 6, 1128],
+  [100000, 7, 18053],
+  [10000, 8, 1711],
+  [1000000, 168, 78331],
+);
+
+my @gcds = (
+  [ [], 0],
+  [ [8], 8],
+  [ [9,9], 9],
+  [ [0,0], 0],
+  [ [1, 0, 0], 1],
+  [ [0, 0, 1], 1],
+  [ [17,19], 1 ],
+  [ [54,24], 6 ],
+  [ [42,56], 14],
+  [ [ 9,28], 1 ],
+  [ [48,180], 12],
+  [ [2705353758,2540073744,3512215098,2214052398], 18],
+  [ [2301535282,3609610580,3261189640], 106],
+  [ [694966514,510402262,195075284,609944479], 181],
+  [ [294950648,651855678,263274296,493043500,581345426], 58 ],
+  [ [-30,-90,90], 30],
+  [ [-3,-9,-18], 3],
+);
+my @lcms = (
+  [ [], 0],
+  [ [8], 8],
+  [ [9,9], 9],
+  [ [0,0], 0],
+  [ [1, 0, 0], 0],
+  [ [0, 0, 1], 0],
+  [ [17,19], 323 ],
+  [ [54,24], 216 ],
+  [ [42,56], 168],
+  [ [ 9,28], 252 ],
+  [ [48,180], 720],
+  [ [36,45], 180],
+  [ [-36,45], 180],
+  [ [-36,-45], 180],
+  [ [30,15,5], 30],
+  [ [2,3,4,5], 60],
+  [ [30245, 114552], 3464625240],
+  [ [11926,78001,2211], 2790719778],
+  [ [1426,26195,3289,8346], 4254749070],
+);
+if ($use64) {
+  push @gcds, [ [12848174105599691600,15386870946739346600,11876770906605497900], 700];
+  push @gcds, [ [9785375481451202685,17905669244643674637,11069209430356622337], 117];
+  push @lcms, [ [26505798,9658520,967043,18285904], 15399063829732542960];
+  push @lcms, [ [267220708,143775143,261076], 15015659316963449908];
+}
+
+my @znlogs = (
+ [ [5,2,1019], 10],
+ [ [2,4,17], undef],
+ [ [7,3,8], undef],
+ [ [3,3,8], 1],
+ [ [10,2,101], 25],
+ [ [2,55,101], 73],         # 2 = 55^73 mod 101
+ [ [228,2,383], 110],
+ [ [3061666278, 499998, 3332205179], 22],
+);
+if ($usexs) {
+  push @znlogs, [ [5678,5,10007], 8620];  # 5678 = 5^8620 mod 10007
+}
+
 # These are slow with XS, and *really* slow with PP.
 if (!$usexs) {
   %big_mertens = map { $_ => $big_mertens{$_} }
@@ -214,14 +363,20 @@ plan tests => 0 + 1
                 + 3*scalar(keys %mertens)
                 + 1*scalar(keys %big_mertens)
                 + 2 # Small Phi
-                + 7 + scalar(keys %totients)
+                + 8 + scalar(keys %totients)
                 + 1 # Small Carmichael Lambda
+                + scalar(@kroneckers)
+                + scalar(@gcds)
+                + scalar(@lcms)
                 + scalar(@mult_orders)
+                + scalar(@znlogs)
+                + scalar(@legendre_sums)
+                + scalar(keys %primroots) + 2
                 + scalar(keys %jordan_totients)
                 + 2  # Dedekind psi calculated two ways
-                + 1  # Calculate J5 two different ways
+                + 2  # Calculate J5 two different ways
                 + 2 * $use64 # Jordan totient example
-                + 1 + 2*scalar(keys %sigmak) + 2
+                + 1 + 2*scalar(keys %sigmak) + 3
                 + scalar(keys %mangoldt)
                 + scalar(keys %chebyshev1)
                 + scalar(keys %chebyshev2)
@@ -267,13 +422,14 @@ is_deeply( [euler_phi(1,2)], [1,1],   "euler_phi 1-2" );
 is_deeply( [euler_phi(1,3)], [1,1,2], "euler_phi 1-3" );
 is_deeply( [euler_phi(2,3)], [1,2],   "euler_phi 2-3" );
 is_deeply( [euler_phi(10,20)], [4,10,4,12,6,8,8,16,6,18,8], "euler_phi 10-20" );
+is_deeply( [euler_phi(1513,1537)],
+   [qw/1408 756 800 756 1440 440 1260 576 936 760 1522 504 1200 648
+       1016 760 1380 384 1530 764 864 696 1224 512 1456/],
+           "euler_phi(1513,1537)" );
 
 ###### Jordan Totient
 while (my($k, $tref) = each (%jordan_totients)) {
-  my @tlist;
-  foreach my $n (1 .. scalar @$tref) {
-    push @tlist, jordan_totient($k, $n);
-  }
+  my @tlist = map { jordan_totient($k, $_) } 1 .. scalar @$tref;
   is_deeply( \@tlist, $tref, "Jordan's Totient J_$k" );
 }
 
@@ -289,9 +445,11 @@ while (my($k, $tref) = each (%jordan_totients)) {
 }
 
 {
-  my @J5_moebius = map { divisor_sum($_, sub { my $d=shift; $d**5 * moebius($_/$d); }) } (0 .. 100);
-  my @J5_jordan = map { jordan_totient(5, $_) } (0 .. 100);
-  is_deeply( \@J5_moebius, \@J5_jordan, "Calculate J5 two different ways");
+  my $J5 = $jordan_totients{5};
+  my @J5_jordan = map { jordan_totient(5, $_) } 1 .. scalar @$J5;
+  is_deeply( \@J5_jordan, $J5, "Jordan totient 5, using jordan_totient");
+  my @J5_moebius = map { my $n = $_; divisor_sum($n, sub { my $d=shift; $d**5 * moebius($n/$d); }) } 1 .. scalar @$J5;
+  is_deeply( \@J5_moebius, $J5, "Jordan totient 5, using divisor sum" );
 }
 
 if ($use64) {
@@ -330,6 +488,15 @@ while (my($k, $sigmaref) = each (%sigmak)) {
   is_deeply( \@slist2, $sigmak{0}, "tau as divisor_sum(n, 0)" );
 }
 
+{
+  # tau_4 A007426
+  my @t;
+  foreach my $n (1 .. scalar @tau4) {
+    push @t, divisor_sum($n, sub { divisor_sum($_[0],sub { divisor_sum($_[0],0) }) });
+  }
+  is_deeply( \@t, \@tau4, "Tau4 (A007426), nested divisor sums" );
+}
+
 ###### Exponential of von Mangoldt
 while (my($n, $em) = each (%mangoldt)) {
   is( exp_mangoldt($n), $em, "exp_mangoldt($n) == $em" );
@@ -349,11 +516,42 @@ while (my($n, $c2) = each (%chebyshev2)) {
   my @lambda = map { carmichael_lambda($_) } (0 .. $#A002322);
   is_deeply( \@lambda, \@A002322, "carmichael_lambda with range: 0, $#A000010" );
 }
+###### kronecker
+foreach my $karg (@kroneckers) {
+  my($a, $n, $exp) = @$karg;
+  my $k = kronecker($a, $n);
+  is( $k, $exp, "kronecker($a, $n) = $exp" );
+}
+###### gcd
+foreach my $garg (@gcds) {
+  my($aref, $exp) = @$garg;
+  my $gcd = gcd(@$aref);
+  is( $gcd, $exp, "gcd(".join(",",@$aref).") = $exp" );
+}
+###### lcm
+foreach my $garg (@lcms) {
+  my($aref, $exp) = @$garg;
+  my $lcm = lcm(@$aref);
+  is( $lcm, $exp, "lcm(".join(",",@$aref).") = $exp" );
+}
 ###### znorder
 foreach my $moarg (@mult_orders) {
   my ($a, $n, $exp) = @$moarg;
   my $zn = znorder($a, $n);
   is( $zn, $exp, "znorder($a, $n) = " . ((defined $exp) ? $exp : "<undef>") );
+}
+###### znprimroot
+while (my($n, $root) = each (%primroots)) {
+  is( znprimroot($n), $root, "znprimroot($n) == " . ((defined $root) ? $root : "<undef>") );
+}
+is( znprimroot("-100000898"), 31, "znprimroot(\"-100000898\") == 31" );
+is( znprimroot("+100000898"), 31, "znprimroot(\"+100000898\") == 31" );
+###### znlog
+foreach my $arg (@znlogs) {
+  my($aref, $exp) = @$arg;
+  my ($a, $g, $p) = @$aref;
+  my $k = znlog($a,$g,$p);
+  is( $k, $exp, "znlog($a,$g,$p) = " . ((defined $exp) ? $exp : "<undef>") );
 }
 ###### liouville
 foreach my $i (@liouville_pos) {
@@ -361,6 +559,11 @@ foreach my $i (@liouville_pos) {
 }
 foreach my $i (@liouville_neg) {
   is( liouville($i), -1, "liouville($i) = -1" );
+}
+###### Legendre phi
+foreach my $r (@legendre_sums) {
+  my($x, $a, $exp) = @$r;
+  is( legendre_phi($x, $a), $exp, "legendre_phi($x,$a) = $exp" );
 }
 
 sub cmp_closeto {

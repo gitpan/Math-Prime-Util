@@ -82,6 +82,7 @@
     UV r = 0;
     if (a >= n) a %= n;   /* Careful attention from the caller should make */
     if (b >= n) b %= n;   /* these unnecessary.                            */
+    if ((a|b) < HALF_WORD) return (a*b) % n;
     if (a < b) { UV t = a; a = b; b = t; }
     if (n <= (UV_MAX>>1)) {
       while (b > 0) {
@@ -99,20 +100,20 @@
     return r;
   }
 
-  #define mulmod(a,b,n) ((((a)|(b)) < HALF_WORD) ? ((a)*(b))%(n):_mulmod(a,b,n))
-  #define sqrmod(a,n)   (((a) < HALF_WORD)       ? ((a)*(a))%(n):_mulmod(a,a,n))
+  #define mulmod(a,b,n) _mulmod(a,b,n)
+  #define sqrmod(a,n)   _mulmod(a,a,n)
 
 #endif
 
 #ifndef addmod
-  #define addmod(a,b,n) ((((n)-(a)) > (b))  ?  ((a)+(b))  :  ((a)+(b)-(n)))
+  static INLINE UV addmod(UV a, UV b, UV n) {
+    return ((n-a) > b) ?  a+b  :  a+b-n;
+  }
 #endif
 
-/* We need to make sure a and b get evaluated into UVs, then do the
- * subtract into a UV before the addmod. */
 static INLINE UV submod(UV a, UV b, UV n) {
-  UV t1 = n - b;
-  return addmod(a, t1, n);
+  UV t = n-b;  /* Evaluate as UV, then hand to addmod */
+  return addmod(a, t, n);
 }
 
 /* a^2 + c mod n */

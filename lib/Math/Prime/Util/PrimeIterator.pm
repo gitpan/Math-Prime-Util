@@ -4,7 +4,7 @@ use warnings;
 
 BEGIN {
   $Math::Prime::Util::PrimeIterator::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PrimeIterator::VERSION = '0.35';
+  $Math::Prime::Util::PrimeIterator::VERSION = '0.36';
 }
 
 use base qw( Exporter );
@@ -13,7 +13,6 @@ our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
 
 
 use Math::Prime::Util qw/next_prime prev_prime is_prime prime_count nth_prime/;
-use Math::BigInt try => "GMP,Pari";
 
 # We're going to use a scalar rather than a hash because there is currently
 # only one data object (the current value) and this makes it little faster.
@@ -36,9 +35,9 @@ sub __iter__ {
 
 sub value { ${$_[0]}; }
 sub next {
-  my $self = shift;
-  $$self = next_prime($$self);
-  return $self;
+  #my $self = shift;  $$self = next_prime($$self);  return $self;
+  ${$_[0]} = next_prime(${$_[0]});
+  return $_[0];
 }
 sub prev {
   my $self = shift;
@@ -47,9 +46,9 @@ sub prev {
   return $self;
 }
 sub iterate {
-  my $self = shift;
-  my $p = $$self;
-  $$self = next_prime($p);
+  #my $self = shift;  my $p = $$self;  $$self = next_prime($p);  return $p;
+  my $p = ${$_[0]};
+  ${$_[0]} = next_prime(${$_[0]});
   return $p;
 }
 
@@ -65,14 +64,12 @@ sub rewind {
 }
 
 sub peek {
-  my $self = shift;
-  return next_prime($$self);
+  return next_prime(${$_[0]});
 }
 
 # Some methods to match Math::NumSeq
 sub tell_i {
-  my $self = shift;
-  return prime_count($$self);
+  return prime_count(${$_[0]});
 }
 sub pred {
   my($self, $n) = @_;
@@ -130,7 +127,7 @@ Math::Prime::Util::PrimeIterator - An object iterator for primes
 
 =head1 VERSION
 
-Version 0.35
+Version 0.36
 
 
 =head1 SYNOPSIS
@@ -145,7 +142,7 @@ Version 0.35
   my $v = $it->value();     # Return current value
   $it->next();              # Move to next prime (returns self)
   $it->prev();              # Move to prev prime (returns self)
-  my $v = $it->iterate();   # Returns current value and moves to next prime
+  my $v = $it->iterate();   # Returns current value; moves to next prime
   $it->rewind();            # Resets position to 2
   $it->rewind($n);          # Resets position to next_prime($n-1)
 

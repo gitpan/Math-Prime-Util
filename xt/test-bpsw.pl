@@ -81,7 +81,7 @@ print "\n";
 }
 
 if (1) {
-use bigint try => 'GMP';
+use bigint try => 'GMP,Pari';
 my $big_base = 2**64 + 1;
 my $range = 2**1024 - 1;
 my $end_base = $big_base + $range;
@@ -106,7 +106,7 @@ my $num_rns = 100;
 my $len_rns = 100;
 my $count = -1;
 
-use bigint try => 'GMP';
+use bigint try => 'GMP,Pari';
 
 my @rns;  # make the primality tests at least lift a finger.
 while (@rns < $num_rns) {
@@ -121,7 +121,7 @@ print "Starting benchmarks, $num_rns $len_rns-digit random numbers...\n";
 if (1) {
   print "\nMiller-Rabin, one base:\n";
   cmpthese($count, {
-    "MPU:PP"  => sub { Math::Prime::Util::PP::miller_rabin($_,2) for @rns; },
+    "MPU:PP"  => sub { Math::Prime::Util::PP::is_strong_pseudoprime($_,2) for @rns; },
     "MPU:GMP" => sub { Math::Prime::Util::GMP::is_strong_pseudoprime($_,2) for @rns; },
     "MPU"     => sub { Math::Prime::Util::is_strong_pseudoprime($_,2) for @rns; },
     "MP"      => sub { Math::Primality::is_strong_pseudoprime("$_","2") for @rns; },
@@ -142,7 +142,7 @@ if (1) {
   print "\nBPSW test:\n";
   cmpthese($count, {
     "MPU:PP"  => sub { my $sum = 0;
-               do { $sum += ( Math::Prime::Util::PP::miller_rabin($_, 2) &&
+               do { $sum += ( Math::Prime::Util::PP::is_strong_pseudoprime($_, 2) &&
                       Math::Prime::Util::PP::is_strong_lucas_pseudoprime($_) )
                       ? 1 : 0 } for @rns; },
     "MPU:GMP" => sub { Math::Prime::Util::GMP::is_prob_prime($_) for @rns; },

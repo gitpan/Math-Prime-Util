@@ -4,11 +4,15 @@ use warnings;
 
 BEGIN {
   $Math::Prime::Util::ZetaBigFloat::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::ZetaBigFloat::VERSION = '0.35';
+  $Math::Prime::Util::ZetaBigFloat::VERSION = '0.36';
 }
 
-use Math::BigInt try => "GMP,Pari";
-use Math::BigFloat;
+BEGIN {
+  do { require Math::BigInt;  Math::BigInt->import(try=>"GMP,Pari"); }
+    unless defined $Math::BigInt::VERSION;
+  use Math::BigFloat;
+}
+
 
 # Riemann Zeta($k) for integer $k.
 # So many terms and digits are used so we can quickly do bignum R.
@@ -273,8 +277,8 @@ sub _Recompute_Dk {
     my $gcd;
     foreach my $i (0 .. $k) {
       # ad + cb  /  bd
-      $sum_n->bmul($d)->badd( $sum_d->copy->bmul($n) );   
-      $sum_d->bmul($d);                                   
+      $sum_n->bmul($d)->badd( $sum_d->copy->bmul($n) );
+      $sum_d->bmul($d);
       $gcd = Math::BigInt::bgcd($sum_n, $sum_d);
       do { $sum_n /= $gcd;  $sum_d /= $gcd; } unless $gcd->is_one;
       my $dmul = (2*$i+1) * (2*$i+2);
@@ -465,7 +469,7 @@ Math::Prime::Util::ZetaBigFloat - Perl Big Float versions of Riemann Zeta and R 
 
 =head1 VERSION
 
-Version 0.35
+Version 0.36
 
 
 =head1 SYNOPSIS

@@ -5,6 +5,7 @@
 #include "ptypes.h"
 #include "cache.h"
 #include "sieve.h"
+#include "constants.h"   /* _MPU_FILL_EXTRA_N and _MPU_INITIAL_CACHE_SIZE */
 
 #include "EXTERN.h"
 #include "perl.h"
@@ -82,18 +83,15 @@ static int mutex_init = 0;
 static unsigned char* prime_cache_sieve = 0;
 static UV             prime_cache_size = 0;
 
-/* To avoid thrashing, sieve a little farther than we absolutely need to. */
-#define FILL_EXTRA_N (128*30)
-
 /* Erase the primary cache and fill up to n. */
 /* Note: You must have a write lock before calling this! */
 static void _erase_and_fill_prime_cache(UV n) {
   UV padded_n;
 
-  if (n >= (UV_MAX-FILL_EXTRA_N))
+  if (n >= (UV_MAX-_MPU_FILL_EXTRA_N))
     padded_n = UV_MAX;
   else
-    padded_n = ((n + FILL_EXTRA_N)/30)*30;
+    padded_n = ((n + _MPU_FILL_EXTRA_N)/30)*30;
 
   /* If new size isn't larger or smaller, then we're done. */
   if (prime_cache_size == padded_n)
@@ -106,8 +104,8 @@ static void _erase_and_fill_prime_cache(UV n) {
 
   if (n > 0) {
     prime_cache_sieve = sieve_erat30(padded_n);
-    if (prime_cache_sieve != 0)
-      prime_cache_size = padded_n;
+    MPUassert(prime_cache_sieve != 0, "sieve returned null");
+    prime_cache_size = padded_n;
   }
 }
 
@@ -153,6 +151,7 @@ UV get_prime_cache(UV n, const unsigned char** sieve)
 #else
   if (prime_cache_size < n)
     _erase_and_fill_prime_cache(n);
+  MPUassert(prime_cache_size >= n, "prime cache is too small!");
   if (sieve != 0)
     *sieve = prime_cache_sieve;
   return prime_cache_size;
@@ -196,9 +195,7 @@ unsigned char* get_prime_segment(UV *size) {
     New(0, mem, SECONDARY_SEGMENT_CHUNK_SIZE, unsigned char);
     *size = SECONDARY_SEGMENT_CHUNK_SIZE;
   }
-
-  if (mem == 0)
-    croak("Could not allocate %"UVuf" bytes for segment sieve", *size);
+  MPUassert(mem != 0, "get_prime_segment allocation failure");
 
   return mem;
 }
@@ -216,7 +213,6 @@ void release_prime_segment(unsigned char* mem) {
 
 
 
-#define INITIAL_CACHE_SIZE ((1024-16)*30 - FILL_EXTRA_N)
 void prime_precalc(UV n)
 {
   if (!mutex_init) {
@@ -226,9 +222,9 @@ void prime_precalc(UV n)
     mutex_init = 1;
   }
 
-  /* On initialization, make a few primes (2-30k using 1k memory) */
+  /* On initialization, make a few primes (30k per 1k memory) */
   if (n == 0)
-    n = INITIAL_CACHE_SIZE;
+    n = _MPU_INITIAL_CACHE_SIZE;
   get_prime_cache(n, 0);   /* Sieve to n */
 
   /* TODO: should we prealloc the segment here? */
@@ -237,19 +233,22 @@ void prime_precalc(UV n)
 
 void prime_memfree(void)
 {
+  unsigned char* old_segment = 0;
   MPUassert(mutex_init == 1, "cache mutexes have not been initialized");
 
   MUTEX_LOCK(&segment_mutex);
   /* Don't free if another thread is using it */
-  if ( (prime_segment != 0) && (prime_segment_is_available) ) {
-    Safefree(prime_segment);
-    prime_segment = 0;
+  if ( (prime_segment != 0) && (prime_segment_is_available) ) {\
+    unsigned char* new_segment = old_segment;
+    old_segment = prime_segment;
+    prime_segment = new_segment; /* Exchanged old_segment / prime_segment */
   }
   MUTEX_UNLOCK(&segment_mutex);
+  if (old_segment) Safefree(old_segment);
 
   WRITE_LOCK_START;
     /* Put primary cache back to initial state */
-    _erase_and_fill_prime_cache(INITIAL_CACHE_SIZE);
+    _erase_and_fill_prime_cache(_MPU_INITIAL_CACHE_SIZE);
   WRITE_LOCK_END;
 }
 

@@ -7,7 +7,12 @@
 #include "sieve.h"
 #include "ptypes.h"
 #include "cache.h"
+#define FUNC_isqrt 1
 #include "util.h"
+#include "primality.h"
+
+/* If the base sieve is larger than this, presieve and test */
+#define BASE_SIEVE_LIMIT  4000000
 
 
 /* 1001 bytes of presieved mod-30 bytes.  If the area to be sieved is
@@ -95,84 +100,161 @@ static const unsigned char presieve13[PRESIEVE_SIZE] =
   0x18,0x89,0x08,0x25,0x44,0x22,0x30,0x14,0xc3,0x88,0x86,0x40,0x1a,
   0x28,0x30,0x85,0x09,0x54,0x60,0x43,0x24,0x92,0x81,0x08,0x04,0x70};
 
-#define FIND_COMPOSITE_POS(i,j) \
-  { \
-    UV dlast = d; \
-    do { \
-      d += dinc; \
-      m += minc; \
-      if (m >= 30) { d++; m -= 30; } \
-    } while ( masktab30[m] == 0 ); \
-    wdinc[i] = d - dlast; \
-    wmask[j] = masktab30[m]; \
-  }
-#define FIND_COMPOSITE_POSITIONS(p) \
+static const unsigned char stepdata[8][8][8] = {
+  { {96,65,34,67,36,69,102,47},
+    {64,47,75,106,46,105,77,44},
+    {32,86,33,87,115,45,114,84},
+    {72,46,85,42,73,127,44,123},
+    {96,35,100,79,33,66,37,78},
+    {64,108,34,109,67,47,65,46},
+    {32,76,117,33,118,74,35,87},
+    {32,127,86,45,84,43,82,121},
+  },
+  { {65,34,67,36,69,102,47,96},
+    {105,77,44,64,47,75,106,46},
+    {33,87,115,45,114,84,32,86},
+    {73,127,44,123,72,46,85,42},
+    {33,66,37,78,96,35,100,79},
+    {65,46,64,108,34,109,67,47},
+    {33,118,74,35,87,32,76,117},
+    {121,32,127,86,45,84,43,82},
+  },
+  { {34,67,36,69,102,47,96,65},
+    {106,46,105,77,44,64,47,75},
+    {114,84,32,86,33,87,115,45},
+    {42,73,127,44,123,72,46,85},
+    {66,37,78,96,35,100,79,33},
+    {34,109,67,47,65,46,64,108},
+    {74,35,87,32,76,117,33,118},
+    {82,121,32,127,86,45,84,43},
+  },
+  { {67,36,69,102,47,96,65,34},
+    {75,106,46,105,77,44,64,47},
+    {115,45,114,84,32,86,33,87},
+    {123,72,46,85,42,73,127,44},
+    {35,100,79,33,66,37,78,96},
+    {67,47,65,46,64,108,34,109},
+    {35,87,32,76,117,33,118,74},
+    {43,82,121,32,127,86,45,84},
+  },
+  { {36,69,102,47,96,65,34,67},
+    {44,64,47,75,106,46,105,77},
+    {84,32,86,33,87,115,45,114},
+    {44,123,72,46,85,42,73,127},
+    {100,79,33,66,37,78,96,35},
+    {108,34,109,67,47,65,46,64},
+    {76,117,33,118,74,35,87,32},
+    {84,43,82,121,32,127,86,45},
+  },
+  { {69,102,47,96,65,34,67,36},
+    {77,44,64,47,75,106,46,105},
+    {45,114,84,32,86,33,87,115},
+    {85,42,73,127,44,123,72,46},
+    {37,78,96,35,100,79,33,66},
+    {109,67,47,65,46,64,108,34},
+    {117,33,118,74,35,87,32,76},
+    {45,84,43,82,121,32,127,86},
+  },
+  { {102,47,96,65,34,67,36,69},
+    {46,105,77,44,64,47,75,106},
+    {86,33,87,115,45,114,84,32},
+    {46,85,42,73,127,44,123,72},
+    {78,96,35,100,79,33,66,37},
+    {46,64,108,34,109,67,47,65},
+    {118,74,35,87,32,76,117,33},
+    {86,45,84,43,82,121,32,127},
+  },
+  { {47,96,65,34,67,36,69,102},
+    {47,75,106,46,105,77,44,64},
+    {87,115,45,114,84,32,86,33},
+    {127,44,123,72,46,85,42,73},
+    {79,33,66,37,78,96,35,100},
+    {47,65,46,64,108,34,109,67},
+    {87,32,76,117,33,118,74,35},
+    {127,86,45,84,43,82,121,32},
+  },
+};
+
+static const int wheelmap[30] =
+  {0,0,0,0,0,0,0,1,0,0,0,2,0,3,0,0,0,4,0,5,0,0,0,6,0,0,0,0,0,7};
+static const int wheel2xmap[30] =     /* (2*p)%30 => 2,14,22,26,4,8,16,28 */
+  {0,0,0,0,4,0,0,0,5,0,0,0,0,0,1,0,6,0,0,0,0,0,2,0,0,0,3,0,7,0};
+/*     2   4       8          14  16          22      26  28     (2*p)%30 */
+
+#define FIND_COMPOSITE_POSITIONS(d, m, p) \
   do { \
-    FIND_COMPOSITE_POS(0,1) \
-    FIND_COMPOSITE_POS(1,2) \
-    FIND_COMPOSITE_POS(2,3) \
-    FIND_COMPOSITE_POS(3,4) \
-    FIND_COMPOSITE_POS(4,5) \
-    FIND_COMPOSITE_POS(5,6) \
-    FIND_COMPOSITE_POS(6,7) \
-    FIND_COMPOSITE_POS(7,0) \
-    d -= p; \
+    int v; \
+    UV dinc = (2*p) / 30; \
+    UV minc = (2*p) - dinc*30; \
+    const unsigned char* steps = stepdata [wheelmap[m]] [wheel2xmap[minc]]; \
+    v = steps[0]; wdinc[0] = dinc*(v>>5)+((v>>3)&0x3); wmask[0] = 1<<(v&0x7); \
+    v = steps[1]; wdinc[1] = dinc*(v>>5)+((v>>3)&0x3); wmask[1] = 1<<(v&0x7); \
+    v = steps[2]; wdinc[2] = dinc*(v>>5)+((v>>3)&0x3); wmask[2] = 1<<(v&0x7); \
+    v = steps[3]; wdinc[3] = dinc*(v>>5)+((v>>3)&0x3); wmask[3] = 1<<(v&0x7); \
+    v = steps[4]; wdinc[4] = dinc*(v>>5)+((v>>3)&0x3); wmask[4] = 1<<(v&0x7); \
+    v = steps[5]; wdinc[5] = dinc*(v>>5)+((v>>3)&0x3); wmask[5] = 1<<(v&0x7); \
+    v = steps[6]; wdinc[6] = dinc*(v>>5)+((v>>3)&0x3); wmask[6] = 1<<(v&0x7); \
+    v = steps[7]; wdinc[7] = dinc*(v>>5)+((v>>3)&0x3); wmask[7] = 1<<(v&0x7); \
   } while (0)
 
-static void sieve_prefill(unsigned char* mem, UV startd, UV endd)
-{
-  UV nbytes = endd - startd + 1;
-  MPUassert( (mem != 0) && (endd >= startd), "sieve_prefill bad arguments");
+static const UV max_sieve_prime = (BITS_PER_WORD==64) ? 4294967291U : 65521U;
 
-  /* Walk the memory, tiling in the presieve area using memcpy.
-   * This is pretty fast, but it might still benefit from using copy
-   * doubling (where we copy to the memory, then copy memory to memory
-   * doubling in size each time), as memcpy usually loves big chunks.
-   */
-  while (startd <= endd) {
-    UV pstartd = startd % PRESIEVE_SIZE;
-    UV sieve_bytes = PRESIEVE_SIZE - pstartd;
-    UV bytes = (nbytes > sieve_bytes) ? sieve_bytes : nbytes;
-    memcpy(mem, presieve13 + pstartd, bytes);
-    if (startd == 0)  mem[0] = 0x01; /* Correct first byte */
-    startd += bytes;
-    mem += bytes;
-    nbytes -= bytes;
+
+static void memtile(unsigned char* src, UV from, UV to) {
+  while (from < to) {
+    UV bytes = (2*from > to) ? to-from : from;
+    memcpy(src+from, src, bytes);
+    from += bytes;
   }
 }
 
+static UV sieve_prefill(unsigned char* mem, UV startd, UV endd)
+{
+  UV vnext_prime = 17;
+  UV nbytes = endd - startd + 1;
+  MPUassert( (mem != 0) && (endd >= startd), "sieve_prefill bad arguments");
 
+  if (startd != 0) {
+    UV pstartd = startd % PRESIEVE_SIZE;
+    UV tailbytes = PRESIEVE_SIZE - pstartd;
+    if (tailbytes > nbytes) tailbytes = nbytes;
+    memcpy(mem, presieve13 + pstartd, tailbytes); /* Copy tail to mem */
+    mem += tailbytes;    /* Advance so mem points at the beginning */
+    nbytes -= tailbytes;
+  }
+  if (nbytes > 0) {
+    memcpy(mem, presieve13, (nbytes < PRESIEVE_SIZE) ? nbytes : PRESIEVE_SIZE);
+    memtile(mem, PRESIEVE_SIZE, nbytes);
+    if (startd == 0) mem[0] = 0x01; /* Correct first byte */
+  }
+  /* Leaving option open to tile 17 out and sieve, then return 19 */
+  return vnext_prime;
+}
 
 /* Wheel 30 sieve.  Ideas from Terje Mathisen and Quesada / Van Pelt. */
 unsigned char* sieve_erat30(UV end)
 {
   unsigned char* mem;
-  UV max_buf, limit;
-  UV prime;
+  UV max_buf, limit, prime;
 
   max_buf = (end/30) + ((end%30) != 0);
   /* Round up to a word */
   max_buf = ((max_buf + sizeof(UV) - 1) / sizeof(UV)) * sizeof(UV);
   New(0, mem, max_buf, unsigned char );
-  if (mem == 0) {
-    croak("allocation failure in sieve_erat30: could not alloc %"UVuf" bytes", max_buf);
-    return 0;
-  }
 
   /* Fill buffer with marked 7, 11, and 13 */
-  sieve_prefill(mem, 0, max_buf-1);
+  prime = sieve_prefill(mem, 0, max_buf-1);
 
   limit = isqrt(end);  /* prime*prime can overflow */
-  for (prime = 17; prime <= limit; prime = next_prime_in_sieve(mem,prime)) {
-    UV d = (prime*prime)/30;
-    UV m = (prime*prime) - d*30;
-    UV dinc = (2*prime)/30;
-    UV minc = (2*prime) - dinc*30;
+  for (  ; prime <= limit; prime = next_prime_in_sieve(mem,prime,end)) {
+    UV p2 = prime*prime;
+    UV d = p2 / 30;
+    UV m = p2 - d*30;
     UV wdinc[8];
     unsigned char wmask[8];
 
     /* Find the positions of the next composites we will mark */
-    FIND_COMPOSITE_POSITIONS(prime);
+    FIND_COMPOSITE_POSITIONS(d, m, prime);
 #if 0
     assert(d == ((prime*prime)/30));
     assert(d < max_buf);
@@ -211,42 +293,46 @@ unsigned char* sieve_erat30(UV end)
 int sieve_segment(unsigned char* mem, UV startd, UV endd)
 {
   const unsigned char* sieve;
-  UV limit;
-  UV pcsize;
+  UV limit, slimit, start_base_prime, sieve_size;
   UV startp = 30*startd;
   UV endp = (endd >= (UV_MAX/30))  ?  UV_MAX-2  :  30*endd+29;
 
   MPUassert( (mem != 0) && (endd >= startd) && (endp >= startp),
              "sieve_segment bad arguments");
 
-  /* Fill buffer with marked 7, 11, and 13 */
-  sieve_prefill(mem, startd, endd);
-
-  limit = isqrt(endp);
-  if (limit*limit < endp) limit++;  /* ceil(sqrt(endp)) */
-  /* printf("segment sieve from %"UVuf" to %"UVuf" (aux sieve to %"UVuf")\n", startp, endp, limit); */
-  pcsize = get_prime_cache(limit, &sieve);
-  if (pcsize < limit) {
+  /* It's possible we can just use the primary cache */
+  sieve_size = get_prime_cache(0, &sieve);
+  if (sieve_size >= endp) {
+    memcpy(mem, sieve+startd, endd-startd+1);
     release_prime_cache(sieve);
-    return 0;
+    return 1;
   }
 
-  START_DO_FOR_EACH_SIEVE_PRIME(sieve, 17, pcsize)
+  /* Fill buffer with marked 7, 11, and 13 */
+  start_base_prime = sieve_prefill(mem, startd, endd);
+
+  limit = isqrt(endp);  /* floor(sqrt(n)), will include p if p*p=endp */
+  /* Don't use a sieve prime such that p*p > UV_MAX */
+  if (limit > max_sieve_prime)  limit = max_sieve_prime;
+  slimit = limit;
+  if (slimit > BASE_SIEVE_LIMIT) slimit = BASE_SIEVE_LIMIT;
+  /* printf("segment sieve from %"UVuf" to %"UVuf" (aux sieve to %"UVuf")\n", startp, endp, slimit); */
+  if (slimit > sieve_size) {
+    release_prime_cache(sieve);
+    get_prime_cache(slimit, &sieve);
+  }
+
+  START_DO_FOR_EACH_SIEVE_PRIME(sieve, start_base_prime, slimit)
   {
-    /* p increments from 17 to at least sqrt(endp).  Note on overflow:
+    /* p increments from 17 to at most sqrt(endp).  Note on overflow:
      * 32-bit: limit=     65535, max p =      65521, p*p = ~0-1965854
      * 64-bit: limit=4294967295, max p = 4294967291, p*p = ~0-42949672934
      * No overflow here, but possible after the incrementing below. */
     UV p2 = p*p;
-    if (p2 > endp)  break;
-    /* Find first multiple of p greater than p*p and larger than startp */
     if (p2 < startp) {
-      p2 = (startp / p) * p;
-      if (p2 < startp)  p2 += p;
+      UV f = 1+(startp-1)/p;
+      p2 = p * (f + distancewheel30[f%30]);
     }
-    /* Bump to next multiple that isn't divisible by 2, 3, or 5 */
-    /* while (masktab30[p2%30] == 0) { p2 += p; } */
-    p2 += p * primestepadvance30[m_>>1][p2%30];
     /* It is possible we've overflowed p2, so check for that */
     if ( (p2 <= endp) && (p2 >= startp) ) {
       /* Sieve from startd to endd starting at p2, stepping p */
@@ -257,44 +343,54 @@ int sieve_segment(unsigned char* mem, UV startd, UV endd)
         do { p2 += 2*p; } while (masktab30[p2%30] == 0);
       } while ( (p2 <= endp) && (p2 >= startp) );
 #else
-      UV d = (p2)/30;
-      UV m = (p2) - d*30;
-      UV dinc = (2*p)/30;
-      UV minc = (2*p) - dinc*30;
-      UV wdinc[8];
-      unsigned char wmask[8];
-      UV offset_endd = endd - startd;
+      UV d = p2 / 30;
+      UV m = p2 - d*30;
 
-      /* Find the positions of the next composites we will mark */
-      FIND_COMPOSITE_POSITIONS(p);
-      d -= startd;
-      /* Unrolled inner loop for marking composites */
-      while ( (d+p) <= offset_endd ) {
-        mem[d] |= wmask[0];  d += wdinc[0];
-        mem[d] |= wmask[1];  d += wdinc[1];
-        mem[d] |= wmask[2];  d += wdinc[2];
-        mem[d] |= wmask[3];  d += wdinc[3];
-        mem[d] |= wmask[4];  d += wdinc[4];
-        mem[d] |= wmask[5];  d += wdinc[5];
-        mem[d] |= wmask[6];  d += wdinc[6];
-        mem[d] |= wmask[7];  d += wdinc[7];
-      }
-      while (1) {
-        mem[d] |= wmask[0];  d += wdinc[0];  if (d > offset_endd) break;
-        mem[d] |= wmask[1];  d += wdinc[1];  if (d > offset_endd) break;
-        mem[d] |= wmask[2];  d += wdinc[2];  if (d > offset_endd) break;
-        mem[d] |= wmask[3];  d += wdinc[3];  if (d > offset_endd) break;
-        mem[d] |= wmask[4];  d += wdinc[4];  if (d > offset_endd) break;
-        mem[d] |= wmask[5];  d += wdinc[5];  if (d > offset_endd) break;
-        mem[d] |= wmask[6];  d += wdinc[6];  if (d > offset_endd) break;
-        mem[d] |= wmask[7];  d += wdinc[7];  if (d > offset_endd) break;
+      if ((p2 + 2*p) > endp) {
+        /* There is only one composite to be marked in this segment */
+        mem[d-startd] |= masktab30[m];
+      } else {
+        UV wdinc[8];
+        unsigned char wmask[8];
+        UV offset_endd = endd - startd;
+        UV unrolls = (endd-d+1) / p;
+        /* Find the positions of the next composites we will mark */
+        FIND_COMPOSITE_POSITIONS(d, m, p);
+        d -= startd;
+        /* Unrolled inner loop for marking composites */
+        while ( unrolls-- > 0) {
+          mem[d] |= wmask[0];  d += wdinc[0];
+          mem[d] |= wmask[1];  d += wdinc[1];
+          mem[d] |= wmask[2];  d += wdinc[2];
+          mem[d] |= wmask[3];  d += wdinc[3];
+          mem[d] |= wmask[4];  d += wdinc[4];
+          mem[d] |= wmask[5];  d += wdinc[5];
+          mem[d] |= wmask[6];  d += wdinc[6];
+          mem[d] |= wmask[7];  d += wdinc[7];
+        }
+        while (d <= offset_endd) {
+          mem[d] |= wmask[0];  d += wdinc[0];  if (d > offset_endd) break;
+          mem[d] |= wmask[1];  d += wdinc[1];  if (d > offset_endd) break;
+          mem[d] |= wmask[2];  d += wdinc[2];  if (d > offset_endd) break;
+          mem[d] |= wmask[3];  d += wdinc[3];  if (d > offset_endd) break;
+          mem[d] |= wmask[4];  d += wdinc[4];  if (d > offset_endd) break;
+          mem[d] |= wmask[5];  d += wdinc[5];  if (d > offset_endd) break;
+          mem[d] |= wmask[6];  d += wdinc[6];  if (d > offset_endd) break;
+          mem[d] |= wmask[7];  d += wdinc[7];
+        }
       }
 #endif
     }
   }
   END_DO_FOR_EACH_SIEVE_PRIME;
-
   release_prime_cache(sieve);
+
+  if (limit > slimit) { /* We've sieved out most composites, but not all. */
+    START_DO_FOR_EACH_SIEVE_PRIME(mem, 0, endp-startp) {
+      if (!_XS_BPSW(startp + p))    /* If the candidate is not prime, */
+        mem[d_] |= mask_;           /* mark the sieve location.       */
+    } END_DO_FOR_EACH_SIEVE_PRIME;
+  }
   return 1;
 }
 
@@ -331,6 +427,7 @@ typedef struct {
 void* start_segment_primes(UV low, UV high, unsigned char** segmentmem)
 {
   segment_context_t* ctx;
+  UV slimit;
 
   MPUassert( high >= low, "start_segment_primes bad arguments");
   New(0, ctx, 1, segment_context_t);
@@ -341,13 +438,13 @@ void* start_segment_primes(UV low, UV high, unsigned char** segmentmem)
   ctx->endp = (ctx->hid >= (UV_MAX/30))  ?  UV_MAX-2  :  30*ctx->hid+29;
 
   ctx->segment = get_prime_segment( &(ctx->segment_size) );
-  if (ctx->segment == 0)
-    croak("start_segment_primes: Could not get segment");
   *segmentmem = ctx->segment;
 
-  ctx->base = sieve_erat30( isqrt(ctx->endp)+1 );
-  if (ctx->base == 0)
-    croak("start_segment_primes: Could not get base");
+  ctx->base = 0;
+  /* Expand primary cache so we won't regen each call */
+  slimit = isqrt(ctx->endp)+1;
+  if (slimit > BASE_SIEVE_LIMIT) slimit = BASE_SIEVE_LIMIT;
+  get_prime_cache( slimit, 0);
 
   return (void*) ctx;
 }
@@ -370,9 +467,7 @@ int next_segment_primes(void* vctx, UV* base, UV* low, UV* high)
   MPUassert( seghigh_d >= ctx->lod, "next_segment_primes: highd < lowd");
   MPUassert( range_d <= ctx->segment_size, "next_segment_primes: range > segment size");
 
-  if (sieve_segment(ctx->segment, ctx->lod, seghigh_d) == 0) {
-    croak("Could not segment sieve from %"UVuf" to %"UVuf, *base+1, *high);
-  }
+  sieve_segment(ctx->segment, ctx->lod, seghigh_d);
 
   ctx->lod += range_d;
   ctx->low = *high + 2;

@@ -3,14 +3,14 @@ use strict;
 use warnings;
 use Carp qw/carp croak confess/;
 
-if (!defined $Math::BigInt::VERSION) {
-  eval { require Math::BigInt;   Math::BigInt->import(try=>'GMP,Pari'); 1; }
-  or do { croak "Cannot load Math::BigInt"; };
+BEGIN {
+  $Math::Prime::Util::ECAffinePoint::AUTHORITY = 'cpan:DANAJ';
+  $Math::Prime::Util::ECAffinePoint::VERSION = '0.36';
 }
 
 BEGIN {
-  $Math::Prime::Util::ECAffinePoint::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::ECAffinePoint::VERSION = '0.35';
+  do { require Math::BigInt;  Math::BigInt->import(try=>"GMP,Pari"); }
+    unless defined $Math::BigInt::VERSION;
 }
 
 # Pure perl (with Math::BigInt) manipulation of Elliptic Curves
@@ -76,12 +76,57 @@ sub _double {
   return ($x,$y);
 }
 
+sub _inplace_add {
+  my ($P1x, $P1y, $x, $y, $n) = @_;
+
+  if ($P1x == $x) {
+    my $t = ($P1y + $y) % $n;
+    if ($t == 0) {
+      ($_[2],$_[3]) = (Math::BigInt->bzero,Math::BigInt->bone);
+      return;
+    }
+  }
+  my $deltax = ($x - $P1x) % $n;
+  $deltax->bmodinv($n);
+  if ($deltax eq 'NaN') {
+    ($_[2],$_[3]) = (Math::BigInt->bzero,Math::BigInt->bone);
+    return;
+  }
+  my $deltay = ($y - $P1y) % $n;
+  my $m = ($deltay * $deltax) % $n;   # m = deltay / deltax
+
+  $_[2] = ($m*$m - $P1x - $x) % $n;
+  $_[3] = ($m*($P1x - $_[2]) - $P1y) % $n;
+}
+sub _inplace_double {
+  my($x, $y, $a, $n) = @_;
+  my $m = $y+$y;
+  $m->bmodinv($n);
+  if ($m eq 'NaN') {
+    ($_[0],$_[1]) = (Math::BigInt->bzero,Math::BigInt->bone);
+    return;
+  }
+  $m->bmul($x->copy->bmul($x)->bmul(3)->badd($a))->bmod($n);
+
+  my $xin = $x->copy;
+  $_[0] = ($m*$m - $x - $x) % $n;
+  $_[1] = ($m*($xin - $_[0]) - $y) % $n;
+}
+
 sub mul {
   my ($self, $k) = @_;
   my $x = $self->{'x'};
   my $y = $self->{'y'};
+  my $a = $self->{'a'};
   my $n = $self->{'n'};
   my $f = $self->{'f'};
+  if (ref($k) eq 'Math::BigInt' && $k < ''.~0) {
+    if ($] >= 5.008 || ~0 == 4294967295) {
+      $k = int($k->bstr);
+    } elsif ($] < 5.008 && ~0 > 4294967295 && $k < 562949953421312) {
+      $k = unpack('Q',pack('Q',$k->bstr));
+    }
+  }
 
   my $Bx = $n->copy->bzero;
   my $By = $n->copy->bone;
@@ -91,16 +136,16 @@ sub mul {
     if ( ($k % 2) != 0) {
       $k--;
       $f->bmul($Bx-$x)->bmod($n);
-      if    ($x == 0 && $y == 1)   { }
-      elsif ($Bx == 0 && $By == 1) { ($Bx,$By) = ($x,$y); }
-      else                         { ($Bx,$By) = $self->_add($x,$y,$Bx,$By); }
+      if    ($x->is_zero && $y->is_one)   { }
+      elsif ($Bx->is_zero && $By->is_one) { ($Bx,$By) = ($x,$y); }
+      else                                { _inplace_add($x,$y,$Bx,$By,$n); }
     } else {
       $k >>= 1;
       $f->bmul(2*$y)->bmod($n);
-      ($x,$y) = $self->_double($x,$y);
+      _inplace_double($x,$y,$a,$n);
     }
   }
-  $f = Math::BigInt::bgcd( $f, $n);
+  $f = Math::BigInt::bgcd($f, $n);
   $self->{'x'} = $Bx;
   $self->{'y'} = $By;
   $self->{'f'} = $f;
@@ -154,7 +199,7 @@ Math::Prime::Util::ECAffinePoint - Elliptic curve operations for affine points
 
 =head1 VERSION
 
-Version 0.35
+Version 0.36
 
 
 =head1 SYNOPSIS

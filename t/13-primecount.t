@@ -7,7 +7,7 @@ use Math::Prime::Util qw/prime_count prime_count_lower prime_count_upper prime_c
 
 my $isxs  = Math::Prime::Util::prime_get_config->{'xs'};
 my $use64 = Math::Prime::Util::prime_get_config->{'maxbits'} > 32;
-my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
+my $extra = 0+(defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING});
 
 #  Powers of 2:  http://oeis.org/A007053/b007053.txt
 #  Powers of 10: http://oeis.org/A006880/b006880.txt
@@ -87,7 +87,7 @@ plan tests => 0 + 1
                 + $use64 * 3 * scalar(keys %pivals64)
                 + scalar(keys %intervals)
                 + 1
-                + 8 + 2*$extra; # prime count specific methods
+                + 4 + 2*$extra; # prime count specific methods
 
 ok( eval { prime_count(13); 1; }, "prime_count in void context");
 
@@ -156,17 +156,17 @@ sub parse_range {
 
 # Make sure each specific algorithm isn't broken.
 SKIP: {
-  skip "Not XS -- skipping direct primecount tests", 6 unless $isxs;
+  skip "Not XS -- skipping direct primecount tests", 2 unless $isxs;
   # This has to be above SIEVE_LIMIT in lehmer.c and lmo.c or nothing happens.
-  is(Math::Prime::Util::_XS_lehmer_pi  (66123456), 3903023, "XS Lehmer count");
-  is(Math::Prime::Util::_XS_meissel_pi (66123456), 3903023, "XS Meissel count");
-  is(Math::Prime::Util::_XS_legendre_pi(66123456), 3903023,"XS Legendre count");
-  is(Math::Prime::Util::_XS_LMOS_pi    (66123456), 3903023, "XS LMOS count");
-  is(Math::Prime::Util::_XS_LMO_pi     (66123456), 3903023, "XS LMO count");
-  is(Math::Prime::Util::_XS_prime_count(66123456), 3903023, "XS sieve count");
+  #is(Math::Prime::Util::_XS_lehmer_pi  (66123456),3903023,"XS Lehmer count");
+  #is(Math::Prime::Util::_XS_meissel_pi (66123456),3903023,"XS Meissel count");
+  #is(Math::Prime::Util::_XS_legendre_pi(66123456),3903023,"XS Legendre count");
+  #is(Math::Prime::Util::_XS_LMOS_pi    (66123456),3903023,"XS LMOS count");
+  is(Math::Prime::Util::_XS_LMO_pi     (66123456), 3903023,"XS LMO count");
+  is(Math::Prime::Util::_XS_segment_pi (66123456), 3903023,"XS segment count");
 }
 is(Math::Prime::Util::PP::_lehmer_pi   (1456789), 111119, "PP Lehmer count");
-is(Math::Prime::Util::PP::_sieve_prime_count(1456789), 111119, "PP sieve count");
+is(Math::Prime::Util::PP::_sieve_prime_count(145678), 13478, "PP sieve count");
 if ($extra) {
   is(Math::Prime::Util::PP::_lehmer_pi   (3456789), 247352, "PP Lehmer count");
   is(Math::Prime::Util::PP::_sieve_prime_count(3456789), 247352, "PP sieve count");

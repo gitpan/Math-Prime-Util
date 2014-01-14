@@ -2,7 +2,6 @@
 use strict;
 use warnings;
 use Math::Prime::Util qw/factor/;
-use Math::Pari qw/factorint/;
 use File::Temp qw/tempfile/;
 use Math::BigInt try => 'GMP,Pari';
 use Config;
@@ -25,15 +24,20 @@ my $num = 1000;
 # large numbers.  You'll probably want to turn it off here as it will be
 # many thousands of times slower than MPU and Pari.
 
-# A performance note: MPU and Pari get their results by calling a function.
-# GNU factor gets its result by multiple shells out to /usr/bin/factor with
-# the numbers as command line arguments.  This adds a lot of overhead that
-# has nothing to do with their implementation.  For comparison, try turning
-# on the MPU factor.pl script, and weep at Perl's startup cost.
+# A benchmarking note: in this script, getting MPU and Pari results are done
+# by calling a function, where getting GNU factor results are done via
+# multiple shells to /usr/bin/factor with the inputs as command line
+# arguments.  This adds a lot of overhead that has nothing to do with their
+# implementation.  For comparison, I've included an option for getting MPU
+# factoring via calling the factor.pl script.  Weep at the startup cost.
 
 my $do_gnu = 1;
 my $do_pari = 1;
 my $use_mpu_factor_script = 0;
+
+if ($do_pari) {
+  $do_pari = 0 unless eval { require Math::Pari; Math::Pari->import(); 1; };
+}
 
 my $rgen = sub {
   my $range = shift;
@@ -113,9 +117,9 @@ sub test_array {
   # We should ignore the small digits, since we're comparing direct
   # Perl functions with multiple command line invocations.  It really
   # doesn't make sense until we're over 1ms per number.
-  printf "  MPU:%8.3f ms", (($mpusec*1000) / scalar @narray);
-  printf("  GNU:%8.3f ms", (($gnusec*1000) / scalar @narray)) if $do_gnu;
-  printf("  Pari:%8.3f ms", (($parisec*1000) / scalar @narray)) if $do_pari;
+  printf "  MPU:%8.4f ms", (($mpusec*1000) / scalar @narray);
+  printf("  GNU:%8.4f ms", (($gnusec*1000) / scalar @narray)) if $do_gnu;
+  printf("  Pari:%8.4f ms", (($parisec*1000) / scalar @narray)) if $do_pari;
   print "\n";
 }
 
@@ -179,7 +183,7 @@ sub pari_factors {
   my @piarray;
   foreach my $n (@_) {
     my @factors;
-    my ($pn,$pc) = @{factorint($n)};
+    my ($pn,$pc) = @{Math::Pari::factorint($n)};
     # Map the Math::Pari objects returned into Math::BigInts, because Pari will
     # throw a hissy fit later when we try to compare them to anything else.
     push @piarray, [ $n, map { (Math::BigInt->new($pn->[$_])) x $pc->[$_] } (0 .. $#$pn) ];
