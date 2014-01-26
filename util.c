@@ -29,12 +29,14 @@
   extern long double logl(long double);
   extern long double fabsl(long double);
   extern long double floorl(long double);
+  extern long double ceill(long double);
 #else
   #define powl(x, y)  (long double) pow( (double) (x), (double) (y) )
   #define expl(x)     (long double) exp( (double) (x) )
   #define logl(x)     (long double) log( (double) (x) )
   #define fabsl(x)    (long double) fabs( (double) (x) )
   #define floorl(x)   (long double) floor( (double) (x) )
+  #define ceill(x)    (long double) ceil( (double) (x) )
 #endif
 
 #ifdef LDBL_INFINITY
@@ -101,13 +103,6 @@ int  _XS_get_callgmp(void) { return _call_gmp; }
      return (b * 0x0101010101010101) >> 56;
    }
  #endif
-#else
-   static UV popcnt(UV b) {
-     b -= (b >> 1) & 0x55555555;
-     b = (b & 0x33333333) + ((b >> 2) & 0x33333333);
-     b = (b + (b >> 4)) & 0x0f0f0f0f;
-     return (b * 0x01010101) >> 24;
-   }
 #endif
 
 #if defined(__GNUC__)
@@ -220,7 +215,7 @@ int _XS_is_prime(UV n)
 
 UV next_prime(UV n)
 {
-  UV d, m, sieve_size, next;
+  UV m, sieve_size, next;
   const unsigned char* sieve;
 
   if (n < 30*NPRIME_SIEVE30) {
@@ -235,24 +230,19 @@ UV next_prime(UV n)
   release_prime_cache(sieve);
   if (next != 0) return next;
 
-  d = n/30;
-  m = n - d*30;
-  /* Move forward one, knowing we may not be on the wheel */
-  if (m == 29) { d++; m = 1; } else  { m = nextwheel30[m]; }
-  n = d*30+m;
-  while (!is_prob_prime(n)) {
-    /* Move forward one, knowing we are on the wheel */
+  m = n % 30;
+  do { /* Move forward one. */
     n += wheeladvance30[m];
     m = nextwheel30[m];
-  }
-  return(n);
+  } while (!is_prob_prime(n));
+  return n;
 }
 
 
 UV prev_prime(UV n)
 {
   const unsigned char* sieve;
-  UV d, m, prev;
+  UV m, prev;
 
   if (n < 30*NPRIME_SIEVE30)
     return prev_prime_in_sieve(prime_sieve30, n);
@@ -264,12 +254,10 @@ UV prev_prime(UV n)
   }
   release_prime_cache(sieve);
 
-  d = n/30;
-  m = n - d*30;
-  do {
+  m = n % 30;
+  do { /* Move back one. */
+    n -= wheelretreat[m];
     m = prevwheel30[m];
-    if (m==29) d--;
-    n = d*30+m;
   } while (!is_prob_prime(n));
   return n;
 }
@@ -577,7 +565,90 @@ UV _XS_prime_count(UV low, UV high)
   return count;
 }
 
+UV prime_count_approx(UV n)
+{
+  if (n < 3000000) return _XS_prime_count(2, n);
+  return (UV) (_XS_RiemannR( (long double) n ) + 0.5 );
+}
 
+UV prime_count_lower(UV n)
+{
+  long double fn, flogn, lower, a;
+
+  if (n < 33000) return _XS_prime_count(2, n);
+
+  fn     = (long double) n;
+  flogn  = logl(n);
+
+  if      (n <   176000)  a = 1.80;
+  else if (n <   315000)  a = 2.10;
+  else if (n <  1100000)  a = 2.20;
+  else if (n <  4500000)  a = 2.31;
+  else if (n <233000000)  a = 2.36;
+#if BITS_PER_WORD == 32
+  else a = 2.32;
+#else
+  else if (n < UVCONST( 5433800000)) a = 2.32;
+  else if (n < UVCONST(60000000000)) a = 2.15;
+  else a = 2.00;
+#endif
+
+  lower = fn/flogn * (1.0 + 1.0/flogn + a/(flogn*flogn));
+  return (UV) floorl(lower);
+}
+
+typedef struct {
+  UV thresh;
+  float aval;
+} thresh_t;
+
+static const thresh_t _upper_thresh[] = {
+  {     59000, 2.48 },
+  {    350000, 2.52 },
+  {    355991, 2.54 },
+  {    356000, 2.51 },
+  {   3550000, 2.50 },
+  {   3560000, 2.49 },
+  {   5000000, 2.48 },
+  {   8000000, 2.47 },
+  {  13000000, 2.46 },
+  {  18000000, 2.45 },
+  {  31000000, 2.44 },
+  {  41000000, 2.43 },
+  {  48000000, 2.42 },
+  { 119000000, 2.41 },
+  { 182000000, 2.40 },
+  { 192000000, 2.395 },
+  { 213000000, 2.390 },
+  { 271000000, 2.385 },
+  { 322000000, 2.380 },
+  { 400000000, 2.375 },
+  { 510000000, 2.370 },
+  { 682000000, 2.367 },
+  { UVCONST(2953652287), 2.362 }
+};
+#define NUPPER_THRESH (sizeof(_upper_thresh)/sizeof(_upper_thresh[0]))
+
+UV prime_count_upper(UV n)
+{
+  int i;
+  long double fn, flogn, upper, a;
+
+  if (n < 33000) return _XS_prime_count(2, n);
+
+  fn     = (long double) n;
+  flogn  = logl(n);
+
+  for (i = 0; i < (int)NUPPER_THRESH; i++)
+    if (n < _upper_thresh[i].thresh)
+      break;
+
+  if (i < (int)NUPPER_THRESH) a = _upper_thresh[i].aval;
+  else                        a = 2.334;   /* Dusart 2010, page 2 */
+
+  upper = fn/flogn * (1.0 + 1.0/flogn + a/(flogn*flogn));
+  return (UV) ceill(upper);
+}
 
 static const unsigned short primes_small[] =
   {0,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97,
@@ -587,18 +658,17 @@ static const unsigned short primes_small[] =
    409,419,421,431,433,439,443,449,457,461,463,467,479,487,491,499};
 #define NPRIMES_SMALL (sizeof(primes_small)/sizeof(primes_small[0]))
 
-/* Note: We're keeping this here because we use it for nth_prime */
 /* The nth prime will be less or equal to this number */
-static UV _XS_nth_prime_upper(UV n)
+UV nth_prime_upper(UV n)
 {
-  double fn, flogn, flog2n, upper;
+  long double fn, flogn, flog2n, upper;
 
   if (n < NPRIMES_SMALL)
     return primes_small[n];
 
-  fn     = (double) n;
-  flogn  = log(n);
-  flog2n = log(flogn);    /* Note distinction between log_2(n) and log^2(n) */
+  fn     = (long double) n;
+  flogn  = logl(n);
+  flog2n = logl(flogn);    /* Note distinction between log_2(n) and log^2(n) */
 
   if      (n >= 688383)    /* Dusart 2010 page 2 */
     upper = fn * (flogn + flog2n - 1.0 + ((flog2n-2.00)/flogn));
@@ -622,16 +692,73 @@ static UV _XS_nth_prime_upper(UV n)
    *    nth_prime_lower(n)  <=  nth_prime(n)  <=  nth_prime_upper(n)
    */
   /* Watch out for  overflow */
-  if (upper >= (double)UV_MAX) {
+  if (upper >= (long double)UV_MAX) {
     if (n <= MPU_MAX_PRIME_IDX) return MPU_MAX_PRIME;
     croak("nth_prime_upper(%"UVuf") overflow", n);
   }
 
-  return (UV) ceil(upper);
+  return (UV) ceill(upper);
+}
+
+/* The nth prime will be greater than or equal to this number */
+UV nth_prime_lower(UV n)
+{
+  long double fn, flogn, flog2n, lower;
+
+  if (n < NPRIMES_SMALL)
+    return primes_small[n];
+
+  fn     = (long double) n;
+  flogn  = logl(n);
+  flog2n = logl(flogn);    /* Note distinction between log_2(n) and log^2(n) */
+
+  /* Dusart 2010 page 2, for all n >= 3 */
+  lower = fn * (flogn + flog2n - 1.0 + ((flog2n-2.10)/flogn));
+
+  return (UV) floorl(lower);
+}
+
+UV nth_prime_approx(UV n)
+{
+  long double fn, flogn, flog2n, approx, order;
+
+  if (n < NPRIMES_SMALL)
+    return primes_small[n];
+
+  fn     = (long double) n;
+  flogn  = logl(n);
+  flog2n = logl(flogn);    /* Note distinction between log_2(n) and log^2(n) */
+
+  /* Cipolla 1902:
+   *    m=0   fn * ( flogn + flog2n - 1 );
+   *    m=1   + ((flog2n - 2)/flogn) );
+   *    m=2   - (((flog2n*flog2n) - 6*flog2n + 11) / (2*flogn*flogn))
+   *    + O((flog2n/flogn)^3)
+   */
+
+  approx = fn * (  flogn + flog2n - 1.0
+                 + ((flog2n - 2.0) / flogn)
+                 - (((flog2n*flog2n) - 6.0*flog2n + 11.0) / (2*flogn*flogn))
+                );
+
+  /* Apply a correction */
+  order = flog2n / flogn;
+  order = order * order * order * fn;
+  if      (n <      259) { approx += 10.4  * order; }
+  else if (n <      775) { approx +=  7.52 * order; }
+  else if (n <     1271) { approx +=  5.6  * order; }
+  else if (n <     2000) { approx +=  5.2  * order; }
+  else if (n <     4000) { approx +=  4.3  * order; }
+  else if (n <    12000) { approx +=  3.0  * order; }
+  else if (n <   150000) { approx +=  2.1  * order; }
+  else if (n <200000000) {                          }
+  else                   { approx += -0.01 * order; } /* -0.25 is closer */
+
+  return (UV) floorl(approx + 0.5);
 }
 
 
-UV _XS_nth_prime(UV n)
+UV nth_prime(UV n)
 {
   const unsigned char* cache_sieve;
   unsigned char* segment;
@@ -645,7 +772,7 @@ UV _XS_nth_prime(UV n)
     return primes_small[n];
 
   /* Determine a bound on the nth prime.  We know it comes before this. */
-  upper_limit = _XS_nth_prime_upper(n);
+  upper_limit = nth_prime_upper(n);
   MPUassert(upper_limit > 0, "nth_prime got an upper limit of 0");
 
   /* For relatively small values, generate a sieve and count the results.
@@ -770,7 +897,7 @@ UV* _totient_range(UV lo, UV hi) {
   unsigned char* segment;
   void* ctx;
 
-  if (hi < lo) croak("_totient_range error hi %lu < lo %lu\n", hi, lo);
+  if (hi < lo) croak("_totient_range error hi %"UVuf" < lo %"UVuf"\n", hi, lo);
   New(0, totients, hi-lo+1, UV);
 
   /* Do via factoring if very small or if we have a small range */
@@ -1086,9 +1213,9 @@ UV divmod(UV a, UV b, UV n) {   /* a / b  mod n */
   return mulmod(a, binv, n);
 }
 
-/* Find smallest n where a = g^n mod p
+/* Find smallest k where a = g^k mod p
  * This implementation is just a stupid placeholder.
- * When prho or bsgs gets working well, lower the trial limit
+ * When prho or bsgs starts working well, lower the trial limit
  */
 #define DLP_TRIAL_NUM  1000000
 UV znlog(UV a, UV g, UV p) {
@@ -1125,12 +1252,15 @@ long double chebyshev_function(UV n, int which)
     UV seg_base, seg_low, seg_high;
     unsigned char* segment;
     void* ctx;
+    long double logl2 = logl(2);
+    long double logl3 = logl(3);
+    long double logl5 = logl(5);
     if (!which) {
-      KAHAN_SUM(sum,logl(2)); KAHAN_SUM(sum,logl(3)); KAHAN_SUM(sum,logl(5));
+      KAHAN_SUM(sum,logl2); KAHAN_SUM(sum,logl3); KAHAN_SUM(sum,logl5);
     } else {
-      KAHAN_SUM(sum, logl(2) * floorl(logn/logl(2) + 1e-15));
-      KAHAN_SUM(sum, logl(3) * floorl(logn/logl(3) + 1e-15));
-      KAHAN_SUM(sum, logl(5) * floorl(logn/logl(5) + 1e-15));
+      KAHAN_SUM(sum, logl2 * floorl(logn/logl2 + 1e-15));
+      KAHAN_SUM(sum, logl3 * floorl(logn/logl3 + 1e-15));
+      KAHAN_SUM(sum, logl5 * floorl(logn/logl5 + 1e-15));
     }
     ctx = start_segment_primes(7, n, &segment);
     while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
@@ -1262,10 +1392,9 @@ long double _XS_LogarithmicIntegral(long double x) {
 
 /* Thanks to Kim Walisch for this idea */
 UV _XS_Inverse_Li(UV x) {
-  double n = x;
-  double logn = log(n);
-  UV lo = (UV) (n*logn);
-  UV hi = (UV) (n*logn * 2 + 2);
+  double nlogn = (double)x * log((double)x);
+  UV lo = (UV) (nlogn);
+  UV hi = (UV) (nlogn * 2 + 2);
 
   if (x == 0)  return 0;
   if (hi <= lo) hi = UV_MAX;
@@ -1323,6 +1452,22 @@ static const long double riemann_zeta_table[] = {
   0.0000000000036379795473786511902372363L,
   0.0000000000018189896503070659475848321L,
   0.0000000000009094947840263889282533118L,
+  0.0000000000004547473783042154026799112L,
+  0.0000000000002273736845824652515226821L,
+  0.0000000000001136868407680227849349105L,
+  0.0000000000000568434198762758560927718L,
+  0.0000000000000284217097688930185545507L,
+  0.0000000000000142108548280316067698343L,
+  0.00000000000000710542739521085271287735L,
+  0.00000000000000355271369133711367329847L,
+  0.00000000000000177635684357912032747335L,
+  0.000000000000000888178421093081590309609L,
+  0.000000000000000444089210314381336419777L,
+  0.000000000000000222044605079804198399932L,
+  0.000000000000000111022302514106613372055L,
+  0.0000000000000000555111512484548124372374L,
+  0.0000000000000000277555756213612417258163L,
+  0.0000000000000000138777878097252327628391L,
 };
 #define NPRECALC_ZETA (sizeof(riemann_zeta_table)/sizeof(riemann_zeta_table[0]))
 
@@ -1332,9 +1477,9 @@ static const long double riemann_zeta_table[] = {
  * The Cephes zeta function uses a series (2k)!/B_2k which converges rapidly
  * and has a very wide range of values.  We use it here for some values.
  *
- * Note: Calculations here are done on long doubles and we try to generate ~17
- *       digits of accuracy.  When these are returned to Perl they get put in
- *       a standard 64-bit double, so don't expect more than 15 digits.
+ * Note: Calculations here are done on long doubles and we try to generate as
+ *       much accuracy as possible.  They will get returned to Perl as an NV,
+ *       which is typically a 64-bit double with 15 digits.
  *
  * For values 0.5 to 5, this code uses the rational Chebyshev approximation
  * from Cody and Thacher.  This method is extraordinarily fast and very
@@ -1379,12 +1524,8 @@ long double ld_riemann_zeta(long double x) {
     return sum;
   }
 
-  if (x > 2000.0) {
-    /* 1) zeta(2000)-1 is about 8.7E-603, which is far less than a IEEE-754
-     *    64-bit double can represent.  A 128-bit quad could go to ~16000.
-     * 2) pow / powl start getting obnoxiously slow with values like -7500. */
+  if (x > 17000.0)
     return 0.0;
-  }
 
 #if 0
   {
@@ -1427,8 +1568,8 @@ long double ld_riemann_zeta(long double x) {
     for (i = 2; i < 11; i++) {
       b = powl( i, -x );
       s += b;
-      if (fabsl(b/s) < LDBL_EPSILON)
-         return s;
+      if (fabsl(b) < fabsl(LDBL_EPSILON * s))
+        return s;
     }
     s = s + b*w/(x-1.0) - 0.5 * b;
     a = 1.0;
@@ -1438,8 +1579,7 @@ long double ld_riemann_zeta(long double x) {
       b /= w;
       t = a*b/A[i];
       s = s + t;
-      t = fabsl(t/s);
-      if (t < LDBL_EPSILON)
+      if (fabsl(t) < fabsl(LDBL_EPSILON * s))
         break;
       a *= x + k + 1.0;
       b /= w;
@@ -1462,10 +1602,11 @@ long double _XS_RiemannR(long double x) {
 
   for (k = 1; k <= 10000; k++) {
     part_term *= flogx / k;
-    term = part_term / (k + k * ld_riemann_zeta(k+1));
+    if (k-1 < NPRECALC_ZETA)  term = part_term / (k+k*riemann_zeta_table[k-1]);
+    else                      term = part_term / (k+k*ld_riemann_zeta(k+1));
     KAHAN_SUM(sum, term);
-    /* printf("R  after adding %.15lg, sum = %.15lg\n", term, sum); */
-    if (fabsl(term/sum) < LDBL_EPSILON) break;
+    /* printf("R %5d after adding %.18Lg, sum = %.19Lg\n", k, term, sum); */
+    if (fabsl(term) < fabsl(LDBL_EPSILON*sum)) break;
   }
 
   return sum;

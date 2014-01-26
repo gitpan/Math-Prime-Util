@@ -6,8 +6,6 @@
   * Test on 32-bit Perl.  Test on Win32.
 
 
-- Add test to check maxbits in compiled library vs. Perl
-
 - Figure out documentation solution for PP.pm
 
 - Is the current PP.pm setup the way we want to do it?
@@ -29,20 +27,12 @@
 - Big features:
    - QS factoring
 
-- segment sieve should itself use a segment for its primes.
-  Today we'd need sqrt(2^64) max = 140MB.  Segmenting would yield under 1MB.
-
 - Figure out a way to make the internal FOR_EACH_PRIME macros use a segmented
   sieve.
 
 - Rewrite 23-primality-proofs.t for new format (keep some of the old tests?).
 
 - Use Montgomery routines in more places: Factoring.
-
-- Put euler_phi and moebius directly in XS.
-    (1) optional second argument.  Easily handled, and not hard to do in
-        generic sub call.
-    (2) generic sub returns an array.  This is the sticking point.
 
 - Factoring in PP code is really wasteful -- we're calling _isprime7 before
   we've done enough trial division, and later we're calling it on known
@@ -70,13 +60,9 @@
 - Perhaps have main segment know the filled in range.  That would allow
   a sieved next_prime, and might speed up some counts and the like.
 
-- Consider exporting is_bpsw_prime
-
-- Add Inverse Li to API?
+- Consider exporting is_bpsw_prime and inverse Li
 
 - Benchmark simple SoEs, SoA.  Include Sisyphus SoE hidden in Math::GMPz.
-
-- Redo trial vs. segment test in Util.pm primes().
 
 - commit Porter example
 
@@ -85,8 +71,6 @@
 - Investigate optree constant folding in PP compilation for performance.
   Use B::Deparse to check.
 
-- Move more functions from _generic_... to PP::
-
 - Ensure a fast path for Math::GMP from MPU -> MPU:GMP -> GMP, and back.
 
-- znlog bignum tests, znlog better implementation
+- znlog better implementation

@@ -4,7 +4,7 @@ use warnings;
 
 BEGIN {
   $Math::Prime::Util::ZetaBigFloat::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::ZetaBigFloat::VERSION = '0.36';
+  $Math::Prime::Util::ZetaBigFloat::VERSION = '0.37';
 }
 
 BEGIN {
@@ -280,7 +280,10 @@ sub _Recompute_Dk {
       $sum_n->bmul($d)->badd( $sum_d->copy->bmul($n) );
       $sum_d->bmul($d);
       $gcd = Math::BigInt::bgcd($sum_n, $sum_d);
-      do { $sum_n /= $gcd;  $sum_d /= $gcd; } unless $gcd->is_one;
+      do {
+        $sum_n = int($sum_n / $gcd);
+        $sum_d = int($sum_d / $gcd);
+      } unless $gcd->is_one;
       my $dmul = (2*$i+1) * (2*$i+2);
       $n->bmul($nterms+$i)->blsft(2);
       $d->bdiv($nterms-$i)->bmul($dmul);
@@ -469,7 +472,7 @@ Math::Prime::Util::ZetaBigFloat - Perl Big Float versions of Riemann Zeta and R 
 
 =head1 VERSION
 
-Version 0.36
+Version 0.37
 
 
 =head1 SYNOPSIS

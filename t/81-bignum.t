@@ -76,7 +76,7 @@ plan tests =>  0
              + 6*2*$extra # more PC tests
              + 2*scalar(keys %factors)
              + scalar(keys %allfactors)
-             + 13+3*$extra  # moebius, euler_phi, jordan totient, divsum, etc.
+             + 14+3*$extra  # moebius, euler_phi, jordan totient, divsum, etc.
              + 2   # liouville
              + 3   # gcd
              + 3   # lcm
@@ -108,6 +108,7 @@ use Math::Prime::Util qw/
   divisor_sum
   znorder
   znprimroot
+  znlog
   liouville
   gcd
   lcm
@@ -145,7 +146,7 @@ my $mpugmpver = $usegmp ? $Math::Prime::Util::GMP::VERSION : "<none>";
 diag "BigInt $bignumver/$bigintver, lib: $bigintlib.  MPU::GMP $mpugmpver\n";
 
 # Turn off use of BRS - ECM tries to use this.
-prime_set_config( irand => sub { int(rand(4294967296.0)) } );
+prime_set_config( irand => sub { int(rand(4294967296)) } );
 
 
 ###############################################################################
@@ -228,7 +229,7 @@ SKIP: {
 ###############################################################################
 
 SKIP: {
-  skip "Your 64-bit Perl is broken, skipping moebius, totient, etc.", 13+3*$extra if $broken64;
+  skip "Your 64-bit Perl is broken, skipping moebius, totient, etc.", 14+3*$extra if $broken64;
   my $n;
   $n = 618970019642690137449562110;
   is( moebius($n), -1, "moebius($n)" );
@@ -266,6 +267,8 @@ SKIP: {
   is( kronecker(878944444444444447324234,216539985579699669610468715172511426009), -1, "kronecker(..., ...)" );
 
   is( znprimroot(333822190384002421914469856494764513809), 3, "znprimroot(333822190384002421914469856494764513809)" );
+
+  is( znlog(232752345212475230211680, 23847293847923847239847098123812075234, 804842536444911030681947), 13, "znlog(b,g,p): find k where b^k = g mod p" );
 
 }
 

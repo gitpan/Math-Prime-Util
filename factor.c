@@ -90,10 +90,11 @@ int factor(UV n, UV *factors)
 
   /* loop over each remaining factor, until ntofac == 0 */
   do {
-    while ( (n >= f*f) && (!_XS_is_prime(n)) ) {
+    //while ( (n >= f*f) && (!_XS_is_prime(n)) ) {
+    while ( (n >= f*f) && (!is_prob_prime(n)) ) {
       int split_success = 0;
       /* Adjust the number of rounds based on the number size */
-      UV const br_rounds = ((n>>29) < 100000) ?  1500 :  2000;
+      UV const br_rounds = ((n>>29) < 100000) ?  1500 :  4000;
       UV const sq_rounds =100000; /* 20k 91%, 40k 98%, 80k 99.9%, 120k 99.99% */
 
       /* 99.7% of 32-bit, 94% of 64-bit random inputs factored here */
@@ -107,21 +108,18 @@ int factor(UV n, UV *factors)
         if (verbose) printf("squfof %d\n", split_success);
       }
       /* At this point we should only have 16+ digit semiprimes. */
-      /* This p-1 gets about 2/3 of what makes it through the above */
       if (!split_success) {
-        split_success = pminus1_factor(n, tofac_stack+ntofac, 5000, 100000)-1;
+        split_success = pminus1_factor(n, tofac_stack+ntofac, 8000, 120000)-1;
         if (verbose) printf("pminus1 %d\n", split_success);
-      }
-      /* Some rounds of HOLF, good for close to perfect squares which are
-       * the worst case for the next step */
-      if (!split_success) {
-        split_success = holf_factor(n, tofac_stack+ntofac, 2000)-1;
-        if (verbose) printf("holf %d\n", split_success);
-      }
-      /* The catch-all.  Should factor anything. */
-      if (!split_success) {
-        split_success = prho_factor(n, tofac_stack+ntofac, 256*1024)-1;
-        if (verbose) printf("long prho %d\n", split_success);
+        /* Get the stragglers */
+        if (!split_success) {
+          split_success = prho_factor(n, tofac_stack+ntofac, 120000)-1;
+          if (verbose) printf("long prho %d\n", split_success);
+          if (!split_success) {
+            split_success = pbrent_factor(n, tofac_stack+ntofac, 500000, 7)-1;
+            if (verbose) printf("long pbrent %d\n", split_success);
+          }
+        }
       }
 
       if (split_success) {
@@ -131,7 +129,7 @@ int factor(UV n, UV *factors)
           croak("bad factor\n");
         n = tofac_stack[ntofac];  /* Set n to the other one */
       } else {
-        /* Factor via trial division.  Nothing should make it here. */
+        /* Factor via trial division.  Nothing should ever get here. */
         UV m = f % 30;
         UV limit = isqrt(n);
         if (verbose) printf("doing trial on %"UVuf"\n", n);
@@ -661,12 +659,12 @@ int pminus1_factor(UV n, UV *factors, UV B1, UV B2)
 }
 
 /* Simple Williams p+1 */
-static void pp1_pow(UV *cX, unsigned long exp, UV n)
+static void pp1_pow(UV *cX, UV exp, UV n)
 {
   UV X0 = *cX;
   UV X  = *cX;
   UV Y = mulsubmod(X, X, 2, n);
-  unsigned long bit = 1UL << (clz(exp)-1);
+  UV bit = UVCONST(1) << (clz(exp)-1);
   while (bit) {
     UV T = mulsubmod(X, Y, X0, n);
     if ( exp & bit ) {
@@ -910,12 +908,12 @@ int squfof_factor(UV n, UV *factors, UV rounds)
 }
 
 UV dlp_trial(UV a, UV g, UV p, UV maxrounds) {
-  UV t, n = 1;
+  UV t, k = 1;
   if (maxrounds > p) maxrounds = p;
-  for (n = 1; n < maxrounds; n++) {
-    t = powmod(g, n, p);
+  for (k = 1; k < maxrounds; k++) {
+    t = powmod(g, k, p);
     if (t == a)
-      return n;
+      return k;
   }
   return 0;
 }
@@ -940,7 +938,7 @@ UV dlp_prho(UV a, UV g, UV p, UV maxrounds) {
     pollard_rho_cycle(u,v,w,p,n,a,g);   /* xi, ai, bi */
     pollard_rho_cycle(U,V,W,p,n,a,g);
     pollard_rho_cycle(U,V,W,p,n,a,g);   /* x2i, a2i, b2i */
-    if (verbose > 3) printf( "%3lu  %4lu %3lu %3lu  %4lu %3lu %3lu\n", i, u, v, w, U, V, W );
+    if (verbose > 3) printf( "%3"UVuf"  %4"UVuf" %3"UVuf" %3"UVuf"  %4"UVuf" %3"UVuf" %3"UVuf"\n", i, u, v, w, U, V, W );
     if (u == U) {
       UV r1, r2, k;
       r1 = submod(v, V, n);
@@ -951,11 +949,11 @@ UV dlp_prho(UV a, UV g, UV p, UV maxrounds) {
       r2 = submod(W, w, n);
       k = divmod(r2, r1, n);
       if (powmod(g,k,p) != a) {
-        if (verbose > 2) printf("r1 = %lu  r2 = %lu k = %lu\n", r1, r2, k);
-        if (verbose) printf("Incorrect DLP Rho solution: %lu\n", k);
+        if (verbose > 2) printf("r1 = %"UVuf"  r2 = %"UVuf" k = %"UVuf"\n", r1, r2, k);
+        if (verbose) printf("Incorrect DLP Rho solution: %"UVuf"\n", k);
         return 0;
       }
-      if (verbose) printf("DLP Rho solution found after %lu steps\n", i);
+      if (verbose) printf("DLP Rho solution found after %"UVuf" steps\n", i);
       return k;
     }
   }

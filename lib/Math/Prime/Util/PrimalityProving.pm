@@ -11,7 +11,7 @@ use Math::Prime::Util qw/is_prob_prime is_strong_pseudoprime
 
 BEGIN {
   $Math::Prime::Util::PrimalityProving::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PrimalityProving::VERSION = '0.36';
+  $Math::Prime::Util::PrimalityProving::VERSION = '0.37';
 }
 
 BEGIN {
@@ -57,6 +57,14 @@ sub _small_cert {
                     "";
 }
 
+# For stripping off the header on certificates so they can be combined.
+sub _strip_proof_header {
+  my $proof = shift;
+  $proof =~ s/^\[MPU - Primality Certificate\]\nVersion \S+\n+Proof for:\nN (\d+)\n+//ms;
+  return $proof;
+}
+
+
 sub primality_proof_lucas {
   my ($n) = shift;
   my @composite = (0, '');
@@ -96,7 +104,7 @@ sub primality_proof_lucas {
         carp "could not prove primality of $n.\n";
         return (1, '');
       }
-      push @fac_proofs, Math::Prime::Util::_strip_proof_header($fproof) if $f > $_smallval;
+      push @fac_proofs, _strip_proof_header($fproof) if $f > $_smallval;
     }
     $cert .= "A $a\n";
     foreach my $proof (@fac_proofs) {
@@ -117,6 +125,7 @@ sub primality_proof_bls75 {
   return @composite if ($n & 1) == 0;
   return @composite if is_strong_pseudoprime($n,2,15,325) == 0;
 
+  require Math::Prime::Util::PP;
   $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
   my $nm1 = $n->copy->bdec;
   my $ONE = $nm1->copy->bone;
@@ -229,7 +238,7 @@ sub primality_proof_bls75 {
       carp "could not prove primality of $n.\n";
       return (1, '');
     }
-    push @fac_proofs, Math::Prime::Util::_strip_proof_header($fproof) if $f > $_smallval;
+    push @fac_proofs, _strip_proof_header($fproof) if $f > $_smallval;
   }
   $cert .= $atext;
   $cert .= "----\n";
@@ -855,7 +864,7 @@ Math::Prime::Util::PrimalityProving - Primality proofs and certificates
 
 =head1 VERSION
 
-Version 0.36
+Version 0.37
 
 
 =head1 SYNOPSIS

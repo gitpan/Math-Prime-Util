@@ -176,6 +176,8 @@ static int _vcallsubn(pTHX_ I32 flags, I32 stashflags, const char* name, int nar
       GV ** gvp = (GV**)hv_fetch(MY_CXT.MPUGMP,name,namelen,0);
       if (gvp) gv = *gvp;
     }
+    if (!gv && (stashflags & VCALL_PP))
+      perl_require_pv("Math/Prime/Util/PP.pm");
     if (!gv) {
       GV ** gvp = (GV**)hv_fetch(stashflags & VCALL_PP? MY_CXT.MPUPP : MY_CXT.MPUroot, name,namelen,0);
       if (gvp) gv = *gvp;
@@ -587,27 +589,46 @@ next_prime(IN SV* svn)
   ALIAS:
     prev_prime = 1
     nth_prime = 2
+    nth_prime_upper = 3
+    nth_prime_lower = 4
+    nth_prime_approx = 5
+    prime_count_upper = 6
+    prime_count_lower = 7
+    prime_count_approx = 8
   PPCODE:
     if (_validate_int(aTHX_ svn, 0)) {
       UV n = my_svuv(svn);
-      if ( ((ix == 0) && (n >= MPU_MAX_PRIME))    ||
-           ((ix == 2) && (n >= MPU_MAX_PRIME_IDX)) ) {
+      if ( (n >= MPU_MAX_PRIME     && ix == 0) ||
+           (n >= MPU_MAX_PRIME_IDX && (ix==2 || ix==3 || ix==4 || ix==5)) ) {
         /* Out of range.  Fall through to Perl. */
       } else {
         UV ret;
         switch (ix) {
           case 0: ret = next_prime(n);  break;
           case 1: ret = (n < 3) ? 0 : prev_prime(n);  break;
-          case 2:
-          default:ret = _XS_nth_prime(n);  break;
+          case 2: ret = nth_prime(n); break;
+          case 3: ret = nth_prime_upper(n); break;
+          case 4: ret = nth_prime_lower(n); break;
+          case 5: ret = nth_prime_approx(n); break;
+          case 6: ret = prime_count_upper(n); break;
+          case 7: ret = prime_count_lower(n); break;
+          case 8:
+          default:ret = prime_count_approx(n); break;
         }
         XSRETURN_UV(ret);
       }
     }
     switch (ix) {
-      case 0:  _vcallsub("_generic_next_prime");     break;
-      case 1:  _vcallsub("_generic_prev_prime");     break;
-      default: _vcallsub_with_pp("nth_prime");           break;
+      case 0:  _vcallsub("_generic_next_prime");        break;
+      case 1:  _vcallsub("_generic_prev_prime");        break;
+      case 2:  _vcallsub_with_pp("nth_prime");          break;
+      case 3:  _vcallsub_with_pp("nth_prime_upper");    break;
+      case 4:  _vcallsub_with_pp("nth_prime_lower");    break;
+      case 5:  _vcallsub_with_pp("nth_prime_approx");   break;
+      case 6:  _vcallsub_with_pp("prime_count_upper");  break;
+      case 7:  _vcallsub_with_pp("prime_count_lower");  break;
+      case 8:
+      default: _vcallsub_with_pp("prime_count_approx"); break;
     }
     return; /* skip implicit PUTBACK */
 
@@ -665,7 +686,7 @@ factor(IN SV* svn)
       switch (ix) {
         case 0:  _vcallsubn(aTHX_ gimme_v, VCALL_ROOT, "_generic_factor", 1);     break;
         case 1:  _vcallsubn(aTHX_ gimme_v, VCALL_ROOT, "_generic_factor_exp", 1); break;
-        default: _vcallsubn(aTHX_ gimme_v, VCALL_ROOT, "_generic_divisors", 1);   break;
+        default: _vcallsubn(aTHX_ gimme_v, VCALL_GMP|VCALL_PP, "divisors", 1);   break;
       }
       return; /* skip implicit PUTBACK */
     }
@@ -685,7 +706,7 @@ divisor_sum(IN SV* svn, ...)
       UV sigma = divisor_sum(n, k);
       if (sigma != 0)  XSRETURN_UV(sigma);   /* sigma 0 means overflow */
     }
-    _vcallsub("_generic_divisor_sum");
+    _vcallsub_with_gmp("divisor_sum");
     return; /* skip implicit PUTBACK */
 
 void
@@ -718,7 +739,7 @@ znorder(IN SV* sva, IN SV* svn)
     }
     overflow:
     switch (ix) {
-      case 0:  _vcallsub_with_pp("znorder");  break;
+      case 0:  _vcallsub_with_gmp("znorder");  break;
       case 1:  _vcallsub_with_pp("jordan_totient");  break;
       case 2:
       default: _vcallsub_with_pp("legendre_phi"); break;
@@ -739,7 +760,7 @@ znlog(IN SV* sva, IN SV* svg, IN SV* svp)
       if (ret == 0 && a > 1) XSRETURN_UNDEF;
       XSRETURN_UV(ret);
     }
-    _vcallsub_with_pp("znlog");
+    _vcallsub_with_gmp("znlog");
     return; /* skip implicit PUTBACK */
 
 void
@@ -761,32 +782,25 @@ kronecker(IN SV* sva, IN SV* svb)
       int k = (abpositive) ? kronecker_uu(a,b) : kronecker_ss(a,b);
       RETURN_NPARITY(k);
     }
-    _vcallsub("_generic_kronecker");
+    _vcallsub_with_gmp("kronecker");
     return; /* skip implicit PUTBACK */
 
-double
+NV
 _XS_ExponentialIntegral(IN SV* x)
   ALIAS:
     _XS_LogarithmicIntegral = 1
     _XS_RiemannZeta = 2
     _XS_RiemannR = 3
-    _XS_chebyshev_theta = 4
-    _XS_chebyshev_psi = 5
   PREINIT:
-    double ret;
+    NV nv, ret;
   CODE:
-    if (ix < 4) {
-      NV nv = SvNV(x);
-      switch (ix) {
-        case 0: ret = (NV) _XS_ExponentialIntegral(nv); break;
-        case 1: ret = (NV) _XS_LogarithmicIntegral(nv); break;
-        case 2: ret = (NV) ld_riemann_zeta(nv); break;
-        case 3:
-        default:ret = (NV) _XS_RiemannR(nv); break;
-      }
-    } else {
-      UV uv = SvUV(x);
-      ret = (NV) chebyshev_function(uv, ix-4);
+    nv = SvNV(x);
+    switch (ix) {
+      case 0: ret = (NV) _XS_ExponentialIntegral(nv); break;
+      case 1: ret = (NV) _XS_LogarithmicIntegral(nv); break;
+      case 2: ret = (NV) ld_riemann_zeta(nv); break;
+      case 3:
+      default:ret = (NV) _XS_RiemannR(nv); break;
     }
     RETVAL = ret;
   OUTPUT:
@@ -834,9 +848,9 @@ euler_phi(IN SV* svlo, ...)
       /* Whatever we didn't handle above */
       U32 gimme_v = GIMME_V;
       switch (ix) {
-        case 0:  _vcallsubn(aTHX_ gimme_v, VCALL_ROOT,"_generic_euler_phi", items);break;
+        case 0:  _vcallsubn(aTHX_ gimme_v, VCALL_PP, "euler_phi", items);break;
         case 1:
-        default: _vcallsubn(aTHX_ gimme_v, VCALL_ROOT,"_generic_moebius", items);  break;
+        default: _vcallsubn(aTHX_ gimme_v, VCALL_PP, "moebius", items);  break;
       }
       return;
     }
@@ -845,24 +859,40 @@ void
 carmichael_lambda(IN SV* svn)
   ALIAS:
     mertens = 1
-    exp_mangoldt = 2
-    znprimroot = 3
+    liouville = 2
+    chebyshev_theta = 3
+    chebyshev_psi = 4
+    exp_mangoldt = 5
+    znprimroot = 6
   PREINIT:
     int status;
   PPCODE:
-    status = _validate_int(aTHX_ svn, (ix > 1) ? 1 : 0);
+    status = _validate_int(aTHX_ svn, (ix >= 5) ? 1 : 0);
     switch (ix) {
       case 0: if (status == 1) XSRETURN_UV(carmichael_lambda(my_svuv(svn)));
-              _vcallsub("_generic_carmichael_lambda");
+              _vcallsub_with_gmp("carmichael_lambda");
               break;
       case 1: if (status == 1) XSRETURN_IV(mertens(my_svuv(svn)));
-              _vcallsub("_generic_mertens");
+              _vcallsub_with_pp("mertens");
               break;
-      case 2: if (status ==-1) XSRETURN_UV(1);
-              if (status == 1) XSRETURN_UV(exp_mangoldt(my_svuv(svn)));
-              _vcallsub("_generic_exp_mangoldt");
+      case 2: if (status == 1) {
+                UV factors[MPU_MAX_FACTORS+1];
+                int nfactors = factor(my_svuv(svn), factors);
+                RETURN_NPARITY( (nfactors & 1) ? -1 : 1 );
+              }
+              _vcallsub_with_gmp("liouville");
               break;
-      case 3:
+      case 3: if (status == 1) XSRETURN_NV(chebyshev_function(my_svuv(svn),0));
+              _vcallsub_with_pp("chebyshev_theta");
+              break;
+      case 4: if (status == 1) XSRETURN_NV(chebyshev_function(my_svuv(svn),1));
+              _vcallsub_with_pp("chebyshev_psi");
+              break;
+      case 5: if (status != 0)
+                XSRETURN_UV( (status == -1) ? 1 : exp_mangoldt(my_svuv(svn)) );
+              _vcallsub_with_gmp("exp_mangoldt");
+              break;
+      case 6:
       default:if (status != 0) {
                 UV r, n = my_svuv(svn);
                 if (status == -1) n = -(IV)n;
@@ -872,7 +902,7 @@ carmichael_lambda(IN SV* svn)
                 else
                   XSRETURN_UV(r);
               }
-              _vcallsub("_generic_znprimroot");
+              _vcallsub_with_gmp("znprimroot");
               break;
     }
     return; /* skip implicit PUTBACK */

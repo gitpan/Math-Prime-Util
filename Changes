@@ -1,5 +1,36 @@
 Revision history for Perl module Math::Prime::Util
 
+0.37  2014-01-26
+
+    [FUNCTIONALITY AND PERFORMANCE]
+
+    - Simplified primes().  No longer takes an optional hashref as first arg,
+      which was awkward and never documented.
+
+    - Dynamically loads the PP code and Math::BigInt only when needed.  This
+      removes a lot of bloat for the usual cases:
+
+        2.0 MB  perl -E 'say 1'
+        4.2 MB  MPU 0.37
+        4.5 MB  Math::Prime::XS + Math::Factor::XS
+        5.3 MB  Math::Pari
+        7.6 MB  MPU 0.34
+        9.6 MB  MPU 0.36
+        9.7 MB  MPU 0.35
+
+    - Combined with the above, this reduces startup overhead a lot (~3x).
+
+    - Adjusted factor script to lower startup costs.  Over 2x faster
+      with native integer (non-expression) arguments.  This is just not
+      loading thousands of lines of Perl code that aren't used, which
+      was more time-consuming than the actual factoring.
+
+    - nth_prime_{lower,upper,approx} and prime_count_{lower,upper,approx}
+      moved to XS->PP.  This helps us slim down and cut startup overhead.
+
+    - Fix doc for znlog:   znlog(a,g,p) finds k s.t. a = g^k mod p
+
+
 0.36  2014-01-13
 
     [API Changes]

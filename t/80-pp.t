@@ -298,10 +298,10 @@ require_ok 'Math::Prime::Util::PrimalityProving';
 
     *factor         = \&Math::Prime::Util::PP::factor;
 
-    *moebius        = \&Math::Prime::Util::_generic_moebius;
-    *euler_phi      = \&Math::Prime::Util::_generic_euler_phi;
-    *mertens        = \&Math::Prime::Util::_generic_mertens;
-    *exp_mangoldt   = \&Math::Prime::Util::_generic_exp_mangoldt;
+    *moebius        = \&Math::Prime::Util::PP::moebius;
+    *euler_phi      = \&Math::Prime::Util::PP::euler_phi;
+    *mertens        = \&Math::Prime::Util::PP::mertens;
+    *exp_mangoldt   = \&Math::Prime::Util::PP::exp_mangoldt;
 
     *RiemannR            = \&Math::Prime::Util::PP::RiemannR;
     *RiemannZeta         = \&Math::Prime::Util::PP::RiemannZeta;

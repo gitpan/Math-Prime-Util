@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.36';
+  $Math::Prime::Util::PP::VERSION = '0.37';
 }
 
 BEGIN {
@@ -40,6 +40,7 @@ BEGIN {
   use constant BTWO            => Math::BigInt->new(2);
   use constant B_PRIM759       => Math::BigInt->new("64092011671807087969");
   use constant B_PRIM235       => Math::BigInt->new("30");
+  use constant PI_TIMES_8      => 25.13274122871834590770114707;
 }
 
 {
@@ -72,9 +73,38 @@ sub _is_positive_int {
 }
 
 sub _bigint_to_int {
-  return (OLD_PERL_VERSION) ? unpack(UVPACKLET,pack(UVPACKLET,$_[0]->bstr))
-                            : int($_[0]->bstr);
+  return (OLD_PERL_VERSION) ? unpack(UVPACKLET,pack(UVPACKLET,"$_[0]"))
+                            : int("$_[0]");
 }
+
+sub _upgrade_to_float {
+  do { require Math::BigFloat; Math::BigFloat->import(); }
+    if !defined $Math::BigFloat::VERSION;
+  return Math::BigFloat->new($_[0]);
+}
+
+# Get the accuracy of variable x, or the max default from BigInt/BigFloat
+# One might think to use ref($x)->accuracy() but numbers get upgraded and
+# downgraded willy-nilly, and it will do the wrong thing from the user's
+# perspective.
+sub _find_big_acc {
+  my($x) = @_;
+
+  $b = $x->accuracy();
+  return $b if defined $b;
+
+  my ($i,$f) = (Math::BigInt->accuracy(), Math::BigFloat->accuracy());
+  return (($i > $f) ? $i : $f)   if defined $i && defined $f;
+  return $i if defined $i;
+  return $f if defined $f;
+
+  ($i,$f) = (Math::BigInt->div_scale(), Math::BigFloat->div_scale());
+  return (($i > $f) ? $i : $f)   if defined $i && defined $f;
+  return $i if defined $i;
+  return $f if defined $f;
+  return 18;
+}
+
 
 sub _validate_num {
   my($n, $min, $max) = @_;
@@ -124,11 +154,7 @@ my @_primes_small = (
    101,103,107,109,113,127,131,137,139,149,151,157,163,167,173,179,181,191,
    193,197,199,211,223,227,229,233,239,241,251,257,263,269,271,277,281,283,
    293,307,311,313,317,331,337,347,349,353,359,367,373,379,383,389,397,401,
-   409,419,421,431,433,439,443,449,457,461,463,467,479,487,491,499);
-my @_prime_count_small = (
-   0,0,1,2,2,3,3,4,4,4,4,5,5,6,6,6,6,7,7,8,8,8,8,9,9,9,9,9,9,10,10,
-   11,11,11,11,11,11,12,12,12,12,13,13,14,14,14,14,15,15,15,15,15,15,
-   16,16,16,16,16,16,17,17,18,18,18,18,18,18,19);
+   409,419,421,431,433,439,443,449,457,461,463,467,479,487,491,499,503,509);
 my @_prime_next_small = (
    2,2,3,5,5,7,7,11,11,11,11,13,13,17,17,17,17,19,19,23,23,23,23,
    29,29,29,29,29,29,31,31,37,37,37,37,37,37,41,41,41,41,43,43,47,
@@ -138,6 +164,19 @@ my @_prime_next_small = (
 my @_prime_indices = (1, 7, 11, 13, 17, 19, 23, 29);
 my @_nextwheel30 = (1,7,7,7,7,7,7,11,11,11,11,13,13,17,17,17,17,19,19,23,23,23,23,29,29,29,29,29,29,1);
 my @_prevwheel30 = (29,29,1,1,1,1,1,1,7,7,7,7,11,11,13,13,13,13,17,17,19,19,19,19,23,23,23,23,23,23);
+
+sub _tiny_prime_count {
+  my($n) = @_;
+  return if $n >= $_primes_small[-1];
+  my $j = $#_primes_small;
+  my $i = 1 + ($n >> 4);
+  while ($i < $j) {
+    my $mid = ($i+$j)>>1;
+    if ($_primes_small[$mid] <= $n) { $i = $mid+1; }
+    else                            { $j = $mid;   }
+  }
+  return $i-1;
+}
 
 sub _is_prime7 {  # n must not be divisible by 2, 3, or 5
   my($n) = @_;
@@ -212,7 +251,7 @@ sub _is_prime7 {  # n must not be divisible by 2, 3, or 5
 
 sub is_prime {
   my($n) = @_;
-  return 0 if defined $n && int($n) < 0;
+  return 0 if int($n) < 0;
   _validate_positive_integer($n);
 
   if (ref($n) eq 'Math::BigInt') {
@@ -371,19 +410,16 @@ sub trial_primes {
 }
 
 sub primes {
-  my $optref = (ref $_[0] eq 'HASH')  ?  shift  :  {};
-  croak "no parameters to primes" unless scalar @_ > 0;
-  croak "too many parameters to primes" unless scalar @_ <= 2;
-  my $low = (@_ == 2)  ?  shift  :  2;
-  my $high = shift;
+  my($low,$high) = @_;
+  if (scalar @_ > 1) {
+    _validate_positive_integer($low);
+    _validate_positive_integer($high);
+  } else {
+    ($low,$high) = (2, $low);
+    _validate_positive_integer($high);
+  }
   my $sref = [];
-
-  _validate_positive_integer($low);
-  _validate_positive_integer($high);
-
   return $sref if ($low > $high) || ($high < 2);
-
-  # Ignore method options in this code
 
   # At some point even the pretty-fast pure perl sieve is going to be a
   # dog, and we should move to trials.  This is typical with a small range
@@ -494,13 +530,70 @@ sub prev_prime {
   #$d*30+$m;
 }
 
+sub partitions {
+  my $n = shift;
+
+  my $d = int(sqrt($n+1));
+  my @pent = (1, map { (($_*(3*$_+1))>>1, (($_+1)*(3*$_+2))>>1) } 1 .. $d);
+  my @part = (Math::BigInt->bone);
+  foreach my $j (scalar @part .. $n) {
+    my ($psum1, $psum2, $k) = (Math::BigInt->bzero, Math::BigInt->bzero, 1);
+    foreach my $p (@pent) {
+      last if $p > $j;
+      if ((++$k) & 2) { $psum1->badd( $part[ $j - $p ] ); }
+      else            { $psum2->badd( $part[ $j - $p ] ); }
+    }
+    $part[$j] = $psum1 - $psum2;
+  }
+  return $part[$n];
+}
+
+sub primorial {
+  my $n = shift;
+
+  my $max = (MPU_32BIT) ? 29 : (OLD_PERL_VERSION) ? 43 : 53;
+  my $pn = (ref($_[0]) eq 'Math::BigInt') ? $_[0]->copy->bone()
+         : ($n >= $max) ? Math::BigInt->bone()
+         : 1;
+  if (ref($pn) eq 'Math::BigInt') {
+    my $start = 2;
+    if ($n >= 97) {
+      $start = 101;
+      $pn->bdec->badd(Math::BigInt->new("2305567963945518424753102147331756070"));
+    }
+    my @plist = @{primes($start,$n)};
+    while (@plist > 2 && $plist[2] < 1625) {
+      $pn->bmul( Math::BigInt->new(shift(@plist)*shift(@plist)*shift(@plist)) );
+    }
+    while (@plist > 1 && $plist[1] < 65536) {
+      $pn->bmul( Math::BigInt->new(shift(@plist)*shift(@plist)) );
+    }
+    $pn->bmul($_) for @plist;
+  } else {
+    foreach my $p (@{primes($n)}) {  $pn *= $p;  }
+  }
+  return $pn;
+}
+
+sub consecutive_integer_lcm {
+  my $n = shift;
+
+  my $max = (MPU_32BIT) ? 22 : (OLD_PERL_VERSION) ? 37 : 46;
+  my $pn = ref($n) ? ref($n)->new(1) : ($n >= $max) ? Math::BigInt->bone() : 1;
+  for (my $p = 2; $p <= $n; $p = next_prime($p)) {
+    my($p_power, $pmin) = ($p, int($n/$p));
+    $p_power *= $p while $p_power <= $pmin;
+    $pn *= $p_power;
+  }
+  $pn = _bigint_to_int($pn) if $pn <= ''.~0;
+  return $pn;
+}
+
 sub jordan_totient {
   my($k, $n) = @_;
-  _validate_num($k) || _validate_positive_integer($k);
   return ($n == 1) ? 1 : 0  if $k == 0;
   return euler_phi($n)      if $k == 1;
-  return 0 if defined $n && $n < 0;  # Following SAGE's logic here.
-  _validate_num($n) || _validate_positive_integer($n);
+  return 0 if $n < 0;
   return ($n == 1) ? 1 : 0  if $n <= 1;
 
   my @pe = Math::Prime::Util::factor_exp($n);
@@ -518,6 +611,7 @@ sub jordan_totient {
 }
 
 sub euler_phi {
+  return euler_phi_range(@_) if scalar @_ > 1;
   my($n) = @_;
   return 0 if $n < 0;
   return $n if $n <= 1;
@@ -567,6 +661,7 @@ sub euler_phi_range {
 }
 
 sub moebius {
+  return moebius_range(@_) if scalar @_ > 1;
   my($n) = @_;
   return ($n == 1) ? 1 : 0  if $n <= 1;
   return 0 if ($n >= 49) && (!($n % 4) || !($n % 9) || !($n % 25) || !($n%49) );
@@ -614,25 +709,86 @@ sub moebius_range {
   return @mu;
 }
 
+sub mertens {
+  my($n) = @_;
+    # This is the most basic Deléglise and Rivat algorithm.  u = n^1/2
+  # and no segmenting is done.  Their algorithm uses u = n^1/3, breaks
+  # the summation into two parts, and calculates those in segments.  Their
+  # computation time growth is half of this code.
+  return $n if $n <= 1;
+  my $u = int(sqrt($n));
+  my @mu = (0, Math::Prime::Util::moebius(1, $u)); # Hold values of mu for 0-u
+  my $musum = 0;
+  my @M = map { $musum += $_; } @mu;     # Hold values of M for 0-u
+  my $sum = $M[$u];
+  foreach my $m (1 .. $u) {
+    next if $mu[$m] == 0;
+    my $inner_sum = 0;
+    my $lower = int($u/$m) + 1;
+    my $last_nmk = int($n/($m*$lower));
+    my ($denom, $this_k, $next_k) = ($m, 0, int($n/($m*1)));
+    for my $nmk (1 .. $last_nmk) {
+      $denom += $m;
+      $this_k = int($n/$denom);
+      next if $this_k == $next_k;
+      ($this_k, $next_k) = ($next_k, $this_k);
+      $inner_sum += $M[$nmk] * ($this_k - $next_k);
+    }
+    $sum -= $mu[$m] * $inner_sum;
+  }
+  return $sum;
+}
+
+sub liouville {
+  my($n) = @_;
+  my $l = (-1) ** scalar factor($n);
+  return $l;
+}
+
+# Exponential of Mangoldt function (A014963).
+# Return p if n = p^m [p prime, m >= 1], 1 otherwise.
+sub exp_mangoldt {
+  my($n) = @_;
+  return 1 if defined $n && $n <= 1;  # n <= 1
+  return 2 if ($n & ($n-1)) == 0;     # n power of 2
+  return 1 unless $n & 1;             # even n can't be p^m
+
+  my @pe = Math::Prime::Util::factor_exp($n);
+  return 1 if scalar @pe > 1;
+  return $pe[0]->[0];
+}
+
+sub carmichael_lambda {
+  my($n) = @_;
+  return euler_phi($n) if $n < 8;                # = phi(n) for n < 8
+  return euler_phi($n)/2 if ($n & ($n-1)) == 0;  # = phi(n)/2 for 2^k, k>2
+
+  my @pe = Math::Prime::Util::factor_exp($n);
+  $pe[0]->[1]-- if $pe[0]->[0] == 2 && $pe[0]->[1] > 2;
+
+  my $lcm = Math::BigInt::blcm(
+    map { $_->[0]->copy->bpow($_->[1]->copy->bdec)->bmul($_->[0]->copy->bdec) }
+    map { [ map { Math::BigInt->new("$_") } @$_ ] }
+    @pe
+  );
+  $lcm = _bigint_to_int($lcm) if $lcm->bacmp(''.~0) <= 0;
+  return $lcm;
+}
+
+
 my @_ds_overflow =  # We'll use BigInt math if the input is larger than this.
   (~0 > 4294967295)
    ? (124, 3000000000000000000, 3000000000, 2487240, 64260, 7026)
    : ( 50,           845404560,      52560,    1548,   252,   84);
 sub divisor_sum {
   my($n, $k) = @_;
-  return 1 if defined $n && $n == 1;
+  return 1 if $n == 1;
 
   if (defined $k && ref($k) eq 'CODE') {
     my $sum = $n-$n;
-    if (ref($n) eq 'Math::BigInt') {
-      # If the original number was a bigint, make sure all divisors are.
-      foreach my $d (Math::Prime::Util::divisors($n)) {
-        $sum += $k->(Math::BigInt->new("$d"));
-      }
-    } else {
-      foreach my $d (Math::Prime::Util::divisors($n)) {
-        $sum += $k->($d);
-      }
+    my $refn = ref($n);
+    foreach my $d (Math::Prime::Util::divisors($n)) {
+      $sum += $k->( $refn ? $refn->new("$d") : $d );
     }
     return $sum;
   }
@@ -910,6 +1066,273 @@ sub nth_prime {
   $prime;
 }
 
+# The nth prime will be less or equal to this number
+sub nth_prime_upper {
+  my($n) = @_;
+  _validate_positive_integer($n);
+
+  return $_primes_small[$n] if $n <= $#_primes_small;
+
+  $n = _upgrade_to_float($n) if $n > MPU_MAXPRIMEIDX || $n > 2**45;
+
+  my $flogn  = log($n);
+  my $flog2n = log($flogn);  # Note distinction between log_2(n) and log^2(n)
+
+  my $upper;
+  if      ($n >= 688383) {   # Dusart 2010 page 2
+    $upper = $n * ( $flogn  +  $flog2n - 1.0 + (($flog2n-2.00)/$flogn) );
+  } elsif ($n >= 178974) {   # Dusart 2010 page 7
+    $upper = $n * ( $flogn  +  $flog2n - 1.0 + (($flog2n-1.95)/$flogn) );
+  } elsif ($n >=  39017) {   # Dusart 1999 page 14
+    $upper = $n * ( $flogn  +  $flog2n - 0.9484 );
+  } elsif ($n >=      6) {   # Modified Robin 1983, for 6-39016 only
+    $upper = $n * ( $flogn  +  0.6000 * $flog2n );
+  } else {
+    $upper = $n * ( $flogn  +  $flog2n );
+  }
+
+  return int($upper + 1.0);
+}
+
+# The nth prime will be greater than or equal to this number
+sub nth_prime_lower {
+  my($n) = @_;
+  _validate_num($n) || _validate_positive_integer($n);
+
+  return $_primes_small[$n] if $n <= $#_primes_small;
+
+  $n = _upgrade_to_float($n) if $n > MPU_MAXPRIMEIDX || $n > 2**45;
+
+  my $flogn  = log($n);
+  my $flog2n = log($flogn);  # Note distinction between log_2(n) and log^2(n)
+
+  # Dusart 1999 page 14, for all n >= 2
+  #my $lower = $n * ($flogn + $flog2n - 1.0 + (($flog2n-2.25)/$flogn));
+  # Dusart 2010 page 2, for all n >= 3
+  my $lower = $n * ($flogn + $flog2n - 1.0 + (($flog2n-2.10)/$flogn));
+
+  return int($lower);
+}
+
+sub nth_prime_approx {
+  my($n) = @_;
+  _validate_num($n) || _validate_positive_integer($n);
+
+  return $_primes_small[$n] if $n <= $#_primes_small;
+
+  $n = _upgrade_to_float($n)
+    if ref($n) eq 'Math::BigInt' || $n >= MPU_MAXPRIMEIDX;
+
+  my $flogn  = log($n);
+  my $flog2n = log($flogn);
+
+  # Cipolla 1902:
+  #    m=0   fn * ( flogn + flog2n - 1 );
+  #    m=1   + ((flog2n - 2)/flogn) );
+  #    m=2   - (((flog2n*flog2n) - 6*flog2n + 11) / (2*flogn*flogn))
+  #    + O((flog2n/flogn)^3)
+  #
+  # Shown in Dusart 1999 page 12, as well as other sources such as:
+  #   http://www.emis.de/journals/JIPAM/images/153_02_JIPAM/153_02.pdf
+  # where the main issue you run into is that you're doing polynomial
+  # interpolation, so it oscillates like crazy with many high-order terms.
+  # Hence I'm leaving it at m=2.
+
+  my $approx = $n * ( $flogn + $flog2n - 1
+                      + (($flog2n - 2)/$flogn)
+                      - ((($flog2n*$flog2n) - 6*$flog2n + 11) / (2*$flogn*$flogn))
+                    );
+
+  # Apply a correction to help keep values close.
+  my $order = $flog2n/$flogn;
+  $order = $order*$order*$order * $n;
+
+  if    ($n <        259) { $approx += 10.4 * $order; }
+  elsif ($n <        775) { $approx +=  7.52* $order; }
+  elsif ($n <       1271) { $approx +=  5.6 * $order; }
+  elsif ($n <       2000) { $approx +=  5.2 * $order; }
+  elsif ($n <       4000) { $approx +=  4.3 * $order; }
+  elsif ($n <      12000) { $approx +=  3.0 * $order; }
+  elsif ($n <     150000) { $approx +=  2.1 * $order; }
+  elsif ($n <  200000000) { $approx +=  0.0 * $order; }
+  else                    { $approx += -0.010 * $order; }
+  # $approx = -0.025 is better for the last, but it gives problems with some
+  # other code that always wants the asymptotic approximation to be >= actual.
+
+  return int($approx + 0.5);
+}
+
+#############################################################################
+
+sub prime_count_approx {
+  my($x) = @_;
+  _validate_num($x) || _validate_positive_integer($x);
+
+  # Turn on high precision FP if they gave us a big number.
+  $x = _upgrade_to_float($x) if ref($_[0]) eq 'Math::BigInt';
+  #    Method             10^10 %error  10^19 %error
+  #    -----------------  ------------  ------------
+  #    n/(log(n)-1)        .22%          .06%
+  #    average bounds      .01%          .0002%
+  #    li(n)               .0007%        .00000004%
+  #    li(n)-li(n^.5)/2    .0004%        .00000001%
+  #    R(n)                .0004%        .00000001%
+  #
+  # Also consider: http://trac.sagemath.org/sage_trac/ticket/8135
+
+  # my $result = int( (prime_count_upper($x) + prime_count_lower($x)) / 2);
+  # my $result = int( LogarithmicIntegral($x) );
+  # my $result = int(LogarithmicIntegral($x) - LogarithmicIntegral(sqrt($x))/2);
+  # my $result = RiemannR($x) + 0.5;
+
+  # Sadly my Perl RiemannR function is really slow for big values.  If MPFR
+  # is available, then use it -- it rocks.  Otherwise, switch to LiCorr for
+  # very big values.  This is hacky and shouldn't be necessary.
+  my $result;
+  if ( $x < 1e36 || _MPFR_available() ) {
+    if (ref($x) eq 'Math::BigFloat') {
+      # Make sure we get enough accuracy, and also not too much more than needed
+      $x->accuracy(length($x->bfloor->bstr())+2);
+    }
+    $result = RiemannR($x) + 0.5;
+  } else {
+    $result = int(LogarithmicIntegral($x) - LogarithmicIntegral(sqrt($x))/2);
+  }
+
+  return Math::BigInt->new($result->bfloor->bstr()) if ref($result) eq 'Math::BigFloat';
+  return int($result);
+}
+
+sub prime_count_lower {
+  my($x) = @_;
+  _validate_num($x) || _validate_positive_integer($x);
+
+  return _tiny_prime_count($x) if $x < $_primes_small[-1];
+
+  $x = _upgrade_to_float($x)
+    if ref($x) eq 'Math::BigInt' || ref($_[0]) eq 'Math::BigInt';
+
+  my $flogx = log($x);
+
+  # Chebyshev:            1*x/logx       x >= 17
+  # Rosser & Schoenfeld:  x/(logx-1/2)   x >= 67
+  # Dusart 1999:          x/logx*(1+1/logx+1.8/logxlogx)  x >= 32299
+  # Dusart 2010:          x/logx*(1+1/logx+2.0/logxlogx)  x >= 88783
+  # The Dusart (1999 or 2010) bounds are far, far better than the others.
+
+  my $result;
+  if ($x > 1000_000_000_000 && Math::Prime::Util::prime_get_config()->{'assume_rh'}) {
+    # Schoenfeld bound
+    my $lix = LogarithmicIntegral($x);
+    my $sqx = sqrt($x);
+    if (ref($x) eq 'Math::BigFloat') {
+      my $xdigits = _find_big_acc($x);
+      $result = $lix - (($sqx*$flogx) / (Math::BigFloat->bpi($xdigits)*8));
+    } else {
+      $result = $lix - (($sqx*$flogx) / PI_TIMES_8);
+    }
+  } elsif ($x < 599) {
+    $result = $x / ($flogx - 0.7);   # For smaller numbers this works out well.
+  } else {
+    my $a;
+    # Hand tuned for small numbers (< 60_000M)
+    if    ($x <       2700) { $a = 0.30; }
+    elsif ($x <       5500) { $a = 0.90; }
+    elsif ($x <      19400) { $a = 1.30; }
+    elsif ($x <      32299) { $a = 1.60; }
+    elsif ($x <     176000) { $a = 1.80; }
+    elsif ($x <     315000) { $a = 2.10; }
+    elsif ($x <    1100000) { $a = 2.20; }
+    elsif ($x <    4500000) { $a = 2.31; }
+    elsif ($x <  233000000) { $a = 2.36; }
+    elsif ($x < 5433800000) { $a = 2.32; }
+    elsif ($x <60000000000) { $a = 2.15; }
+    else                    { $a = 2.00; } # Dusart 2010, page 2
+    $result = ($x/$flogx) * (1.0 + 1.0/$flogx + $a/($flogx*$flogx));
+  }
+
+  return Math::BigInt->new($result->bfloor->bstr()) if ref($result) eq 'Math::BigFloat';
+  return int($result);
+}
+
+sub prime_count_upper {
+  my($x) = @_;
+  _validate_num($x) || _validate_positive_integer($x);
+
+  # Give an exact answer for what we have in our little table.
+  return _tiny_prime_count($x) if $x < $_primes_small[-1];
+
+  $x = _upgrade_to_float($x)
+    if ref($x) eq 'Math::BigInt' || ref($_[0]) eq 'Math::BigInt';
+
+  # Chebyshev:            1.25506*x/logx       x >= 17
+  # Rosser & Schoenfeld:  x/(logx-3/2)         x >= 67
+  # Dusart 1999:          x/logx*(1+1/logx+2.51/logxlogx)   x >= 355991
+  # Dusart 2010:          x/logx*(1+1/logx+2.334/logxlogx)  x >= 2_953_652_287
+
+  # As with the lower bounds, Dusart bounds are best by far.
+
+  # Another possibility here for numbers under 3000M is to use Li(x)
+  # minus a correction.
+
+  my $flogx = log($x);
+
+  my $result;
+  if ($x > 10000_000_000_000 && Math::Prime::Util::prime_get_config()->{'assume_rh'}) {
+    # Schoenfeld bound
+    my $lix = LogarithmicIntegral($x);
+    my $sqx = sqrt($x);
+    if (ref($x) eq 'Math::BigFloat') {
+      my $xdigits = _find_big_acc($x);
+      $result = $lix + (($sqx*$flogx) / (Math::BigFloat->bpi($xdigits)*8));
+    } else {
+      $result = $lix + (($sqx*$flogx) / PI_TIMES_8);
+    }
+  } elsif ($x <  1621) { $result = ($x / ($flogx - 1.048)) + 1.0; }
+    elsif ($x <  5000) { $result = ($x / ($flogx - 1.071)) + 1.0; }
+    elsif ($x < 15900) { $result = ($x / ($flogx - 1.098)) + 1.0; }
+    else {
+    my $a;
+    # Hand tuned for small numbers (< 60_000M)
+    if    ($x <      24000) { $a = 2.30; }
+    elsif ($x <      59000) { $a = 2.48; }
+    elsif ($x <     350000) { $a = 2.52; }
+    elsif ($x <     355991) { $a = 2.54; }
+    elsif ($x <     356000) { $a = 2.51; }
+    elsif ($x <    3550000) { $a = 2.50; }
+    elsif ($x <    3560000) { $a = 2.49; }
+    elsif ($x <    5000000) { $a = 2.48; }
+    elsif ($x <    8000000) { $a = 2.47; }
+    elsif ($x <   13000000) { $a = 2.46; }
+    elsif ($x <   18000000) { $a = 2.45; }
+    elsif ($x <   31000000) { $a = 2.44; }
+    elsif ($x <   41000000) { $a = 2.43; }
+    elsif ($x <   48000000) { $a = 2.42; }
+    elsif ($x <  119000000) { $a = 2.41; }
+    elsif ($x <  182000000) { $a = 2.40; }
+    elsif ($x <  192000000) { $a = 2.395; }
+    elsif ($x <  213000000) { $a = 2.390; }
+    elsif ($x <  271000000) { $a = 2.385; }
+    elsif ($x <  322000000) { $a = 2.380; }
+    elsif ($x <  400000000) { $a = 2.375; }
+    elsif ($x <  510000000) { $a = 2.370; }
+    elsif ($x <  682000000) { $a = 2.367; }
+    elsif ($x < 2953652287) { $a = 2.362; }
+    else                    { $a = 2.334; } # Dusart 2010, page 2
+    #elsif ($x <60000000000) { $a = 2.362; }
+    #else                    { $a = 2.51;  } # Dusart 1999, page 14
+
+    # Old versions of Math::BigFloat will do the Wrong Thing with this.
+    $result = ($x/$flogx) * (1.0 + 1.0/$flogx + $a/($flogx*$flogx)) + 1.0;
+  }
+
+  return Math::BigInt->new($result->bfloor->bstr()) if ref($result) eq 'Math::BigFloat';
+  return int($result);
+}
+
+
+#############################################################################
+
 sub _mulmod {
   my($x, $y, $n) = @_;
   return (($x * $y) % $n) if ($x|$y) < MPU_HALFWORD;
@@ -1021,9 +1444,8 @@ sub _is_perfect_power {
 
 sub is_pseudoprime {
   my($n, $base) = @_;
-  return 0 if defined $n && int($n) < 0;
+  return 0 if int($n) < 0;
   _validate_positive_integer($n);
-  _validate_positive_integer($base);
 
   if ($n < 5) { return ($n == 2) || ($n == 3) ? 1 : 0; }
   croak "Base $base is invalid" if $base < 2;
@@ -1094,9 +1516,8 @@ sub _miller_rabin_2 {
 
 sub is_strong_pseudoprime {
   my($n, @bases) = @_;
-  return 0 if defined $n && int($n) < 0;
+  return 0 if int($n) < 0;
   _validate_positive_integer($n);
-  croak "No bases given to miller_rabin" unless @bases;
 
   return 0+($n >= 2) if $n < 4;
   return 0 if ($n % 2) == 0;
@@ -1234,8 +1655,6 @@ sub _is_perfect_square {
 
 sub znorder {
   my($a, $n) = @_;
-  _validate_num($a) || _validate_positive_integer($a);
-  _validate_num($n) || _validate_positive_integer($n);
   return if $n <= 0;
   return (undef,1)[$a] if $a <= 1;
   return 1 if $n == 1;
@@ -1276,15 +1695,48 @@ sub znorder {
 sub znlog {
   my ($a,$g,$p) =
     map { ref($_) eq 'Math::BigInt' ? $_ : Math::BigInt->new("$_") } @_;
-  for (my $n = BONE->copy; $n < $p; $n->binc) {
-    my $t = $g->copy->bmodpow($n, $p);
+  for (my $k = BONE->copy; $k < $p; $k->binc) {
+    my $t = $g->copy->bmodpow($k, $p);
     if ($t == $a) {
-      $n = _bigint_to_int($n) if $n->bacmp(''.~0) <= 0;
-      return $n;
+      $k = _bigint_to_int($k) if $k->bacmp(''.~0) <= 0;
+      return $k;
     }
   }
   return;
 }
+
+sub znprimroot {
+  my($n) = @_;
+  $n = -$n if $n < 0;
+  if ($n <= 4) {
+    return if $n == 0;
+    return $n-1;
+  }
+  return if $n % 4 == 0;
+  my $a = 1;
+  my $phi = euler_phi($n);
+  # Check that a primitive root exists.
+  return if !is_prob_prime($n) && $phi != Math::Prime::Util::carmichael_lambda($n);
+  my @exp = map { Math::BigInt->new("$_") }
+            map { int($phi/$_->[0]) }
+            Math::Prime::Util::factor_exp($phi);
+  #print "phi: $phi  factors: ", join(",",factor($phi)), "\n";
+  #print "  exponents: ", join(",", @exp), "\n";
+  my $bign = (ref($n) eq 'Math::BigInt') ? $n : Math::BigInt->new("$n");
+  while (1) {
+    my $fail = 0;
+    do { $a++ } while kronecker($a,$n) == 0;
+    return if $a >= $n;
+    foreach my $f (@exp) {
+      if ( Math::BigInt->new($a)->bmodpow($f, $bign)->is_one ) {
+        $fail = 1;
+        last;
+      }
+    }
+    return $a if !$fail;
+  }
+}
+
 
 # Find first D in sequence (5,-7,9,-11,13,-15,...) where (D|N) == -1
 sub _lucas_selfridge_params {
@@ -1417,8 +1869,6 @@ sub lucas_sequence {
 
 sub is_lucas_pseudoprime {
   my($n) = @_;
-  return 0 if defined $n && int($n) < 0;
-  _validate_positive_integer($n);
 
   return 0+($n >= 2) if $n < 4;
   return 0 if ($n % 2) == 0 || _is_perfect_square($n);
@@ -1433,8 +1883,6 @@ sub is_lucas_pseudoprime {
 
 sub is_strong_lucas_pseudoprime {
   my($n) = @_;
-  return 0 if defined $n && int($n) < 0;
-  _validate_positive_integer($n);
 
   return 0+($n >= 2) if $n < 4;
   return 0 if ($n % 2) == 0 || _is_perfect_square($n);
@@ -1464,8 +1912,6 @@ sub is_strong_lucas_pseudoprime {
 
 sub is_extra_strong_lucas_pseudoprime {
   my($n) = @_;
-  return 0 if defined $n && int($n) < 0;
-  _validate_positive_integer($n);
 
   return 0+($n >= 2) if $n < 4;
   return 0 if ($n % 2) == 0 || _is_perfect_square($n);
@@ -1496,13 +1942,7 @@ sub is_extra_strong_lucas_pseudoprime {
 
 sub is_almost_extra_strong_lucas_pseudoprime {
   my($n, $increment) = @_;
-  return 0 if defined $n && int($n) < 0;
-  _validate_positive_integer($n);
-  if (defined $increment) {
-    _validate_positive_integer($increment, 1, 256);
-  } else {
-    $increment = 1;
-  }
+  $increment = 1 unless defined $increment;
 
   return 0+($n >= 2) if $n < 4;
   return 0 if ($n % 2) == 0 || _is_perfect_square($n);
@@ -1541,8 +1981,6 @@ sub is_almost_extra_strong_lucas_pseudoprime {
 
 sub is_frobenius_underwood_pseudoprime {
   my($n) = @_;
-  return 0 if defined $n && int($n) < 0;
-  _validate_positive_integer($n);
   return 0+($n >= 2) if $n < 4;
   return 0 if ($n % 2) == 0 || _is_perfect_square($n);
 
@@ -1659,11 +2097,7 @@ sub _test_anr {
 
 sub is_aks_prime {
   my $n = shift;
-  return 0 if defined $n && int($n) < 0;
-  _validate_positive_integer($n);
-
-  return 0 if $n < 2;
-  return 0 if _is_perfect_power($n);
+  return 0 if $n < 2 || _is_perfect_power($n);
 
   my($log2n, $limit);
   if ($n > 2**48) {
@@ -1728,6 +2162,9 @@ sub _basic_factor {
     while ( !($_[0] % 3) ) { push @factors, 3;  $_[0] = int($_[0] / 3); }
     while ( !($_[0] % 5) ) { push @factors, 5;  $_[0] = int($_[0] / 5); }
   } else {
+    # Without this, the bdivs will try to convert the results to BigFloat
+    # and lose precision.
+    $_[0]->upgrade(undef) if ref($_[0]) && $_[0]->upgrade();
     if (!Math::BigInt::bgcd($_[0], B_PRIM235)->is_one) {
       while ( $_[0]->is_even)   { push @factors, 2;  $_[0]->brsft(BONE); }
       foreach my $div (3, 5) {
@@ -1922,7 +2359,6 @@ sub squfof_factor { trial_factor(@_) }
 
 sub prho_factor {
   my($n, $rounds, $pa) = @_;
-  _validate_positive_integer($n);
   $rounds = 4*1024*1024 unless defined $rounds;
   $pa = 3 unless defined $pa;
 
@@ -1992,7 +2428,6 @@ sub prho_factor {
 
 sub pbrent_factor {
   my($n, $rounds, $pa) = @_;
-  _validate_positive_integer($n);
   $rounds = 4*1024*1024 unless defined $rounds;
   $pa = 3 unless defined $pa;
 
@@ -2073,7 +2508,6 @@ sub pbrent_factor {
 
 sub pminus1_factor {
   my($n, $B1, $B2) = @_;
-  _validate_positive_integer($n);
 
   my @factors = _basic_factor($n);
   return @factors if $n < 4;
@@ -2222,7 +2656,6 @@ sub pminus1_factor {
 
 sub holf_factor {
   my($n, $rounds, $startrounds) = @_;
-  _validate_positive_integer($n);
   $rounds = 64*1024*1024 unless defined $rounds;
   $startrounds = 1 unless defined $startrounds;
   $startrounds = 1 if $startrounds < 1;
@@ -2269,7 +2702,6 @@ sub holf_factor {
 
 sub fermat_factor {
   my($n, $rounds) = @_;
-  _validate_positive_integer($n);
   $rounds = 64*1024*1024 unless defined $rounds;
 
   my @factors = _basic_factor($n);
@@ -2319,7 +2751,6 @@ sub fermat_factor {
 
 sub ecm_factor {
   my($n, $B1, $B2, $ncurves) = @_;
-  _validate_positive_integer($n);
 
   my @factors = _basic_factor($n);
   return @factors if $n < 4;
@@ -2373,10 +2804,8 @@ sub ecm_factor {
   #  }
   #}
 
-  if (!defined $Math::Prime::Util::ECProjectivePoint::VERSION) {
-    eval { require Math::Prime::Util::ECProjectivePoint; 1; }
-    or do { croak "Cannot load Math::Prime::Util::ECProjectivePoint"; };
-  }
+  require Math::Prime::Util::ECProjectivePoint;
+  require Math::Prime::Util::RandomPrimes;
 
   # With multiple curves, it's better to get all the primes at once.
   # The downside is this can kill memory with a very large B1.
@@ -2388,7 +2817,7 @@ sub ecm_factor {
     $q = $k;
   }
   my @b2primes = ($B2 > $B1) ? @{primes($B1+1, $B2)} : ();
-  my $irandf = Math::Prime::Util::_get_randf();
+  my $irandf = Math::Prime::Util::RandomPrimes::get_randf();
 
   foreach my $curve (1 .. $ncurves) {
     my $sigma = $irandf->($n-1-6) + 6;
@@ -2499,7 +2928,69 @@ sub ecm_factor {
   @factors;
 }
 
+sub divisors {
+  my($n) = @_;
+  _validate_positive_integer($n);
 
+  # In scalar context, returns sigma_0(n).  Very fast.
+  return Math::Prime::Util::divisor_sum($n,0) unless wantarray;
+  return ($n == 0) ? (0,1) : (1)  if $n <= 1;
+
+  my %all_factors;
+  my @factors = Math::Prime::Util::factor($n);
+  return (1,$n) if scalar @factors == 1;
+
+  if (ref($n) eq 'Math::BigInt') {
+    foreach my $f1 (@factors) {
+      my $big_f1 = Math::BigInt->new("$f1");
+      my @to_add = map { ($_ <= ''.~0) ? _bigint_to_int($_) : $_ }
+                   grep { $_ < $n }
+                   map { $big_f1 * $_ }
+                   keys %all_factors;
+      undef @all_factors{ $f1, @to_add };
+    }
+  } else {
+    foreach my $f1 (@factors) {
+      my @to_add = grep { $_ < $n }
+                   map { $f1 * $_ }
+                   keys %all_factors;
+      undef @all_factors{ $f1, @to_add };
+    }
+  }
+  # Add 1 and n
+  undef $all_factors{1};
+  undef $all_factors{$n};
+  my @divisors = sort {$a<=>$b} keys %all_factors;
+  return @divisors;
+}
+
+
+sub chebyshev_theta {
+  my($n) = @_;
+  my $sum = 0.0;
+  for (my $p = 2; $p <= $n; $p = next_prime($p)) {
+    $sum += log($p);
+  }
+  return $sum;
+}
+
+sub chebyshev_psi {
+  my($n) = @_;
+  return 0 if $n <= 1;
+
+  my ($sum, $p, $logn, $sqrtn) = (0.0, 2, log($n), int(sqrt($n)));
+
+  for ( ; $p <= $sqrtn; $p = next_prime($p)) {
+    my $logp = log($p);
+    $sum += $logp * int($logn/$logp+1e-15);
+  }
+
+  for ( ; $p <= $n; $p = next_prime($p)) {
+    $sum += log($p);
+  }
+
+  return $sum;
+}
 
 sub ExponentialIntegral {
   my($x) = @_;
@@ -2515,8 +3006,8 @@ sub ExponentialIntegral {
       do { require Math::BigFloat; Math::BigFloat->import(); }
         if !defined $Math::BigFloat::VERSION;
       $x = Math::BigFloat->new("$x") if ref($x) ne 'Math::BigFloat';
-      $wantbf = 1;
-      $xdigits = $x->accuracy || Math::BigFloat->accuracy() || Math::BigFloat->div_scale();
+      $wantbf = _find_big_acc($x);
+      $xdigits = $wantbf;
     }
     my $rnd = 0;  # MPFR_RNDN;
     my $bit_precision = int($xdigits * 3.322) + 4;
@@ -2527,7 +3018,7 @@ sub ExponentialIntegral {
     Math::MPFR::Rmpfr_set_prec($eix, $bit_precision);
     Math::MPFR::Rmpfr_eint($eix, $rx, $rnd);
     my $strval = Math::MPFR::Rmpfr_get_str($eix, 10, 0, $rnd);
-    return ($wantbf)  ?  Math::BigFloat->new($strval)  :  0.0 + $strval;
+    return ($wantbf)  ?  Math::BigFloat->new($strval,$wantbf)  :  0.0 + $strval;
   }
 
   $x = Math::BigFloat->new("$x") if defined $bignum::VERSION && ref($x) ne 'Math::BigFloat';
@@ -2614,8 +3105,8 @@ sub LogarithmicIntegral {
     my $wantbf = 0;
     my $xdigits = 18;
     if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
-      $wantbf = 1;
-      $xdigits = $x->accuracy || Math::BigInt->accuracy() || Math::BigInt->div_scale();
+      $wantbf = _find_big_acc($x);
+      $xdigits = $wantbf;
     }
     $xdigits += length(int(log(0.0+"$x"))) + 1;
     my $rnd = 0;  # MPFR_RNDN;
@@ -2628,9 +3119,7 @@ sub LogarithmicIntegral {
     Math::MPFR::Rmpfr_set_prec($lix, $bit_precision);
     Math::MPFR::Rmpfr_eint($lix, $rx, $rnd);
     my $strval = Math::MPFR::Rmpfr_get_str($lix, 10, 0, $rnd);
-    return Math::BigFloat->new($strval, ($x->accuracy || Math::BigInt->accuracy() || Math::BigInt->div_scale()))
-      if $wantbf;
-    return 0.0 + $strval;
+    return ($wantbf)  ?  Math::BigFloat->new($strval,$wantbf)  :  0.0 + $strval;
   }
 
   if ($x == 2) {
@@ -2649,7 +3138,7 @@ sub LogarithmicIntegral {
   my $xdigits = 0;
   my $finalacc = 0;
   if (ref($x) =~ /^Math::Big/) {
-    $xdigits = $x->accuracy || Math::BigFloat->accuracy() || Math::BigFloat->div_scale();
+    $xdigits = _find_big_acc($x);
     my $xlen = length($x->bfloor->bstr());
     $xdigits = $xlen if $xdigits < $xlen;
     $finalacc = $xdigits;
@@ -2762,8 +3251,8 @@ sub RiemannZeta {
         $x->accuracy($xacc) if $xacc;
       }
       $x = Math::BigFloat->new("$x") if ref($x) ne 'Math::BigFloat';
-      $wantbf = 1;
-      $xdigits = $x->accuracy || Math::BigFloat->accuracy() || Math::BigFloat->div_scale();
+      $wantbf = _find_big_acc($x);
+      $xdigits = $wantbf;
     }
     my $rnd = 0;  # MPFR_RNDN;
     my $bit_precision = int($xdigits * 3.322) + 7;
@@ -2777,7 +3266,7 @@ sub RiemannZeta {
     Math::MPFR::Rmpfr_zeta($zetax, $rx, $rnd);
     Math::MPFR::Rmpfr_sub_ui($zetax, $zetax, 1, $rnd);
     my $strval = Math::MPFR::Rmpfr_get_str($zetax, 10, $xdigits, $rnd);
-    return ($wantbf)  ?  Math::BigFloat->new($strval)  :  0.0 + $strval;
+    return ($wantbf)  ?  Math::BigFloat->new($strval,$wantbf)  :  0.0 + $strval;
   }
 
   if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
@@ -2851,8 +3340,8 @@ sub RiemannR {
         $x->accuracy($xacc) if $xacc;
       }
       $x = Math::BigFloat->new("$x") if ref($x) ne 'Math::BigFloat';
-      $wantbf = 1;
-      $xdigits = $x->accuracy || Math::BigFloat->accuracy() || Math::BigFloat->div_scale();
+      $wantbf = _find_big_acc($x);
+      $xdigits = $wantbf;
     }
     my $rnd = 0;  # MPFR_RNDN;
     my $bit_precision = int($xdigits * 3.322) + 8;  # Add some extra
@@ -2893,7 +3382,7 @@ sub RiemannR {
       Math::MPFR::Rmpfr_add($rsum, $rsum, $rterm, $rnd);
     }
     my $strval = Math::MPFR::Rmpfr_get_str($rsum, 10, $xdigits, $rnd);
-    return ($wantbf)  ?  Math::BigFloat->new($strval)  :  0.0 + $strval;
+    return ($wantbf)  ?  Math::BigFloat->new($strval,$wantbf)  :  0.0 + $strval;
   }
 
   if (defined $bignum::VERSION || ref($x) =~ /^Math::Big/) {
@@ -2942,7 +3431,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.36
+Version 0.37
 
 
 =head1 SYNOPSIS
