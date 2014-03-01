@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.37';
+  $Math::Prime::Util::PP::VERSION = '0.38';
 }
 
 BEGIN {
@@ -535,13 +535,14 @@ sub partitions {
 
   my $d = int(sqrt($n+1));
   my @pent = (1, map { (($_*(3*$_+1))>>1, (($_+1)*(3*$_+2))>>1) } 1 .. $d);
-  my @part = (Math::BigInt->bone);
+  my $ZERO = ($n >= ((~0 > 4294967295) ? 400 : 270)) ? BZERO : 0;
+  my @part = ($ZERO+1);
   foreach my $j (scalar @part .. $n) {
-    my ($psum1, $psum2, $k) = (Math::BigInt->bzero, Math::BigInt->bzero, 1);
+    my ($psum1, $psum2, $k) = ($ZERO, $ZERO, 1);
     foreach my $p (@pent) {
       last if $p > $j;
-      if ((++$k) & 2) { $psum1->badd( $part[ $j - $p ] ); }
-      else            { $psum2->badd( $part[ $j - $p ] ); }
+      if ((++$k) & 2) { $psum1 += $part[ $j - $p ] }
+      else            { $psum2 += $part[ $j - $p ] }
     }
     $part[$j] = $psum1 - $psum2;
   }
@@ -1427,16 +1428,24 @@ sub _gcd_ui {
   $x;
 }
 
-sub _is_perfect_power {
-  my $n = shift;
-  return 0 if $n <= 3 || $n != int($n);
-  return 1 if ($n & ($n-1)) == 0;                       # Power of 2
+sub is_power {
+  my ($n, $a) = @_;
+  return 0 if $n <= 3;
+  if (defined $a && $a != 0) {
+    return _is_perfect_square($n) if $a == 2;
+    $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+    return $n->copy->broot($a)->bint->bpow($a) == $n;
+  }
   $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
-  # Perl 5.6.2 chokes on this, so do it via as_bin
-  # my $log2n = 0; { my $num = $n; $log2n++ while $num >>= 1; }
-  my $log2n = length($n->as_bin) - 2;
-  for (my $e = 2; $e <= $log2n; $e = next_prime($e)) {
-    return 1 if $n->copy()->broot($e)->bpow($e) == $n;
+  my $e = 2;
+  while (1) {
+    my $root = $n->copy()->broot($e);
+    last if $root->is_one();
+    if ($root->copy->bpow($e) == $n) {
+      my $next = is_power($root);
+      return ($next == 0) ? $e : $e * $next;
+    }
+    $e = next_prime($e);
   }
   0;
 }
@@ -1714,9 +1723,12 @@ sub znprimroot {
   }
   return if $n % 4 == 0;
   my $a = 1;
-  my $phi = euler_phi($n);
-  # Check that a primitive root exists.
-  return if !is_prob_prime($n) && $phi != Math::Prime::Util::carmichael_lambda($n);
+  my $phi = $n-1;
+  if (!is_prob_prime($n)) {
+    $phi = euler_phi($n);
+    # Check that a primitive root exists.
+    return if $phi != Math::Prime::Util::carmichael_lambda($n);
+  }
   my @exp = map { Math::BigInt->new("$_") }
             map { int($phi/$_->[0]) }
             Math::Prime::Util::factor_exp($phi);
@@ -2097,7 +2109,7 @@ sub _test_anr {
 
 sub is_aks_prime {
   my $n = shift;
-  return 0 if $n < 2 || _is_perfect_power($n);
+  return 0 if $n < 2 || is_power($n);
 
   my($log2n, $limit);
   if ($n > 2**48) {
@@ -3431,7 +3443,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.37
+Version 0.38
 
 
 =head1 SYNOPSIS

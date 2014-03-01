@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.37';
+  $Math::Prime::Util::VERSION = '0.38';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -23,6 +23,7 @@ our @EXPORT_OK =
       is_almost_extra_strong_lucas_pseudoprime
       is_frobenius_underwood_pseudoprime
       is_aks_prime
+      is_power
       miller_rabin miller_rabin_random
       lucas_sequence
       primes
@@ -799,7 +800,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.37
+Version 0.38
 
 
 =head1 SYNOPSIS
@@ -1760,6 +1761,24 @@ Brent, 2010:  "AKS is not a practical algorithm.  ECPP is much faster."
 We have ECPP, and indeed it is much faster.
 
 
+=head2 is_power
+
+  say "$n is a perfect square" if is_power($n, 2);
+  say "$n is a perfect cube" if is_power($n, 3);
+  say "$n is a ", is_power($n), "-th power";
+
+Given a single positive integer input C<n>, returns k if C<n = p^k> for
+some integer C<p E<gt> 1, k E<gt> 1>, and 0 otherwise.  The k returned is
+the largest possible.  This can be used in a boolean statement to
+determine if C<n> is a perfect power.
+
+If given two arguments C<n> and C<k>, returns 1 if C<n> is a C<k-th> power,
+and 0 otherwise.
+
+This corresponds to Pari/GP's C<ispower> function, with the limitations of
+only integer arguments and no third argument may be given returning the root.
+
+
 =head2 lucas_sequence
 
   my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $k)
@@ -1871,7 +1890,7 @@ is a generalization of Euler's totient, where
 This counts the number of k-tuples less than or equal to n that form a coprime
 tuple with n.  As with C<euler_phi>, 0 is returned for all C<n E<lt> 1>.
 This function can be used to generate some other useful functions, such as
-the Dedikind psi function, where C<psi(n) = J(2,n) / J(1,n)>.
+the Dedekind psi function, where C<psi(n) = J(2,n) / J(1,n)>.
 
 
 =head2 exp_mangoldt
@@ -1899,17 +1918,10 @@ This is -1 raised to Ω(n) (the total number of prime factors).
   say chebyshev_theta(10000);
 
 Returns θ(n), the first Chebyshev function for a non-negative integer input.
-This is the sum of the logarithm of each prime where C<p E<lt>= n>.  An
-alternate computation is as the logarithm of n primorial.
-Hence these functions:
+This is the sum of the logarithm of each prime where C<p E<lt>= n>.  This
+is effectively:
 
-  use List::Util qw/sum/;  use Math::BigFloat;
-
-  sub c1a { 0+sum( map { log($_) } @{primes(shift)} ) }
-  sub c1b { Math::BigFloat->new(primorial(shift))->blog }
-
-yield similar results, albeit slower and using more memory.
-
+  my $s = 0;  forprimes { $s += log($_) } $n;  return $s;
 
 =head2 chebyshev_psi
 
@@ -1917,16 +1929,10 @@ yield similar results, albeit slower and using more memory.
 
 Returns ψ(n), the second Chebyshev function for a non-negative integer input.
 This is the sum of the logarithm of each prime power where C<p^k E<lt>= n>
-for an integer k.  An alternate computation is as the summatory Mangoldt
-function.  Another alternate computation is as the logarithm of
-LCM(1,2,...,n).  Hence these functions:
+for an integer k.  An alternate but slower computation is as the summatory
+Mangoldt function, such as:
 
-  use List::Util qw/sum/;  use Math::BigFloat;
-
-  sub c2a { 0+sum( map { log(exp_mangoldt($_)) } 1 .. shift ) }
-  sub c2b { Math::BigFloat->new(consecutive_integer_lcm(shift))->blog }
-
-yield similar results, albeit slower and using more memory.
+  my $s = 0;  for (1..$n) { $s += log(exp_mangoldt($_)) }  return $s;
 
 
 =head2 divisor_sum
@@ -2162,6 +2168,12 @@ Examples of various ways to set your own irand function:
   # Crypt::Random.  Uses Pari and /dev/random.  Very slow.
   use Crypt::Random qw/makerandom/;
   prime_set_config(irand => sub { makerandom(Size=>32, Uniform=>1); });
+
+  # Net::Random.  You probably don't want to use this, but if you do:
+  use Net::Random;
+  { my $rng = Net::Random->new(src=>"fourmilab.ch",max=>0xFFFFFFFF);
+    sub nr_irand { return $rng->get(1); } }
+  prime_set_config(irand => \&nr_irand);
 
   # Mersenne Twister.  Very fast, decent RNG, auto seeding.
   use Math::Random::MT::Auto;
@@ -2765,28 +2777,40 @@ Here is the right way to do PE problem 69 (under 0.03s):
 
 Project Euler, problem 187, stupid brute force solution, ~3 minutes:
 
-  use Math::Prime::Util qw/factor/;
+  use Math::Prime::Util qw/forcomposites factor/;
   my $nsemis = 0;
-  do { $nsemis++ if scalar factor($_) == 2; }
-     for 1 .. int(10**8)-1;
+  forcomposites { $nsemis++ if scalar factor($_) == 2; } int(10**8)-1;
   say $nsemis;
 
-Here is the best way for PE187.  Under 30 milliseconds from the command line:
+Here is one of the best ways for PE187:  under 20 milliseconds from the
+command line.  This is faster than Mathematica until C<10^13>.
 
-  use Math::Prime::Util qw/primes prime_count/;
-  use List::Util qw/sum/;
-  my $limit = shift || int(10**8);
-  my @primes = @{primes(int(sqrt($limit)))};
-  say sum( map { prime_count(int(($limit-1)/$primes[$_-1])) - $_ + 1 }
-               1 .. scalar @primes );
+  use Math::Prime::Util qw/forprimes prime_count/;
+  my $limit = shift || int(10**8)-1;
+  my ($sum, $pc) = (0, 1);
+  forprimes {
+    $sum += prime_count(int($limit/$_)) + 1 - $pc++;
+  } int(sqrt($limit));
+  say $sum;
 
-Produce the C<matches> result from L<Math::Factor::XS> without skipping:
+To get the result of L<Math::Factor::XS/matches>:
 
   use Math::Prime::Util qw/divisors/;
-  use Algorithm::Combinatorics qw/combinations_with_repetition/;
+  sub matches {
+    my @d = divisors(shift);
+    return map { [$d[$_],$d[$#d-$_]] } 1..(@d-1)>>1;
+  }
   my $n = 139650;
-  my @matches = grep { $_->[0] * $_->[1] == $n && $_->[0] > 1 }
-                combinations_with_repetition( [divisors($n)], 2 );
+  say "$n = ", join(" = ", map { "$_->[0]·$_->[1]" } matches($n));
+
+or its C<matches> function with the C<skip_multiples> option:
+
+  sub matches {
+    my @d = divisors(shift);
+    return map { [$d[$_],$d[$#d-$_]] }
+           grep { my $div=$d[$_]; !scalar(grep {!($div % $d[$_])} 1..$_-1) }
+           1..(@d-1)>>1; }
+  }
 
 Compute L<OEIS A054903|http://oeis.org/A054903> just like CRG4's Pari example:
 
@@ -2972,8 +2996,7 @@ not support bigints.  Both are implemented with trial division, meaning they
 are very fast for really small values, but quickly become unusably slow
 (factoring 19 digit semiprimes is over 700 times slower).  The function
 C<count_prime_factors> can be done in MPU using C<scalar factor($n)>.
-MPU has no equivalent to C<matches>, but see the L</"EXAMPLES"> section
-for a way to produce the results.
+See the L</"EXAMPLES"> section for a 2-line function replicating C<matches>.
 
 L<Math::Big> version 1.12 includes C<primes> functionality.  The current
 code is only usable for very tiny inputs as it is incredibly slow and uses
@@ -3296,11 +3319,11 @@ native size integers.  With bigints we finally see it work well.
 
 =item *
 
-Math::Pari build with 2.3.5 not only has a better primality test, but
-runs faster.  It still has quite a bit of overhead with native size
-integers.  Pari/gp 2.5.0's takes 11.3s, 16.9s, and 2.9s respectively
-for the tests above.  MPU is still faster, but clearly the time for
-native integers is dominated by the calling overhead.
+Math::Pari built with 2.3.5 not only has a better primality test versus
+the default 2.1.7, but runs faster.  It still has quite a bit of overhead
+with native size integers.  Pari/GP 2.5.0 takes 11.3s, 16.9s, and 2.9s
+respectively for the tests above.  MPU is still faster, but clearly the
+time for native integers is dominated by the calling overhead.
 
 =back
 

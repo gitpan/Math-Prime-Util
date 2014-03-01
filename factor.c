@@ -10,6 +10,7 @@
 #include "cache.h"
 #include "primality.h"
 #define FUNC_isqrt  1
+#define FUNC_icbrt  1
 #define FUNC_gcd_ui 1
 #define FUNC_is_perfect_square 1
 #define FUNC_clz 1
@@ -74,12 +75,32 @@ int factor(UV n, UV *factors)
           n /= f;
         }
       }
+      f = primes_small[sp];
     }
   }
   if (n < f*f) {
     if (n != 1)
       factors[nfactors++] = n;
     return nfactors;
+  }
+  /* Perfect squares and cubes.  Factor root only once. */
+  {
+    int i, j, k = is_power(n,2) ? 2 : (n >= f*f*f && is_power(n,3)) ? 3 : 1;
+    if (k > 1) {
+      UV p = (k == 2) ? isqrt(n) : icbrt(n);
+      if (is_prob_prime(p)) {
+        for (j = 0; j < k; j++)
+          factors[nfactors++] = p;
+        return nfactors;
+      } else {
+        int nsmallfactors = nfactors;
+        nfactors = factor(p, factors+nsmallfactors);
+        for (i = nfactors; i >= 0; i--)
+          for (j = 0; j < k; j++)
+            factors[nsmallfactors+k*i+j] = factors[nsmallfactors+i];
+        return nsmallfactors + k*nfactors;
+      }
+    }
   }
 
   {
@@ -90,12 +111,16 @@ int factor(UV n, UV *factors)
 
   /* loop over each remaining factor, until ntofac == 0 */
   do {
-    //while ( (n >= f*f) && (!_XS_is_prime(n)) ) {
     while ( (n >= f*f) && (!is_prob_prime(n)) ) {
       int split_success = 0;
-      /* Adjust the number of rounds based on the number size */
-      UV const br_rounds = ((n>>29) < 100000) ?  1500 :  4000;
-      UV const sq_rounds =100000; /* 20k 91%, 40k 98%, 80k 99.9%, 120k 99.99% */
+      /* Adjust the number of rounds based on the number size and speed */
+#if MULMODS_ARE_FAST
+      UV const br_rounds = ((n>>29) < 100000) ?  4000 :  6000;
+      UV const sq_rounds = 100000; /* 20k 91%, 40k 98%, 80k 99.9%, 120k 99.99%*/
+#else
+      UV const br_rounds = ((n>>29) < 100000) ?   500 :  2000;
+      UV const sq_rounds = 150000;
+#endif
 
       /* 99.7% of 32-bit, 94% of 64-bit random inputs factored here */
       if (!split_success) {
@@ -930,7 +955,11 @@ UV dlp_prho(UV a, UV g, UV p, UV maxrounds) {
   UV n = znorder(g, p);
   UV u=1, v=0, w=0;
   UV U=u, V=v, W=w;
+#ifdef DEBUG
   int const verbose = _XS_get_verbose();
+#else
+  int const verbose = 0;
+#endif
 
   if (verbose > 1 && n != p-1) printf("for g=%lu p=%lu, order is %lu\n", g, p, n);
   if (maxrounds > n) maxrounds = n;

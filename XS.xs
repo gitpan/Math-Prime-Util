@@ -541,8 +541,9 @@ is_prime(IN SV* svn, ...)
     is_extra_strong_lucas_pseudoprime = 5
     is_frobenius_underwood_pseudoprime = 6
     is_aks_prime = 7
-    is_pseudoprime = 8
-    is_almost_extra_strong_lucas_pseudoprime = 9
+    is_power = 8
+    is_pseudoprime = 9
+    is_almost_extra_strong_lucas_pseudoprime = 10
   PREINIT:
     int status;
   PPCODE:
@@ -561,8 +562,9 @@ is_prime(IN SV* svn, ...)
           case 5:  ret = _XS_is_lucas_pseudoprime(n, 2); break;
           case 6:  ret = _XS_is_frobenius_underwood_pseudoprime(n); break;
           case 7:  ret = _XS_is_aks_prime(n); break;
-          case 8:  ret = _XS_is_pseudoprime(n, (items == 1) ? 2 : a); break;
-          case 9:
+          case 8:  ret = is_power(n, a); break;
+          case 9:  ret = _XS_is_pseudoprime(n, (items == 1) ? 2 : a); break;
+          case 10:
           default: ret = _XS_is_almost_extra_strong_lucas_pseudoprime
                          (n, (items == 1) ? 1 : a); break;
         }
@@ -578,8 +580,9 @@ is_prime(IN SV* svn, ...)
       case 5: _vcallsub_with_gmp("is_extra_strong_lucas_pseudoprime"); break;
       case 6: _vcallsub_with_gmp("is_frobenius_underwood_pseudoprime"); break;
       case 7: _vcallsub_with_gmp("is_aks_prime"); break;
-      case 8: _vcallsub_with_gmp("is_pseudoprime"); break;
-      case 9:
+      case 8: _vcallsub_with_gmp("is_power"); break;
+      case 9:_vcallsub_with_gmp("is_pseudoprime"); break;
+      case 10:
       default:_vcallsub_with_gmp("is_almost_extra_strong_lucas_pseudoprime"); break;
     }
     return; /* skip implicit PUTBACK */
@@ -619,6 +622,10 @@ next_prime(IN SV* svn)
       }
     }
     switch (ix) {
+      /*
+      case 0:  _vcallsub_with_gmp("next_prime");        break;
+      case 1:  _vcallsub_with_gmp("prev_prime");        break;
+      */
       case 0:  _vcallsub("_generic_next_prime");        break;
       case 1:  _vcallsub("_generic_prev_prime");        break;
       case 2:  _vcallsub_with_pp("nth_prime");          break;

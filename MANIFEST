@@ -62,11 +62,28 @@ examples/sophie_germain.pl
 examples/twin_primes.pl
 examples/abundant.pl
 examples/find_mr_bases.pl
+examples/inverse_totient.pl
 examples/parallel_fibprime.pl
 examples/porter.pl
 examples/verify-gmp-ecpp-cert.pl
 examples/verify-sage-ecpp-cert.pl
 examples/verify-cert.pl
+examples/project_euler_010.pl
+examples/project_euler_021.pl
+examples/project_euler_037.pl
+examples/project_euler_047.pl
+examples/project_euler_049.pl
+examples/project_euler_069.pl
+examples/project_euler_070.pl
+examples/project_euler_072.pl
+examples/project_euler_095.pl
+examples/project_euler_131.pl
+examples/project_euler_142.pl
+examples/project_euler_193.pl
+examples/project_euler_211.pl
+examples/project_euler_214.pl
+examples/project_euler_342.pl
+examples/project_euler_357.pl
 bin/primes.pl
 bin/factor.pl
 t/01-load.t
@@ -127,6 +144,7 @@ xt/test-primes-script.pl
 xt/test-primes-script2.pl
 xt/test-factor-yafu.pl
 xt/test-nextprime-yafu.pl
+xt/test-ispower.pl
 .travis.yml
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)

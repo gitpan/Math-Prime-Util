@@ -21,6 +21,9 @@ extern UV  prime_count_lower(UV x);
 extern UV  prime_count_upper(UV x);
 extern UV  prime_count_approx(UV x);
 
+extern int powerof(UV n);
+extern int is_power(UV n, UV a);
+
 extern signed char* _moebius_range(UV low, UV high);
 extern UV*    _totient_range(UV low, UV high);
 extern IV     mertens(UV n);
@@ -124,7 +127,7 @@ static int is_perfect_square(UV n)
 /* log2floor(n) gives the location of the first set bit (starting from left)
  * ctz(n)       gives the number of times n is divisible by 2
  * clz(n)       gives the number of zeros on the left                       */
-#if defined(__GNUC__)
+#if defined(__GNUC__) && (__GNUC__ >= 4 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 4))
  #if BITS_PER_WORD == 64
   #define ctz(n)        ((n) ?    __builtin_ctzll(n) : 64)
   #define clz(n)        ((n) ?    __builtin_clzll(n) : 64)
@@ -140,7 +143,7 @@ static int is_perfect_square(UV n)
   * The performance of these functions are not super critical.
   * What is:  popcnt, mulmod, and muladd.
   */
-#elif defined (_MSC_VER) && _MSC_VER >= 1400
+#elif defined (_MSC_VER) && _MSC_VER >= 1400 && !defined(__clang__) && !defined(_WIN32_WCE)
  #include <intrin.h>
  #ifdef FUNC_ctz
   static int ctz(UV n) {

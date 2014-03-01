@@ -49,6 +49,9 @@
 #ifndef LDBL_EPSILON
   #define LDBL_EPSILON 1e-16
 #endif
+#ifndef LDBL_MAX
+  #define LDBL_MAX DBL_MAX
+#endif
 
 #define KAHAN_INIT(s) \
   long double s ## _y, s ## _t; \
@@ -66,9 +69,11 @@
 
 #include "ptypes.h"
 #define FUNC_isqrt 1
+#define FUNC_icbrt 1
 #define FUNC_lcm_ui 1
 #define FUNC_ctz 1
 #define FUNC_log2floor 1
+#define FUNC_is_perfect_square
 #define FUNC_next_prime_in_sieve 1
 #define FUNC_prev_prime_in_sieve 1
 #include "util.h"
@@ -636,9 +641,6 @@ UV prime_count_upper(UV n)
 
   if (n < 33000) return _XS_prime_count(2, n);
 
-  fn     = (long double) n;
-  flogn  = logl(n);
-
   for (i = 0; i < (int)NUPPER_THRESH; i++)
     if (n < _upper_thresh[i].thresh)
       break;
@@ -646,6 +648,8 @@ UV prime_count_upper(UV n)
   if (i < (int)NUPPER_THRESH) a = _upper_thresh[i].aval;
   else                        a = 2.334;   /* Dusart 2010, page 2 */
 
+  fn     = (long double) n;
+  flogn  = logl(n);
   upper = fn/flogn * (1.0 + 1.0/flogn + a/(flogn*flogn));
   return (UV) ceill(upper);
 }
@@ -929,6 +933,7 @@ UV* _totient_range(UV lo, UV hi) {
   for (i = lo | 1; i <= hi; i += 2)
     if (totients[i-lo] == i)
       totients[i-lo]--;
+  if (lo <= 1) totients[1-lo] = 1;
 
   return totients;
 }
@@ -965,7 +970,6 @@ IV mertens(UV n) {
       for (nmk = 1; nmk <= last_nmk; nmk++, nmkm += m) {
         this_k = next_k;
         next_k = n/nmkm;
-        /* if (nmk > maxmu) croak("n = %lu  m = %lu u/m = %lu  n/m = %lu  nmk %lu\n", n, m, u/m, n/m, nmk); */
         inner_sum += M[nmk] * (this_k - next_k);
       }
       sum -= mu[m] * inner_sum;
@@ -974,6 +978,82 @@ IV mertens(UV n) {
   Safefree(M);
   Safefree(mu);
   return sum;
+}
+
+/* There are at least 4 ways to do this, plus hybrids.
+ * 1) use a table.  Great for 32-bit, too big for 64-bit.
+ * 2) Use pow() to check.  Relatively slow and FP is always dangerous.
+ * 3) factor or trial factor.  Slow for 64-bit.
+ * 4) Dietzfelbinger algorithm 2.3.5.  Quite slow.
+ * This currently uses a hybrid of 1 and 2.
+ */
+int powerof(UV n) {
+  int ib;
+  const int iblast = (n > UVCONST(4294967295)) ? 6 : 4;
+  if ((n <= 3) || (n == UV_MAX)) return 1;
+  if ((n & (n-1)) == 0)          return ctz(n);  /* powers of 2    */
+  if (is_perfect_square(n))      return 2 * powerof(isqrt(n));
+  { UV cb = icbrt(n);  if (cb*cb*cb==n) return 3 * powerof(cb); }
+  for (ib = 3; ib <= iblast; ib++) { /* prime exponents from 5 to 7-or-13 */
+    UV k, pk, root, b = primes_small[ib];
+    root = (UV) ( pow(n, 1.0 / b ) + 0.01 );
+    pk = root * root * root * root * root;
+    for (k = 5; k < b; k++)
+      pk *= root;
+    if (n == pk) return b * powerof(root);
+  }
+  if (n > 177146) {
+    switch (n) { /* Check for powers of 11, 13, 17, 19 within 32 bits */
+      case 177147: case 48828125: case 362797056: case 1977326743: return 11;
+      case 1594323: case 1220703125: return 13;
+      case 129140163: return 17;
+      case 1162261467: return 19;
+      default:  break;
+    }
+#if BITS_PER_WORD == 64
+    if (n > UVCONST(4294967295)) {
+    switch (n) {
+      case UVCONST(762939453125):
+      case UVCONST(16926659444736):
+      case UVCONST(232630513987207):
+      case UVCONST(100000000000000000):
+      case UVCONST(505447028499293771):
+      case UVCONST(2218611106740436992):
+      case UVCONST(8650415919381337933):  return 17;
+      case UVCONST(19073486328125):
+      case UVCONST(609359740010496):
+      case UVCONST(11398895185373143):
+      case UVCONST(10000000000000000000): return 19;
+      case UVCONST(94143178827):
+      case UVCONST(11920928955078125):
+      case UVCONST(789730223053602816):   return 23;
+      case UVCONST(68630377364883):       return 29;
+      case UVCONST(617673396283947):      return 31;
+      case UVCONST(450283905890997363):   return 37;
+      default:  break;
+    }
+    }
+#endif
+  }
+  return 1;
+}
+int is_power(UV n, UV a)
+{
+  int ret;
+  if (a > 0) {
+    if (a == 1 || n <= 1) return 1;
+    if ((a % 2) == 0)
+      return !is_perfect_square(n) ? 0 : (a == 2) ? 1 : is_power(isqrt(n),a>>1);
+    if ((a % 3) == 0)
+      { UV cb = icbrt(n);
+        return (cb*cb*cb != n)       ? 0 : (a == 3) ? 1 : is_power(cb, a/3); }
+    if ((a % 5) == 0)
+      { UV r5 = (UV)(pow(n,0.2) + 0.0001);
+        return (r5*r5*r5*r5*r5 != n) ? 0 : (a == 5) ? 1 : is_power(r5, a/5); }
+  }
+  ret = powerof(n);
+  if (a != 0) return !(ret % a);  /* Is the max power divisible by a? */
+  return (ret == 1) ? 0 : ret;
 }
 
 
@@ -1034,8 +1114,12 @@ int kronecker_ss(IV a, IV b) {
 UV totient(UV n) {
   UV i, nfacs, totient, lastf, facs[MPU_MAX_FACTORS+1];
   if (n <= 1) return n;
-  nfacs = factor(n, facs);
   totient = 1;
+  /* phi(2m) = 2phi(m) if m even, phi(m) if m odd */
+  while ((n & 0x3) == 0) { n >>= 1; totient <<= 1; }
+  if ((n & 0x1) == 0) { n >>= 1; }
+  /* factor and calculate totient */
+  nfacs = factor(n, facs);
   lastf = 0;
   for (i = 0; i < nfacs; i++) {
     UV f = facs[i];
@@ -1153,13 +1237,26 @@ UV znorder(UV a, UV n) {
 UV znprimroot(UV n) {
   UV fac[MPU_MAX_FACTORS+1];
   UV exp[MPU_MAX_FACTORS+1];
-  UV a, phi;
+  UV a, j, phi;
   int i, nfactors;
   if (n <= 4) return (n == 0) ? 0 : n-1;
   if (n % 4 == 0)  return 0;
-  phi = totient(n);
-  /* Check if a primitive root exists. */
-  if (!is_prob_prime(n) && phi != carmichael_lambda(n))  return 0;
+  if (is_prob_prime(n)) {
+    phi = n-1;
+  } else {  /* Calculate Totient and Carmichael Lambda at same time */
+    UV lambda = 1;
+    nfactors = factor_exp(n, fac, exp);
+    phi = 1;
+    for (i = 0; i < nfactors; i++) {
+      UV pk = fac[i]-1;
+      for (j = 1; j < exp[i]; j++)
+        pk *= fac[i];
+      phi *= pk;
+      if (i == 0 && fac[0] == 2 && exp[0] > 2)  pk >>= 1;
+      lambda = lcm_ui(lambda, pk);
+    }
+    if (phi != lambda) return 0; /* prim root exists only if phi(n) = CL(n) */
+  }
   nfactors = factor_exp(phi, fac, exp);
   for (i = 0; i < nfactors; i++)
     exp[i] = phi / fac[i];  /* exp[i] = phi(n) / i-th-factor-of-phi(n) */
@@ -1307,6 +1404,9 @@ long double _XS_ExponentialIntegral(long double x) {
   KAHAN_INIT(sum);
 
   if (x == 0) croak("Invalid input to ExponentialIntegral:  x must be != 0");
+  /* Protect against messed up rounding modes */
+  if (x >=  12000) return INFINITY;
+  if (x <= -12000) return 0;
 
   if (x < -1) {
     /* Continued fraction, good for x < -1 */
@@ -1387,6 +1487,7 @@ long double _XS_LogarithmicIntegral(long double x) {
   if (x == 1) return -INFINITY;
   if (x == 2) return li2;
   if (x < 0) croak("Invalid input to LogarithmicIntegral:  x must be >= 0");
+  if (x >= LDBL_MAX) return INFINITY;
   return _XS_ExponentialIntegral(logl(x));
 }
 

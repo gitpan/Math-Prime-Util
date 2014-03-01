@@ -8,6 +8,11 @@
  * The AKS v6 algorithm, for native integers.  Based on the AKS v6 paper.
  * As with most AKS implementations, it's really slow.
  *
+ * If we know there is a lgamma function (C99), then this uses the
+ * improvements from Folkmar Bornemann's 2002 Pari implementation.  This
+ * includes Bernstein and Voloch's much, much better r/s selection.  The
+ * performance difference is huge.
+ *
  * When n < 2^(wordbits/2)-1, we can do a straightforward intermediate:
  *      r = (r + a * b) % n
  * If n is larger, then these are replaced with:
@@ -19,68 +24,58 @@
  *
  * This is all much easier in GMP.
  *
- * Copyright 2012, Dana Jacobsen.
+ * Copyright 2012-2014, Dana Jacobsen.
  */
 
 #define SQRTN_SHORTCUT 1
 
+/* Use improvements from Bornemann's 2002 implementation */
+#define IMPL_BORNEMANN 1
+
 #include "ptypes.h"
 #include "aks.h"
 #define FUNC_isqrt 1
-#define FUNC_log2floor 1
 #include "util.h"
 #include "cache.h"
 #include "mulmod.h"
+#include "factor.h"
 
-/* Bach and Sorenson (1993) would be better */
-static int is_perfect_power(UV n) {
-  UV b, last;
-  if ((n <= 3) || (n == UV_MAX)) return 0;
-  if ((n & (n-1)) == 0)  return 1;          /* powers of 2    */
-#if (BITS_PER_WORD == 32) || (DBL_DIG > 19)
-  if (1) {
-#elif DBL_DIG == 10
-  if (n < UVCONST(10000000000)) {
-#elif DBL_DIG == 15
-  if (n < UVCONST(1000000000000000)) {
-#else
-  if ( n < (UV) pow(10, DBL_DIG) ) {
-#endif
-    /* Simple floating point method.  Fast, but need enough mantissa. */
-    b = isqrt(n);
-    if (b*b == n)  return 1; /* perfect square */
-    last = log2floor(n-1) + 1;
-    for (b = 3; b < last; b = next_prime(b)) {
-      UV root = (UV) (pow(n, 1.0 / (double)b) + 0.5);
-      if ( ((UV)(pow(root, b)+0.5)) == n)  return 1;
-    }
-  } else {
-    /* Dietzfelbinger, algorithm 2.3.5 (without optimized exponential) */
-    last = log2floor(n-1) + 1;
-    for (b = 2; b <= last; b++) {
-      UV a = 1;
-      UV c = n;
-      while (c >= HALF_WORD) c = (1+c)>>1;
-      while ((c-a) >= 2) {
-        UV m, maxm, p, i;
-        m = (a+c) >> 1;
-        maxm = UV_MAX / m;
-        p = m;
-        for (i = 2; i <= b; i++) {
-          if (p > maxm) { p = n+1; break; }
-          p *= m;
-        }
-        if (p == n)  return 1;
-        if (p < n)
-          a = m;
-        else
-          c = m;
-      }
-    }
+#if IMPL_BORNEMANN
+static int is_primitive_root(UV n, UV r)
+{
+  UV fac[MPU_MAX_FACTORS+1];
+  int i, nfacs;
+  /* if ( (r&1) & powmod(n, (r-1)>>1, r) == 1 )  return 0; */
+  nfacs = factor_exp(r-1, fac, 0);
+  for (i = 0; i < nfacs; i++) {
+    UV m = powmod(n, (r-1)/fac[i], r);
+    if (m == 1) return 0;
   }
-  return 0;
+  return 1;
 }
-
+/* We could use lgamma, but it isn't in MSVC and not in pre-C99.  The only
+ * sure way to find if it is available is test compilation (ala autoconf).
+ * Instead, we'll just use our own implementation.
+ * See http://mrob.com/pub/ries/lanczos-gamma.html for alternates. */
+static double lanczos_coef[8+1] =
+{ 0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+  771.32342877765313, -176.61502916214059, 12.507343278686905,
+  -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7 };
+static double log_sqrt_two_pi =  0.91893853320467274178;
+static double log_gamma(double x)
+{
+  double base = x + 7 + 0.5;
+  double sum = 0;
+  int i;
+  for (i = 8; i >= 1; i--)
+    sum += lanczos_coef[i] / (x + (double)i);
+  sum += lanczos_coef[0];
+  sum = log_sqrt_two_pi + logl(sum/x) + ( (x+0.5)*logl(base) - base );
+  return sum;
+}
+#undef lgamma
+#define lgamma(x) log_gamma(x)
+#else
 /* Naive znorder.  Works well here because limit will be very small. */
 static UV order(UV r, UV n, UV limit) {
   UV j;
@@ -92,6 +87,7 @@ static UV order(UV r, UV n, UV limit) {
   }
   return j;
 }
+#endif
 
 #if 0
 static void poly_print(UV* poly, UV r)
@@ -111,8 +107,6 @@ static void poly_mod_mul(UV* px, UV* py, UV* res, UV r, UV mod)
   UV degpx, degpy;
   UV i, j, pxi, pyj, rindex;
 
-  memset(res, 0, r * sizeof(UV));
-
   /* Determine max degree of px and py */
   for (degpx = r-1; degpx > 0 && !px[degpx]; degpx--) ; /* */
   for (degpy = r-1; degpy > 0 && !py[degpy]; degpy--) ; /* */
@@ -120,6 +114,7 @@ static void poly_mod_mul(UV* px, UV* py, UV* res, UV r, UV mod)
   j = (mod >= HALF_WORD) ? 0 : (UV_MAX / ((mod-1)*(mod-1)));
 
   if (j >= degpx || j >= degpy) {
+    /* res will be written completely, so no need to set */
     for (rindex = 0; rindex < r; rindex++) {
       UV sum = 0;
       j = rindex;
@@ -131,6 +126,7 @@ static void poly_mod_mul(UV* px, UV* py, UV* res, UV r, UV mod)
       res[rindex] = sum % mod;
     }
   } else {
+    memset(res, 0, r * sizeof(UV));  /* Zero result accumulator */
     for (i = 0; i <= degpx; i++) {
       pxi = px[i];
       if (pxi == 0)  continue;
@@ -191,9 +187,6 @@ static UV* poly_mod_pow(UV* pn, UV power, UV r, UV mod)
 
   Newz(0, res, r, UV);
   New(0, temp, r, UV);
-  if ( (res == 0) || (temp == 0) )
-    croak("Couldn't allocate space for polynomial of degree %lu\n", (unsigned long) r);
-
   res[0] = 1;
 
   while (power) {
@@ -216,8 +209,6 @@ static int test_anr(UV a, UV n, UV r)
   int retval = 1;
 
   Newz(0, pn, r, UV);
-  if (pn == 0)
-    croak("Couldn't allocate space for polynomial of degree %lu\n", (unsigned long) r);
   a %= r;
   pn[0] = a;
   pn[1] = 1;
@@ -233,10 +224,16 @@ static int test_anr(UV a, UV n, UV r)
   return retval;
 }
 
+/*
+ * Avanzi and Mihǎilescu, 2007
+ * http://www.uni-math.gwdg.de/preda/mihailescu-papers/ouraks3.pdf
+ * "As a consequence, one cannot expect the present variants of AKS to
+ *  compete with the earlier primality proving methods like ECPP and
+ *  cyclotomy." - conclusion regarding memory consumption
+ */
 int _XS_is_aks_prime(UV n)
 {
-  UV sqrtn, limit, r, rlimit, a;
-  double log2n;
+  UV r, s, a;
   int verbose;
 
   if (n < 2)
@@ -244,35 +241,78 @@ int _XS_is_aks_prime(UV n)
   if (n == 2)
     return 1;
 
-  if (is_perfect_power(n))
+  if (is_power(n, 0))
     return 0;
 
-  sqrtn = isqrt(n);
-  log2n = log(n) / log(2);   /* C99 has a log2() function */
-  limit = (UV) floor(log2n * log2n);
+  if (n > 11 && ( !(n%2) || !(n%3) || !(n%5) || !(n%7) || !(n%11) )) return 0;
+  /* if (!is_prob_prime(n)) return 0; */
 
   verbose = _XS_get_verbose();
-  if (verbose) { printf("# aks limit is %lu\n", (unsigned long) limit); }
+#if IMPL_BORNEMANN == 0
+  {
+    UV sqrtn = isqrt(n);
+    double log2n = log(n) / log(2);   /* C99 has a log2() function */
+    UV limit = (UV) floor(log2n * log2n);
 
-  for (r = 2; r < n; r++) {
-    if ((n % r) == 0)
-      return 0;
+    if (verbose) { printf("# aks limit is %lu\n", (unsigned long) limit); }
+
+    for (r = 2; r < n; r++) {
+      if ((n % r) == 0)
+        return 0;
 #if SQRTN_SHORTCUT
-    if (r > sqrtn)
-      return 1;
+      if (r > sqrtn)
+        return 1;
 #endif
-    if (order(r, n, limit) > limit)
-      break;
+      if (order(r, n, limit) > limit)
+        break;
+    }
+
+    if (r >= n)
+      return 1;
+
+    s = (UV) floor(sqrt(r-1) * log2n);
   }
+#else
+  {
+    UV fac[MPU_MAX_FACTORS+1];
+    UV slim;
+    double c1, c2, x;
+    double const t = 48;
+    double const t1 = (1.0/((t+1)*log(t+1)-t*log(t)));
+    double const dlogn = log(n);
+    r = next_prime( (UV) (t1*t1 * dlogn*dlogn) );
+    while (!is_primitive_root(n,r))
+      r = next_prime(r);
 
-  if (r >= n)
-    return 1;
+    slim = (UV) (2*t*(r-1));
+    c1 = lgamma(r-1);
+    c2 = dlogn * floor(sqrt(r));
+    { /* Binary search for first s in [1,slim] where x >= 0 */
+      UV i = 1;
+      UV j = slim;
+      while (i < j) {
+        s = i + (j-i)/2;
+        x = (lgamma(r-1+s) - c1 - lgamma(s+1)) / c2 - 1.0;
+        if (x < 0)  i = s+1;
+        else        j = s;
+      }
+      s = i-1;
+    }
+    s = (s+3) >> 1;
+    /* Bornemann checks factors up to (s-1)^2, we check to max(r,s) */
+    /* slim = (s-1)*(s-1); */
+    slim = (r > s) ? r : s;
+    if (verbose > 1) printf("# aks trial to %lu\n", slim);
+    if (trial_factor(n, fac, slim) > 1)
+      return 0;
+    if (slim >= HALF_WORD || (slim*slim) >= n)
+      return 1;
+  }
+#endif
 
-  rlimit = (UV) floor(sqrt(r-1) * log2n);
+  if (verbose) { printf("# aks r = %lu  s = %lu\n", (unsigned long) r, (unsigned long) s); }
 
-  if (verbose) { printf("# aks r = %lu  rlimit = %lu\n", (unsigned long) r, (unsigned long) rlimit); }
-
-  for (a = 1; a <= rlimit; a++) {
+  for (a = 1; a <= s; a++) {
     if (! test_anr(a, n, r) )
       return 0;
     if (verbose>1) { printf("."); fflush(stdout); }
