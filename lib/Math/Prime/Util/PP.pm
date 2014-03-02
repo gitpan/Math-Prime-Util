@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.38';
+  $Math::Prime::Util::PP::VERSION = '0.39';
 }
 
 BEGIN {
@@ -602,8 +602,7 @@ sub jordan_totient {
   my $totient = BONE->copy;
   foreach my $f (@pe) {
     my ($p, $e) = @$f;
-    $p = Math::BigInt->new("$p") unless ref($p) eq 'Math::BigInt';
-    $p->bpow($k);
+    $p = Math::BigInt->new("$p")->bpow($k);
     $totient->bmul($p->copy->bdec());
     $totient->bmul($p) for 2 .. $e;
   }
@@ -3443,7 +3442,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.38
+Version 0.39
 
 
 =head1 SYNOPSIS
