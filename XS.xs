@@ -305,6 +305,7 @@ void
 prime_count(IN SV* svlo, ...)
   ALIAS:
     _XS_segment_pi = 1
+    twin_prime_count = 2
   PREINIT:
     int lostatus, histatus;
     UV lo, hi;
@@ -321,7 +322,9 @@ prime_count(IN SV* svlo, ...)
         hi = my_svuv(ST(1));
       }
       if (lo <= hi) {
-        if (ix == 1 || (hi / (hi-lo+1)) > 100) {
+        if (ix == 2) {
+          count = twin_prime_count(lo, hi);
+        } else if (ix == 1 || (hi / (hi-lo+1)) > 100) {
           count = _XS_prime_count(lo, hi);
         } else {
           count = _XS_LMO_pi(hi);
@@ -331,7 +334,12 @@ prime_count(IN SV* svlo, ...)
       }
       XSRETURN_UV(count);
     }
-    _vcallsubn(aTHX_ GIMME_V, VCALL_ROOT, "_generic_prime_count", items);
+    switch (ix) {
+      case 0:
+      case 1: _vcallsubn(aTHX_ GIMME_V, VCALL_ROOT, "_generic_prime_count", items); break;
+      case 2:
+      default:_vcallsub_with_pp("twin_prime_count");  break;
+    }
     return; /* skip implicit PUTBACK */
 
 UV
@@ -595,14 +603,18 @@ next_prime(IN SV* svn)
     nth_prime_upper = 3
     nth_prime_lower = 4
     nth_prime_approx = 5
-    prime_count_upper = 6
-    prime_count_lower = 7
-    prime_count_approx = 8
+    nth_twin_prime = 6
+    nth_twin_prime_approx = 7
+    prime_count_upper = 8
+    prime_count_lower = 9
+    prime_count_approx = 10
+    twin_prime_count_approx = 11
   PPCODE:
     if (_validate_int(aTHX_ svn, 0)) {
       UV n = my_svuv(svn);
       if ( (n >= MPU_MAX_PRIME     && ix == 0) ||
-           (n >= MPU_MAX_PRIME_IDX && (ix==2 || ix==3 || ix==4 || ix==5)) ) {
+           (n >= MPU_MAX_PRIME_IDX && (ix==2 || ix==3 || ix==4 || ix==5)) ||
+           (n >= MPU_MAX_TWIN_PRIME_IDX && (ix==6 || ix==7)) ) {
         /* Out of range.  Fall through to Perl. */
       } else {
         UV ret;
@@ -613,10 +625,13 @@ next_prime(IN SV* svn)
           case 3: ret = nth_prime_upper(n); break;
           case 4: ret = nth_prime_lower(n); break;
           case 5: ret = nth_prime_approx(n); break;
-          case 6: ret = prime_count_upper(n); break;
-          case 7: ret = prime_count_lower(n); break;
-          case 8:
-          default:ret = prime_count_approx(n); break;
+          case 6: ret = nth_twin_prime(n); break;
+          case 7: ret = nth_twin_prime_approx(n); break;
+          case 8: ret = prime_count_upper(n); break;
+          case 9: ret = prime_count_lower(n); break;
+          case 10:ret = prime_count_approx(n); break;
+          case 11:
+          default:ret = twin_prime_count_approx(n); break;
         }
         XSRETURN_UV(ret);
       }
@@ -632,10 +647,13 @@ next_prime(IN SV* svn)
       case 3:  _vcallsub_with_pp("nth_prime_upper");    break;
       case 4:  _vcallsub_with_pp("nth_prime_lower");    break;
       case 5:  _vcallsub_with_pp("nth_prime_approx");   break;
-      case 6:  _vcallsub_with_pp("prime_count_upper");  break;
-      case 7:  _vcallsub_with_pp("prime_count_lower");  break;
-      case 8:
-      default: _vcallsub_with_pp("prime_count_approx"); break;
+      case 6:  _vcallsub_with_pp("nth_twin_prime");     break;
+      case 7:  _vcallsub_with_pp("nth_twin_prime_approx"); break;
+      case 8:  _vcallsub_with_pp("prime_count_upper");  break;
+      case 9:  _vcallsub_with_pp("prime_count_lower");  break;
+      case 10: _vcallsub_with_pp("prime_count_approx"); break;
+      case 11:
+      default: _vcallsub_with_pp("twin_prime_count_approx"); break;
     }
     return; /* skip implicit PUTBACK */
 

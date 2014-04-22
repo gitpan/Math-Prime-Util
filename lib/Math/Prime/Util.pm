@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.39';
+  $Math::Prime::Util::VERSION = '0.40';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -33,9 +33,12 @@ our @EXPORT_OK =
       prime_count
       prime_count_lower prime_count_upper prime_count_approx
       nth_prime nth_prime_lower nth_prime_upper nth_prime_approx
+      twin_prime_count twin_prime_count_approx
+      nth_twin_prime nth_twin_prime_approx
       random_prime random_ndigit_prime random_nbit_prime random_strong_prime
       random_proven_prime random_proven_prime_with_cert
       random_maurer_prime random_maurer_prime_with_cert
+      random_shawe_taylor_prime random_shawe_taylor_prime_with_cert
       primorial pn_primorial consecutive_integer_lcm
       gcd lcm factor factor_exp all_factors divisors
       moebius mertens euler_phi jordan_totient exp_mangoldt liouville
@@ -46,6 +49,9 @@ our @EXPORT_OK =
       ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR
   );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
+
+# These are only exported if specifically asked for
+push @EXPORT_OK, (qw/trial_factor fermat_factor holf_factor squfof_factor prho_factor pbrent_factor pminus1_factor pplus1_factor/);
 
 my %_Config;
 
@@ -151,7 +157,8 @@ sub prime_get_config {
 # loaded.  Your calls will probably die horribly.
 sub prime_set_config {
   my %params = (@_);  # no defaults
-  while (my($param, $value) = each %params) {
+  foreach my $param (keys %params) {
+    my $value = $params{$param};
     $param = lc $param;
     # dispatch table should go here.
     if      ($param eq 'xs') {
@@ -337,6 +344,21 @@ sub random_maurer_prime_with_cert {
   _validate_num($bits, 2) || _validate_positive_integer($bits, 2);
   require Math::Prime::Util::RandomPrimes;
   return Math::Prime::Util::RandomPrimes::random_maurer_prime_with_cert($bits);
+}
+
+sub random_shawe_taylor_prime {
+  my($bits) = @_;
+  _validate_num($bits, 2) || _validate_positive_integer($bits, 2);
+  require Math::Prime::Util::RandomPrimes;
+  my ($n, $cert) = Math::Prime::Util::RandomPrimes::random_shawe_taylor_prime_with_cert($bits);
+  return $n;
+}
+
+sub random_shawe_taylor_prime_with_cert {
+  my($bits) = @_;
+  _validate_num($bits, 2) || _validate_positive_integer($bits, 2);
+  require Math::Prime::Util::RandomPrimes;
+  return Math::Prime::Util::RandomPrimes::random_shawe_taylor_prime_with_cert($bits);
 }
 
 sub random_strong_prime {
@@ -800,7 +822,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.39
+Version 0.40
 
 
 =head1 SYNOPSIS
@@ -929,6 +951,7 @@ Version 0.39
   my $rand_prime = random_nbit_prime(128);   # random 128-bit prime
   my $rand_prime = random_strong_prime(256); # random 256-bit strong prime
   my $rand_prime = random_maurer_prime(256); # random 256-bit provable prime
+  my $rand_prime = random_shawe_taylor_prime(256);  # as above
 
 
 =head1 DESCRIPTION
@@ -955,7 +978,10 @@ most methods will be much slower than the C+GMP alternative.
 The module is thread-safe and allows concurrency between Perl threads while
 still sharing a prime cache.  It is not itself multi-threaded.  See the
 L<Limitations|/"LIMITATIONS"> section if you are using Win32 and threads in
-your program.
+your program.  Also note that L<Math::Pari> is not thread-safe (and will
+crash as soon as it is loaded in threads), so if you use
+L<Math::BigInt::Pari> rather than L<Math::BigInt::GMP> or the default backend,
+things will go pear-shaped.
 
 Two scripts are also included and installed by default:
 
@@ -1067,8 +1093,9 @@ additional M-R tests with random bases with L</miller_rabin_random>.
 Even better, make sure L<Math::Prime::Util::GMP> is installed and use
 L</is_provable_prime> which should be reasonably fast for sizes under
 2048 bits.  Another possibility is to use
-L<Math::Prime::Util/random_maurer_prime> which constructs a random
-provable prime.
+L<Math::Prime::Util/random_maurer_prime> or
+L<Math::Prime::Util/random_shawe_taylor_prime> which construct random
+provable primes.
 
 
 =head2 primes
@@ -1266,6 +1293,32 @@ A slightly faster but much less accurate answer can be obtained by averaging
 the upper and lower bounds.
 
 
+=head2 twin_prime_count
+
+Similar to prime count, but returns the count of twin primes (primes C<p>
+where C<p+2> is also prime).  Takes either a single number indicating a count
+from 2 to the argument, or two numbers indicating a range.
+
+The primes being counted are the first value, so a range of C<(3,5)> will
+return a count of two, because both C<3> and C<5> are counted as twin primes.
+A range of C<(12,13)> will return a count of zero, because neither C<12+2>
+nor C<13+2> are prime.  In contrast, C<primesieve> requires all elements of
+a constellation to be within the range to be counted, so would return one for
+the first example (C<5> is not counted because its pair C<7> is not in the
+range).
+
+There is no useful formula known for this, unlike prime counts.  We sieve
+for the answer, using some small table acceleration.
+
+=head2 twin_prime_count_approx
+
+Returns an approximation to the twin prime count of C<n>.  This returns
+quickly and has a very small error for large values.  The method used is
+conjecture B of Hardy and Littlewood 1922, as stated in
+Sebah and Gourdon 2002.  For inputs under 10M, a correction factor is
+additionally applied to reduce the mean squared error.
+
+
 =head2 nth_prime
 
   say "The ten thousandth prime is ", nth_prime(10_000);
@@ -1283,7 +1336,7 @@ While this method is thousands of times faster than generating primes, and
 doesn't involve big tables of precomputed values, it still can take a fair
 amount of time for large inputs.  Calculating the C<10^12th> prime takes
 about 1 second, the C<10^13th> prime takes under 10 seconds, and the
-C<10^14th> prime (3475385758524527) takes under one minute.  Think about
+C<10^14th> prime (3475385758524527) takes under 30 seconds.  Think about
 whether a bound or approximation would be acceptable, as they can be
 computed analytically.
 
@@ -1315,8 +1368,22 @@ for small C<n>.
   say "The one trillionth prime is ~ ", nth_prime_approx(10**12);
 
 Returns an approximation to the C<nth_prime> function, without having to
-generate any primes.  Uses the Cipolla 1902 approximation with two
-polynomials, plus a correction for small values to reduce the error.
+generate any primes.  For values where the nth prime is smaller than
+C<2^64>, an inverse Riemann R function is used.  For larger values, uses the
+Cipolla 1902 approximation with up to 2nd order terms, plus a third order
+correction.
+
+
+=head2 nth_twin_prime
+
+Returns the Nth twin prime.  This is done via sieving and counting, so
+is not very fast for large values.
+
+=head2 nth_twin_prime_approx
+
+Returns an approximation to the Nth twin prime.  A curve fit is used for
+small inputs (under 1200), while for larger inputs a binary search is done
+on the approximate twin prime count.
 
 
 =head2 is_pseudoprime
@@ -1352,10 +1419,6 @@ algorithm does run with even input, most sources define it only on odd input.
 Returning composite for all non-2 even input makes the function match most
 other implementations including L<Math::Primality>'s C<is_strong_pseudoprime>
 function.
-
-=head2 miller_rabin
-
-An alias for C<is_strong_pseudoprime>.  This name is deprecated.
 
 =head2 is_lucas_pseudoprime
 
@@ -1760,6 +1823,14 @@ literally B<millions> of times slower than other algorithms.  From R.P.
 Brent, 2010:  "AKS is not a practical algorithm.  ECPP is much faster."
 We have ECPP, and indeed it is much faster.
 
+This implementation includes the v6 improvements from Lenstra as well as
+further improvements from Bernstein and Voloch.  It runs substantially
+faster than the original or v6 versions.  The GMP implementation uses
+a binary segmentation method for modular polynomial multiplication
+(see Bernstein's 2007 Quartic paper), which reduces to a single scalar
+multiplication, at which GMP excels.  Because of this, the GMP
+implementation is likely to be faster once the input is larger than C<2^32>.
+
 
 =head2 is_power
 
@@ -1773,10 +1844,10 @@ the largest possible.  This can be used in a boolean statement to
 determine if C<n> is a perfect power.
 
 If given two arguments C<n> and C<k>, returns 1 if C<n> is a C<k-th> power,
-and 0 otherwise.
+and 0 otherwise.  For example, if C<k=2> then this detects perfect squares.
 
 This corresponds to Pari/GP's C<ispower> function, with the limitations of
-only integer arguments and no third argument may be given returning the root.
+only integer arguments and no third argument may be given to return the root.
 
 
 =head2 lucas_sequence
@@ -2050,29 +2121,31 @@ coprime to C<n>.  This is L<OEIS series A002322|http://oeis.org/A002322>.
 =head2 kronecker
 
 Returns the Kronecker symbol C<(a|n)> for two integers.  The possible
-return values with their meanings for odd positive C<n> are:
+return values with their meanings for odd prime C<n> are:
 
    0   a = 0 mod n
-   1   a is a quadratic residue modulo n (a = x^2 mod n for some x)
-  -1   a is a quadratic non-residue modulo n
+   1   a is a quadratic residue mod n       (a = x^2 mod n for some x)
+  -1   a is a quadratic non-residue mod n   (no a where a = x^2 mod n)
 
 The Kronecker symbol is an extension of the Jacobi symbol to all integer
 values of C<n> from the latter's domain of positive odd values of C<n>.
 The Jacobi symbol is itself an extension of the Legendre symbol, which is
 only defined for odd prime values of C<n>.  This corresponds to Pari's
-C<kronecker(a,n)> function and Mathematica's C<KroneckerSymbol[n,m]>
-function.
+C<kronecker(a,n)> function, Mathematica's C<KroneckerSymbol[n,m]>
+function, and GMP's C<mpz_kronecker(a,n)>, C<mpz_jacobi(a,n)>, and
+C<mpz_legendre(a,n)> functions.
+
 
 =head2 znorder
 
-  $order = znorder(2, next_prime(10**19)-6);
+  $order = znorder(2, next_prime(10**16)-6);
 
 Given two positive integers C<a> and C<n>, returns the multiplicative order
 of C<a> modulo C<n>.  This is the smallest positive integer C<k> such that
 C<a^k ≡ 1 mod n>.  Returns 1 if C<a = 1>.  Returns undef if C<a = 0> or if
 C<a> and C<n> are not coprime, since no value will result in 1 mod n.
 This corresponds to Pari's C<znorder(Mod(a,n))> function and Mathematica's
-C<MultiplicativeOrder[n]> function.
+C<MultiplicativeOrder[a,n]> function.
 
 =head2 znprimroot
 
@@ -2286,7 +2359,8 @@ Construct an n-bit provable prime, using the FastPrime algorithm of
 Ueli Maurer (1995).  This is the same algorithm used by L<Crypt::Primes>.
 Similar to L</random_nbit_prime>, the result will be a BigInt if the
 number of bits is greater than the native bit size.  For better performance
-with large bit sizes, install L<Math::Prime::Util::GMP>.
+with large bit sizes, install L<Math::Prime::Util::GMP>.  Also see
+L</random_shawe_taylor_prime>.
 
 The differences between this function and that in L<Crypt::Primes> are
 described in the L</"SEE ALSO"> section.
@@ -2315,6 +2389,40 @@ is the same as produced by L</prime_certificate> or
 L</is_provable_prime_with_cert>, and can be parsed by L</verify_prime> or
 any other software that understands MPU primality certificates.
 The proof construction consists of a single chain of C<BLS3> types.
+
+
+=head2 random_shawe_taylor_prime
+
+  my $bigprime = random_shawe_taylor_prime(8192);
+
+Construct an n-bit provable prime, using the Shawe-Taylor algorithm in
+section C.6 of FIPS 186-4.  This uses 512 bits of randomness and SHA-256
+as the hash.  This is a slightly simpler and older (1986) method than
+Maurer's 1999 construction.  It is a bit faster than Maurer's method, and
+uses less system entropy for large sizes.  The primary reason to use this
+rather than Maurer's method is to use the FIPS 186-4 algorithm.
+
+Similar to L</random_nbit_prime>, the result will be a BigInt if the
+number of bits is greater than the native bit size.  For better performance
+with large bit sizes, install L<Math::Prime::Util::GMP>.  Also see
+L</random_maurer_prime> and L</random_proven_prime>.
+
+Internally this additionally runs the BPSW probable prime test on every
+partial result, and constructs a primality certificate for the final
+result, which is verified.  These provide additional checks that the resulting
+value has been properly constructed.
+
+
+=head2 random_shawe_taylor_prime_with_cert
+
+  my($n, $cert) = random_shawe_taylor_prime_with_cert(4096)
+
+As with L</random_shawe_taylor_prime>, but returns a two-element array
+containing the n-bit provable prime along with a primality certificate.
+The certificate is the same as produced by L</prime_certificate> or
+L</is_provable_prime_with_cert>, and can be parsed by L</verify_prime> or
+any other software that understands MPU primality certificates.
+The proof construction consists of a single chain of C<Pocklington> types.
 
 
 
@@ -2359,6 +2467,7 @@ in place because you still have an object.
 Returns a reference to a hash of the current settings.  The hash is copy of
 the configuration, so changing it has no effect.  The settings include:
 
+  verbose         verbose level.  1 or more will result in extra output.
   precalc_to      primes up to this number are calculated
   maxbits         the maximum number of bits for native operations
   xs              0 or 1, indicating the XS code is available
@@ -2375,26 +2484,35 @@ the configuration, so changing it has no effect.  The settings include:
 
 Allows setting of some parameters.  Currently the only parameters are:
 
-  xs              Allows turning off the XS code, forcing the Pure Perl
-                  code to be used.  Set to 0 to disable XS, set to 1 to
-                  re-enable.  You probably will never want to do this.
+  verbose      The default setting of 0 will generate no extra output.
+               Setting to 1 or higher results in extra output.  For
+               example, at setting 1 the AKS algorithm will indicate
+               the chosen r and s values.  At setting 2 it will output
+               a sequence of dots indicating progress.  Similarly, for
+               random_maurer_prime, setting 3 shows real time progress.
+               Factoring large numbers is another place where verbose
+               settings can give progress indications.
 
-  gmp             Allows turning off the use of L<Math::Prime::Util::GMP>,
-                  which means using Pure Perl code for big numbers.  Set
-                  to 0 to disable GMP, set to 1 to re-enable.
-                  You probably will never want to do this.
+  xs           Allows turning off the XS code, forcing the Pure Perl
+               code to be used.  Set to 0 to disable XS, set to 1 to
+               re-enable.  You probably will never want to do this.
 
-  assume_rh       Allows functions to assume the Riemann hypothesis is
-                  true if set to 1.  This defaults to 0.  Currently this
-                  setting only impacts prime count lower and upper
-                  bounds, but could later be applied to other areas such
-                  as primality testing.  A later version may also have a
-                  way to indicate whether no RH, RH, GRH, or ERH is to
-                  be assumed.
+  gmp          Allows turning off the use of L<Math::Prime::Util::GMP>,
+               which means using Pure Perl code for big numbers.  Set
+               to 0 to disable GMP, set to 1 to re-enable.
+               You probably will never want to do this.
 
-  irand           Takes a code ref to an irand function returning a
-                  uniform number between 0 and 2**32-1.  This will be
-                  used for all random number generation in the module.
+  assume_rh    Allows functions to assume the Riemann hypothesis is
+               true if set to 1.  This defaults to 0.  Currently this
+               setting only impacts prime count lower and upper
+               bounds, but could later be applied to other areas such
+               as primality testing.  A later version may also have a
+               way to indicate whether no RH, RH, GRH, or ERH is to
+               be assumed.
+
+  irand        Takes a code ref to an irand function returning a
+               uniform number between 0 and 2**32-1.  This will be
+               used for all random number generation in the module.
 
 
 =head1 FACTORING FUNCTIONS
@@ -2415,21 +2533,18 @@ C<PrimeOmega[n]> function.
 This is same result that we would get if we evaluated the resulting
 array in scalar context.
 
-The current algorithm for non-bigints is a sequence of small trial division,
-a few rounds of Pollard's Rho, SQUFOF, Pollard's p-1, Hart's OLF, a long
-run of Pollard's Rho, and finally trial division if anything survives.  This
-process is repeated for each non-prime factor.  In practice, it is very rare
-to require more than the first Rho + SQUFOF to find a factor, and I have not
-seen anything go to the last step.
+The current algorithm does a little trial division, a check for perfect
+powers, followed by combinations of Pollard's Rho, SQUFOF, and Pollard's
+p-1.  The combination is applied to each non-prime factor found.
 
 Factoring bigints works with pure Perl, and can be very handy on 32-bit
 machines for numbers just over the 32-bit limit, but it can be B<very> slow
-for "hard" numbers.  Installing the L<Math::Prime::Util::GMP> module will speed
-up bigint factoring a B<lot>, and all future effort on large number factoring
-will be in that module.  If you do not have that module for some reason, use
-the GMP or Pari version of bigint if possible
-(e.g. C<use bigint try =E<gt> 'GMP,Pari'>), which will run 2-3x faster (though
-still 100x slower than the real GMP code).
+for "hard" numbers.  Installing the L<Math::Prime::Util::GMP> module will
+speed up bigint factoring a B<lot>, and all future effort on large number
+factoring will be in that module.  If you do not have that module for
+some reason, use the GMP or Pari version of bigint if possible
+(e.g. C<use bigint try =E<gt> 'GMP,Pari'>), which will run 2-3x faster
+(though still 100x slower than the real GMP code).
 
 
 =head2 factor_exp
@@ -2457,8 +2572,6 @@ Just the way the factors are arranged is different.
 
 =head2 divisors
 
-=head2 all_factors
-
   my @divisors = divisors(30);   # returns (1, 2, 3, 5, 6, 10, 15, 30)
 
 Produces all the divisors of a positive number input, including 1 and
@@ -2480,9 +2593,11 @@ C<all_factors> is the deprecated name for this function.
 
   my @factors = trial_factor($n);
 
-Produces the prime factors of a positive number input.  The factors will be
-in numerical order.
+Produces the prime factors of a positive number input.
+The factors will be in numerical order.
 For large inputs this will be very slow.
+Like all the specific-algorithm C<*_factor> routines, this is not exported
+unless explicitly requested.
 
 =head2 fermat_factor
 
@@ -2503,7 +2618,7 @@ optional number of rounds can be given as a second parameter.  It is possible
 the function will be unable to find a factor, in which case a single element,
 the input, is returned.  This uses Hart's One Line Factorization with no
 premultiplier.  It is an interesting alternative to Fermat's algorithm,
-and there are some inputs it can rapidly factor.  In the long run it has the
+and there are some inputs it can rapidly factor.  Overall it has the
 same advantages and disadvantages as Fermat's method.
 
 =head2 squfof_factor
@@ -2738,11 +2853,10 @@ Project Euler, problem 10 (summation of primes):
 Project Euler, problem 21 (Amicable numbers):
 
   use Math::Prime::Util qw/divisor_sum/;
-  sub dsum { my $n = shift; divisor_sum($n) - $n; }
   my $sum = 0;
-  foreach my $a (1..10000) {
-    my $b = dsum($a);
-    $sum += $a + $b if $b > $a && dsum($b) == $a;
+  foreach my $x (1..10000) {
+    my $y = divisor_sum($x)-$x;
+    $sum += $x + $y if $y > $x && $x == divisor_sum($y)-$y;
   }
   say $sum;
 
@@ -2761,12 +2875,12 @@ Project Euler, problem 47 (Distinct primes factors):
 Project Euler, problem 69, stupid brute force solution (about 1 second):
 
   use Math::Prime::Util qw/euler_phi/;
-  my ($n, $max) = (0,0);
-  do {
-    my $ndivphi = $_ / euler_phi($_);
-    ($n, $max) = ($_, $ndivphi) if $ndivphi > $max;
-  } for 1..1000000;
-  say "$n  $max";
+  my ($maxn, $maxratio) = (0,0);
+  foreach my $n (1..1000000) {
+    my $ndivphi = $n / euler_phi($n);
+    ($maxn, $maxratio) = ($n, $ndivphi) if $ndivphi > $maxratio;
+  }
+  say "$maxn  $maxratio";
 
 Here is the right way to do PE problem 69 (under 0.03s):
 
@@ -2877,13 +2991,14 @@ the first C<k> prime bases, but not much.  See, for example, Nicely's
 L<mpz_probab_prime_p pseudoprimes|http://www.trnicely.net/misc/mpzspsp.html>
 page.
 
-=item L<Math::Pari>
+=item L<Math::Pari> (not recent Pari/GP)
 
 Pari 2.1.7 is the default version installed with the L<Math::Pari>
 module.  It uses 10 random M-R bases (the PRNG uses a fixed seed
 set at compile time).  Pari 2.3.0 was released in May 2006 and it,
 like all later releases through at least 2.6.1, use BPSW / APRCL,
-after complaints of false results from using M-R tests.
+after complaints of false results from using M-R tests.  For example,
+it will indicate 9 is prime about 1 out of every 276k calls.
 
 =back
 
@@ -2927,7 +3042,7 @@ Perl threads.
 This section describes other CPAN modules available that have some feature
 overlap with this one.  Also see the L</REFERENCES> section.  Please let me
 know if any of this information is inaccurate.  Also note that just because
-a module doesn't match what I believe are the best set of features, doesn't
+a module doesn't match what I believe are the best set of features doesn't
 mean it isn't perfect for someone else.
 
 I will use SoE to indicate the Sieve of Eratosthenes, and MPU to denote this
@@ -2960,7 +3075,7 @@ MPXS's prime sieve is an unoptimized non-segmented SoE
 which returns an array.  Sieve bases larger than C<10^7> start taking
 inordinately long and using a lot of memory (gigabytes beyond C<10^10>).
 E.g. C<primes(10**9, 10**9+1000)> takes 36 seconds with MPXS, but only
-0.00015 seconds with MPU.
+0.0001 seconds with MPU.
 
 L<Math::Prime::FastSieve> supports C<primes>, C<is_prime>, C<next_prime>,
 C<prev_prime>, C<prime_count>, and C<nth_prime>.  The caveat is that all
@@ -2978,7 +3093,7 @@ the XS sieves, and has the most memory use.  It is faster than pure Perl code.
 L<Crypt::Primes> supports C<random_maurer_prime> functionality.  MPU has
 more options for random primes (n-digit, n-bit, ranged, and strong) in
 addition to Maurer's algorithm.  MPU does not have the critical bug
-L<RT81858|https://rt.cpan.org/Ticket/Display.html?id=81858>.  MPU should have
+L<RT81858|https://rt.cpan.org/Ticket/Display.html?id=81858>.  MPU has
 a more uniform distribution as well as return a larger subset of primes
 (L<RT81871|https://rt.cpan.org/Ticket/Display.html?id=81871>).
 MPU does not depend on L<Math::Pari> though can run slow for bigints unless
@@ -2993,9 +3108,9 @@ What Crypt::Primes has that MPU does not is the ability to return a generator.
 L<Math::Factor::XS> calculates prime factors and factors, which correspond to
 the L</factor> and L</divisors> functions of MPU.  These functions do
 not support bigints.  Both are implemented with trial division, meaning they
-are very fast for really small values, but quickly become unusably slow
-(factoring 19 digit semiprimes is over 700 times slower).  The function
-C<count_prime_factors> can be done in MPU using C<scalar factor($n)>.
+are very fast for really small values, but become very slow as the input
+gets larger (factoring 19 digit semiprimes is over 1000 times slower).  The
+function C<count_prime_factors> can be done in MPU using C<scalar factor($n)>.
 See the L</"EXAMPLES"> section for a 2-line function replicating C<matches>.
 
 L<Math::Big> version 1.12 includes C<primes> functionality.  The current
@@ -3063,8 +3178,11 @@ Some of the highlights:
 The default L<Math::Pari> is built with Pari 2.1.7.  This uses 10 M-R
 tests with randomly chosen bases (fixed seed, but doesn't reset each
 invocation like GMP's C<is_probab_prime>).  This has a greater chance
-of false positives compared to the BPSW test.  Calling with
-C<isprime($n,1)> will perform a Pocklington-Lehmer C<n-1> proof,
+of false positives compared to the BPSW test -- some composites such as
+C<9>, C<88831>, C<38503>, etc.
+(L<OEIS A141768|http://oeis.org/A141768>)
+have a surprisingly high chance of being indicated prime.
+Using C<isprime($n,1)> will perform an C<n-1> proof,
 but this becomes unreasonably slow past 70 or so digits.
 
 If L<Math::Pari> is built using Pari 2.3.5 (this requires manual
@@ -3135,14 +3253,14 @@ more efficient.  Without L<Math::Prime::Util::GMP> installed, MPU is
 very slow with bigints.  With it installed, it is about 2x slower than
 Math::Pari.
 
-=item C<gcd>, C<lcm>, C<kronecker>, C<znorder>, C<znprimroot>
+=item C<gcd>, C<lcm>, C<kronecker>, C<znorder>, C<znprimroot>, C<znlog>
 
 Similar to MPU's L</gcd>, L</lcm>, L</kronecker>, L</znorder>,
-and L</znprimroot>.  Pari's C<znprimroot> only returns the smallest
-root for prime powers.  The behavior is undefined when the group is
+L</znprimroot>, and L</znlog>.  Pari's C<znprimroot> only returns the
+smallest root for prime powers.  The behavior is undefined when the group is
 not cyclic (sometimes it throws an exception, sometimes it returns
-an incorrect answer).  MPU's L</znprimroot> will always return the
-smallest root if it exists, and C<undef> otherwise.
+an incorrect answer, sometimes it hangs).  MPU's L</znprimroot> will always
+return the smallest root if it exists, and C<undef> otherwise.
 
 =item C<sigma>
 
@@ -3167,10 +3285,11 @@ function supports negative and complex inputs.
 =back
 
 Overall, L<Math::Pari> supports a huge variety of functionality and has a
-sophisticated and mature code base behind it (noting that the default version
-of Pari used is about 10 years old now).
-For native integers often using Math::Pari will be slower, but bigints are
-often superior and it rarely has any performance surprises.  Some of the
+sophisticated and mature code base behind it (noting that the Pari library
+used is about 10 years old now).
+For native integers, typically Math::Pari will be slower than MPU.  For
+bigints, Math::Pari may be superior and it rarely has any performance
+surprises.  Some of the
 unique features MPU offers include super fast prime counts, nth_prime,
 ECPP primality proofs with certificates, approximations and limits for both,
 random primes, fast Mertens calculations, Chebyshev theta and psi functions,
@@ -3201,7 +3320,7 @@ candidates.  A test such as the BPSW test in this module is then recommended.
 L<Primo|http://www.ellipsa.eu/> is the best method for open source primality
 proving for inputs over 1000 digits.  Primo also does well below that size,
 but other good alternatives are
-L<WraithX APRCL|http://sourceforge.net/projects/mpzaprcl/>,
+David Cleaver's L<mpzaprcl|http://sourceforge.net/projects/mpzaprcl/>,
 the APRCL from the modern L<Pari|http://pari.math.u-bordeaux.fr/> package,
 or the standalone ECPP from this module with large polynomial set.
 
@@ -3250,7 +3369,7 @@ Counting the primes to C<800_000_000> (800 million):
 
   Time (s)   Module                      Version  Notes
   ---------  --------------------------  -------  -----------
-       0.002 Math::Prime::Util           0.35     using extended LMO
+       0.001 Math::Prime::Util           0.37     using extended LMO
        0.007 Math::Prime::Util           0.12     using Lehmer's method
        0.27  Math::Prime::Util           0.17     segmented mod-30 sieve
        0.39  Math::Prime::Util::PP       0.24     Perl (Lehmer's method)
@@ -3334,7 +3453,7 @@ are still being tuned.  L<Math::Factor::XS> is very fast when given input with
 only small factors, but it slows down rapidly as the smallest factor increases
 in size.  For numbers larger than 32 bits, L<Math::Prime::Util> can be 100x or
 more faster (a number with only very small factors will be nearly identical,
-while a semiprime with large factors will be the extreme end).  L<Math::Pari>
+while a semiprime may be 3000x faster).  L<Math::Pari>
 is much slower with native sized inputs, probably due to calling
 overhead.  For bigints, the L<Math::Prime::Util::GMP> module is needed or
 performance will be far worse than Math::Pari.  With the GMP module,
@@ -3362,7 +3481,7 @@ warrant distributed processing.
 =head2 PRIMALITY PROVING
 
 The C<n-1> proving algorithm in L<Math::Prime::Util::GMP> compares well to
-the version including in Pari.  Both are pretty fast to about 60 digits, and
+the version included in Pari.  Both are pretty fast to about 60 digits, and
 work reasonably well to 80 or so before starting to take many minutes per
 number on a fast computer.  Version 0.09 and newer of MPU::GMP contain an
 ECPP implementation that, while not state of the art compared to closed source
@@ -3381,21 +3500,22 @@ Seconds per prime for random prime generation on a circa-2009 workstation,
 with L<Math::BigInt::GMP>, L<Math::Prime::Util::GMP>, and
 L<Math::Random::ISAAC::XS> installed.
 
-  bits    random   +testing  rand_prov   Maurer   CPMaurer
-  -----  --------  --------  ---------  --------  --------
-     64    0.0001  +0.000008   0.0002     0.0001    0.022
-    128    0.0020  +0.00023    0.011      0.063     0.057
-    256    0.0034  +0.0004     0.058      0.13      0.16
-    512    0.0097  +0.0012     0.28       0.28      0.41
-   1024    0.060   +0.0060     0.65       0.65      2.19
-   2048    0.57    +0.039      4.8        4.8      10.99
-   4096    6.24    +0.25      31.9       31.9      79.71
-   8192   58.6     +1.61     234.0      234.0     947.3
+  bits    random   +testing  rand_prov   Maurer   Shw-Tylr  CPMaurer
+  -----  --------  --------  ---------  --------  --------  --------
+     64    0.0001  +0.000008   0.0002     0.0001    0.010     0.022
+    128    0.0020  +0.00023    0.011      0.063     0.028     0.057
+    256    0.0034  +0.0004     0.058      0.13      0.042     0.16
+    512    0.0097  +0.0012     0.28       0.28      0.085     0.41
+   1024    0.060   +0.0060     0.65       0.65      0.24      2.19
+   2048    0.57    +0.039      4.8        4.8       1.0      10.99
+   4096    6.24    +0.25      31.9       31.9       8.2      79.71
+   8192   58.6     +1.61     234.0      234.0     112.9     947.3
 
   random    = random_nbit_prime  (results pass BPSW)
   random+   = additional time for 3 M-R and a Frobenius test
   rand_prov = random_proven_prime
   maurer    = random_maurer_prime
+  Shw-Tylr  = random_shawe_taylor_prime
   CPMaurer  = Crypt::Primes::maurer
 
 L</random_nbit_prime> is reasonably fast, and for most purposes should
@@ -3418,6 +3538,11 @@ certificate which is verified at the end (and can be returned).  While the
 result is uniformly distributed, only about 10% of the primes in the range
 are selected for output.  This is a result of the FastPrime algorithm and
 is usually unimportant.
+
+L</random_shawe_taylor_prime> similarly constructs a provable prime.  It
+uses a simpler construction method.  The implementation uses a single large
+random seed followed by SHA-256 as specified by FIPS 186-4.  As seen, it
+is a bit faster than the Maurer implementation.
 
 L<Crypt::Primes/maurer> times are included for comparison.  It is pretty
 fast for small sizes but gets slow as the size increases.  It does not
@@ -3462,15 +3587,35 @@ thank Kim Walisch for the many discussions about prime counting.
 
 =item *
 
+Christian Bau, "The Extended Meissel-Lehmer Algorithm", 2003, preprint with example C++ implementation.  Very detailed implementation-specific paper which was used for the implementation here.  Highly recommended for implementing a sieve-based LMO.  L<http://cs.swan.ac.uk/~csoliver/ok-sat-library/OKplatform/ExternalSources/sources/NumberTheory/ChristianBau/>
+
+=item *
+
+Manuel Benito and Juan L. Varona, "Recursive formulas related to the summation of the Möbius function", I<The Open Mathematics Journal>, v1, pp 25-34, 2007.  Among many other things, shows a simple formula for computing the Mertens functions with only n/3 Möbius values (not as fast as Deléglise and Rivat, but really simple).  L<http://www.unirioja.es/cu/jvarona/downloads/Benito-Varona-TOMATJ-Mertens.pdf>
+
+=item *
+
+John Brillhart, D. H. Lehmer, and J. L. Selfridge, "New Primality Criteria and Factorizations of 2^m +/- 1", Mathematics of Computation, v29, n130, Apr 1975, pp 620-647.  L<http://www.ams.org/journals/mcom/1975-29-130/S0025-5718-1975-0384673-1/S0025-5718-1975-0384673-1.pdf>
+
+=item *
+
+W. J. Cody and Henry C. Thacher, Jr., "Rational Chebyshev Approximations for the Exponential Integral E_1(x)", I<Mathematics of Computation>, v22, pp 641-649, 1968.
+
+=item *
+
+W. J. Cody and Henry C. Thacher, Jr., "Chebyshev approximations for the exponential integral Ei(x)", I<Mathematics of Computation>, v23, pp 289-303, 1969.  L<http://www.ams.org/journals/mcom/1969-23-106/S0025-5718-1969-0242349-2/>
+
+=item *
+
+W. J. Cody, K. E. Hillstrom, and Henry C. Thacher Jr., "Chebyshev Approximations for the Riemann Zeta Function", L<Mathematics of Computation>, v25, n115, pp 537-547, July 1971.
+
+=item *
+
 Henri Cohen, "A Course in Computational Algebraic Number Theory", Springer, 1996.  Practical computational number theory from the team lead of L<Pari|http://pari.math.u-bordeaux.fr/>.  Lots of explicit algorithms.
 
 =item *
 
-Hans Riesel, "Prime Numbers and Computer Methods for Factorization", Birkh?user, 2nd edition, 1994.  Lots of information, some code, easy to follow.
-
-=item *
-
-Pierre Dusart, "Estimates of Some Functions Over Primes without R.H.", preprint, 2010.  Updates to the best non-RH bounds for prime count and nth prime.  L<http://arxiv.org/abs/1002.0442/>
+Marc Deléglise and Joöl Rivat, "Computing the summation of the Möbius function", I<Experimental Mathematics>, v5, n4, pp 291-295, 1996.  Enhances the Möbius computation in Lioen/van de Lune, and gives a very efficient way to compute the Mertens function.  L<http://projecteuclid.org/euclid.em/1047565447>
 
 =item *
 
@@ -3478,15 +3623,27 @@ Pierre Dusart, "Autour de la fonction qui compte le nombre de nombres premiers",
 
 =item *
 
+Pierre Dusart, "Estimates of Some Functions Over Primes without R.H.", preprint, 2010.  Updates to the best non-RH bounds for prime count and nth prime.  L<http://arxiv.org/abs/1002.0442/>
+
+=item *
+
+Pierre-Alain Fouque and Mehdi Tibouchi, "Close to Uniform Prime Number Generation With Fewer Random Bits", pre-print, 2011.  Describes random prime distributions, their algorithm for creating random primes using few random bits, and comparisons to other methods.  Definitely worth reading for the discussions of uniformity.  L<http://eprint.iacr.org/2011/481>
+
+=item *
+
+Walter M. Lioen and Jan van de Lune, "Systematic Computations on Mertens' Conjecture and Dirichlet's Divisor Problem by Vectorized Sieving", in I<From Universal Morphisms to Megabytes>, Centrum voor Wiskunde en Informatica, pp. 421-432, 1994.  Describes a nice way to compute a range of Möbius values.  L<http://walter.lioen.com/papers/LL94.pdf>
+
+=item *
+
+Ueli M. Maurer, "Fast Generation of Prime Numbers and Secure Public-Key Cryptographic Parameters", 1995.  Generating random provable primes by building up the prime.  L<http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.26.2151>
+
+=item *
+
 Gabriel Mincu, "An Asymptotic Expansion", I<Journal of Inequalities in Pure and Applied Mathematics>, v4, n2, 2003.  A very readable account of Cipolla's 1902 nth prime approximation.  L<http://www.emis.de/journals/JIPAM/images/153_02_JIPAM/153_02.pdf>
 
 =item *
 
-Christian Bau, "The Extended Meissel-Lehmer Algorithm", 2003, preprint with example C++ implementation.  Very detailed implementation-specific paper which was used for the implementation here.  Highly recommended for implementing a sieve-based LMO.  L<http://cs.swan.ac.uk/~csoliver/ok-sat-library/OKplatform/ExternalSources/sources/NumberTheory/ChristianBau/>
-
-=item *
-
-David M. Smith, "Multiple-Precision Exponential Integral and Related Functions", I<ACM Transactions on Mathematical Software>, v37, n4, 2011.  L<http://myweb.lmu.edu/dmsmith/toms2011.pdf>
+L<OEIS: Primorial|http://oeis.org/wiki/Primorial>
 
 =item *
 
@@ -3498,47 +3655,15 @@ William H. Press et al., "Numerical Recipes", 3rd edition.
 
 =item *
 
-W. J. Cody and Henry C. Thacher, Jr., "Chebyshev approximations for the exponential integral Ei(x)", I<Mathematics of Computation>, v23, pp 289-303, 1969.  L<http://www.ams.org/journals/mcom/1969-23-106/S0025-5718-1969-0242349-2/>
+Hans Riesel, "Prime Numbers and Computer Methods for Factorization", Birkh?user, 2nd edition, 1994.  Lots of information, some code, easy to follow.
 
 =item *
 
-W. J. Cody and Henry C. Thacher, Jr., "Rational Chebyshev Approximations for the Exponential Integral E_1(x)", I<Mathematics of Computation>, v22, pp 641-649, 1968.
-
-=item *
-
-W. J. Cody, K. E. Hillstrom, and Henry C. Thacher Jr., "Chebyshev Approximations for the Riemann Zeta Function", L<Mathematics of Computation>, v25, n115, pp 537-547, July 1971.
-
-=item *
-
-Ueli M. Maurer, "Fast Generation of Prime Numbers and Secure Public-Key Cryptographic Parameters", 1995.  Generating random provable primes by building up the prime.  L<http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.26.2151>
-
-=item *
-
-Pierre-Alain Fouque and Mehdi Tibouchi, "Close to Uniform Prime Number Generation With Fewer Random Bits", pre-print, 2011.  Describes random prime distributions, their algorithm for creating random primes using few random bits, and comparisons to other methods.  Definitely worth reading for the discussions of uniformity.  L<http://eprint.iacr.org/2011/481>
+David M. Smith, "Multiple-Precision Exponential Integral and Related Functions", I<ACM Transactions on Mathematical Software>, v37, n4, 2011.  L<http://myweb.lmu.edu/dmsmith/toms2011.pdf>
 
 =item *
 
 Douglas A. Stoll and Patrick Demichel , "The impact of ζ(s) complex zeros on π(x) for x E<lt> 10^{10^{13}}", L<Mathematics of Computation>, v80, n276, pp 2381-2394, October 2011.  L<http://www.ams.org/journals/mcom/2011-80-276/S0025-5718-2011-02477-4/home.html>
-
-=item *
-
-L<OEIS: Primorial|http://oeis.org/wiki/Primorial>
-
-=item *
-
-Walter M. Lioen and Jan van de Lune, "Systematic Computations on Mertens' Conjecture and Dirichlet's Divisor Problem by Vectorized Sieving", in I<From Universal Morphisms to Megabytes>, Centrum voor Wiskunde en Informatica, pp. 421-432, 1994.  Describes a nice way to compute a range of Möbius values.  L<http://walter.lioen.com/papers/LL94.pdf>
-
-=item *
-
-Marc Deléglise and Joöl Rivat, "Computing the summation of the Möbius function", I<Experimental Mathematics>, v5, n4, pp 291-295, 1996.  Enhances the Möbius computation in Lioen/van de Lune, and gives a very efficient way to compute the Mertens function.  L<http://projecteuclid.org/euclid.em/1047565447>
-
-=item *
-
-Manuel Benito and Juan L. Varona, "Recursive formulas related to the summation of the Möbius function", I<The Open Mathematics Journal>, v1, pp 25-34, 2007.  Among many other things, shows a simple formula for computing the Mertens functions with only n/3 Möbius values (not as fast as Deléglise and Rivat, but really simple).  L<http://www.unirioja.es/cu/jvarona/downloads/Benito-Varona-TOMATJ-Mertens.pdf>
-
-=item *
-
-John Brillhart, D. H. Lehmer, and J. L. Selfridge, "New Primality Criteria and Factorizations of 2^m +/- 1", Mathematics of Computation, v29, n130, Apr 1975, pp 620-647.  L<http://www.ams.org/journals/mcom/1975-29-130/S0025-5718-1975-0384673-1/S0025-5718-1975-0384673-1.pdf>
 
 =back
 

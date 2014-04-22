@@ -577,6 +577,30 @@ UV prime_count_approx(UV n)
   return (UV) (_XS_RiemannR( (long double) n ) + 0.5 );
 }
 
+/* See http://numbers.computation.free.fr/Constants/Primes/twin.pdf, page 5 */
+UV twin_prime_count_approx(UV n)
+{
+  /* Best would be another estimate for n < ~ 5000 */
+  if (n < 2000) return twin_prime_count(3,n);
+  {
+    /* Sebah and Gourdon 2002 */
+    const long double two_C2 = 1.32032363169373914785562422L;
+    const long double two_over_log_two = 2.8853900817779268147198494L;
+    long double ln = (long double) n;
+    long double logn = logl(ln);
+    long double li2 = _XS_ExponentialIntegral(logn) + two_over_log_two-ln/logn;
+    /* try to minimize MSE */
+    if      (n <    4000) li2 *= 1.0005 * logl(logl(logl(ln*4000)));
+    if      (n <    8000) li2 *= 0.9734 * logl(logl(logl(ln*4000)));
+    if      (n <   32000) li2 *= 0.8967 * logl(logl(logl(ln*4000)));
+    else if (n <  200000) li2 *= 0.8937 * logl(logl(logl(ln*4000)));
+    else if (n < 1000000) li2 *= 0.8793 * logl(logl(logl(ln*4000)));
+    else if (n < 4000000) li2 *= 0.8766 * logl(logl(logl(ln*4000)));
+    else if (n <10000000) li2 *= 0.8664 * logl(logl(logl(ln*4000)));
+    return (UV) (two_C2 * li2 + 0.5L);
+  }
+}
+
 UV prime_count_lower(UV n)
 {
   long double fn, flogn, lower, a;
@@ -682,7 +706,7 @@ UV nth_prime_upper(UV n)
   else if (n >=  39017)    /* Dusart 1999 page 14 */
     upper = fn * (flogn + flog2n - 0.9484);
   else if (n >=     6)     /* Modified from Robin 1983 for 6-39016 _only_ */
-    upper = fn * ( flogn  +  0.6000 * flog2n );
+    upper = fn * ( flogn  +  0.5982 * flog2n ) - 5;
   else
     upper = fn * ( flogn + flog2n );
 
@@ -719,47 +743,33 @@ UV nth_prime_lower(UV n)
 
   /* Dusart 2010 page 2, for all n >= 3 */
   lower = fn * (flogn + flog2n - 1.0 + ((flog2n-2.10)/flogn));
+  /* Tighten small values */
+  if      (n <  2679) lower = 1.003 * lower + 23;
+  else if (n < 14353) lower = 1.001 * lower + 21;
 
   return (UV) floorl(lower);
 }
 
 UV nth_prime_approx(UV n)
 {
-  long double fn, flogn, flog2n, approx, order;
+  long double fn, flogn;
+  UV lo, hi;
 
   if (n < NPRIMES_SMALL)
     return primes_small[n];
 
-  fn     = (long double) n;
-  flogn  = logl(n);
-  flog2n = logl(flogn);    /* Note distinction between log_2(n) and log^2(n) */
-
-  /* Cipolla 1902:
-   *    m=0   fn * ( flogn + flog2n - 1 );
-   *    m=1   + ((flog2n - 2)/flogn) );
-   *    m=2   - (((flog2n*flog2n) - 6*flog2n + 11) / (2*flogn*flogn))
-   *    + O((flog2n/flogn)^3)
-   */
-
-  approx = fn * (  flogn + flog2n - 1.0
-                 + ((flog2n - 2.0) / flogn)
-                 - (((flog2n*flog2n) - 6.0*flog2n + 11.0) / (2*flogn*flogn))
-                );
-
-  /* Apply a correction */
-  order = flog2n / flogn;
-  order = order * order * order * fn;
-  if      (n <      259) { approx += 10.4  * order; }
-  else if (n <      775) { approx +=  7.52 * order; }
-  else if (n <     1271) { approx +=  5.6  * order; }
-  else if (n <     2000) { approx +=  5.2  * order; }
-  else if (n <     4000) { approx +=  4.3  * order; }
-  else if (n <    12000) { approx +=  3.0  * order; }
-  else if (n <   150000) { approx +=  2.1  * order; }
-  else if (n <200000000) {                          }
-  else                   { approx += -0.01 * order; } /* -0.25 is closer */
-
-  return (UV) floorl(approx + 0.5);
+  /* Binary search for inverse Riemann R */
+  fn    = (long double) n;
+  flogn = logl(n);
+  lo    = (UV) (fn * flogn);
+  hi    = (UV) (fn * flogn * 2 + 2);
+  if (hi <= lo) hi = UV_MAX;
+  while (lo < hi) {
+    UV mid = lo + (hi-lo)/2;
+    if (_XS_RiemannR(mid) < fn) lo = mid+1;
+    else                        hi = mid;
+  }
+  return lo;
 }
 
 
@@ -848,6 +858,155 @@ UV nth_prime(UV n)
   return ( (segbase*30) + p );
 }
 
+#if BITS_PER_WORD < 64
+static const UV twin_steps[] =
+  {58980,48427,45485,43861,42348,41457,40908,39984,39640,39222,
+   373059,353109,341253,332437,326131,320567,315883,312511,309244,
+   2963535,2822103,2734294,2673728,
+  };
+static const unsigned int twin_num_exponents = 3;
+static const unsigned int twin_last_mult = 4;      /* 4000M */
+#else
+static const UV twin_steps[] =
+  {58980,48427,45485,43861,42348,41457,40908,39984,39640,39222,
+   373059,353109,341253,332437,326131,320567,315883,312511,309244,
+   2963535,2822103,2734294,2673728,2626243,2585752,2554015,2527034,2501469,
+   24096420,23046519,22401089,21946975,21590715,21300632,21060884,20854501,20665634,
+   199708605,191801047,186932018,183404596,180694619,178477447,176604059,174989299,173597482,
+   1682185723,1620989842,1583071291,1555660927,1534349481,1517031854,1502382532,1489745250, 1478662752,
+   14364197903,13879821868,13578563641,13361034187,13191416949,13053013447,12936030624,12835090276, 12746487898,
+   124078078589,120182602778,117753842540,115995331742,114622738809,113499818125,112551549250,111732637241,111012321565,
+   1082549061370,1050759497170,1030883829367,1016473645857,1005206830409,995980796683,988183329733,981441437376,975508027029,
+   9527651328494, 9264843314051, 9100153493509, 8980561036751, 8886953365929, 8810223086411, 8745329823109, 8689179566509, 8639748641098,
+   84499489470819, 82302056642520, 80922166953330, 79918799449753, 79132610984280, 78487688897426, 77941865286827, 77469296499217, 77053075040105,
+   754527610498466, 735967887462370, 724291736697048,
+  };
+static const unsigned int twin_num_exponents = 12;
+static const unsigned int twin_last_mult = 4;      /* 4e19 */
+#endif
+
+UV twin_prime_count(UV beg, UV end)
+{
+  unsigned char* segment;
+  UV sum = 0;
+
+  /* First use the tables of #e# from 1e7 to 2e16. */
+  if (beg <= 3 && end >= 10000000) {
+    UV mult, exp, step = 0, base = 10000000;
+    for (exp = 0; exp < twin_num_exponents && end >= base; exp++) {
+      for (mult = 1; mult < 10 && end >= mult*base; mult++) {
+        sum += twin_steps[step++];
+        beg = mult*base;
+        if (exp == twin_num_exponents-1 && mult >= twin_last_mult) break;
+      }
+      base *= 10;
+    }
+  }
+  if (beg <= 3 && end >= 3) sum++;
+  if (beg <= 5 && end >= 5) sum++;
+  if (beg < 11) beg = 7;
+  if (beg <= end) {
+    /* Make end points odd */
+    beg |= 1;
+    end = (end-1) | 1;
+    /* Cheesy way of counting the partial-byte edges */
+    while ((beg % 30) != 1) {
+      if (_XS_is_prime(beg) && _XS_is_prime(beg+2) && beg <= end) sum++;
+      beg += 2;
+    }
+    while ((end % 30) != 29) {
+      if (_XS_is_prime(end) && _XS_is_prime(end+2) && beg <= end) sum++;
+      end -= 2;  if (beg > end) break;
+    }
+  }
+  if (beg <= end) {
+    UV seg_base, seg_low, seg_high;
+    void* ctx = start_segment_primes(beg, end, &segment);
+    while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
+      UV p, bytes = (seg_high-seg_low+29)/30;
+      for (p = 0; p < bytes; p++) {
+        UV s = segment[p];
+        if (!(s & 0x0C)) sum++;
+        if (!(s & 0x30)) sum++;
+        if (!(s & 0x80)) {
+          if (p+1 < bytes) { if (!(segment[p+1] & 0x01))   sum++; }
+          else             { if (_XS_is_prime(seg_high+2)) sum++; }
+        }
+      }
+    }
+    end_segment_primes(ctx);
+  }
+  return sum;
+}
+
+UV nth_twin_prime(UV n)
+{
+  unsigned char* segment;
+  UV nth = 0;
+  UV beg, end;
+
+  if (n < 6) {
+    switch (n) {
+      case 0:  nth = 0; break;
+      case 1:  nth = 3; break;
+      case 2:  nth = 5; break;
+      case 3:  nth =11; break;
+      case 4:  nth =17; break;
+      case 5:
+      default: nth =29; break;
+    }
+    return nth;
+  }
+  n -= 5;
+  beg = 31;
+  end = UV_MAX - 16;
+  {
+    UV seg_base, seg_low, seg_high;
+    void* ctx = start_segment_primes(beg, end, &segment);
+    while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
+      UV p, bytes = (seg_high-seg_low+29)/30;
+      UV s = ((UV)segment[0]) << 8;
+      for (p = 0; p < bytes; p++) {
+        s >>= 8;
+        if (p+1 < bytes)                    s |= (((UV)segment[p+1]) << 8);
+        else if (!_XS_is_prime(seg_high+2)) s |= 0xFF00;
+        if (!(s & 0x000C) && !--n) { nth=seg_base+p*30+11; break; }
+        if (!(s & 0x0030) && !--n) { nth=seg_base+p*30+17; break; }
+        if (!(s & 0x0180) && !--n) { nth=seg_base+p*30+29; break; }
+      }
+      if (n == 0) break;
+    }
+    end_segment_primes(ctx);
+  }
+  return nth;
+}
+
+UV nth_twin_prime_approx(UV n)
+{
+  long double fn = (long double) n;
+  long double flogn = logl(n);
+  UV lo, hi;
+
+  if (n < 6)
+    return nth_twin_prime(n);
+  if (n > 59 && n < 1200)  /* Curve fit */
+    return (UV) (5.023 * fn*flogn*flogn / logl(logl(1600*fn*fn)));
+
+  /* Binary search on the TPC estimate.
+   * Good results require that the TPC estimate is both fast and accurate.
+   */
+  lo = (UV) (0.0 * fn * flogn * flogn);
+  hi = (UV) (3.0 * fn * flogn * flogn + 3);
+  if (hi <= lo) hi = UV_MAX;
+  while (lo < hi) {
+    UV mid = lo + (hi-lo)/2;
+    if (twin_prime_count_approx(mid) < fn) lo = mid+1;
+    else                                   hi = mid;
+  }
+  return lo;
+}
+
+
 /* Return a char array with lo-hi+1 elements. mu[k-lo] = µ(k) for k = lo .. hi.
  * It is the callers responsibility to call Safefree on the result. */
 #define PGTLO(p,lo)  ((p) >= lo) ? (p) : ((p)*(lo/(p)) + ((lo%(p))?(p):0))
@@ -906,9 +1065,50 @@ UV* _totient_range(UV lo, UV hi) {
   New(0, totients, hi-lo+1, UV);
 
   /* Do via factoring if very small or if we have a small range */
-  if (hi < 100 || hi/(hi-lo+1) > 1000) {
+  if (hi < 100 || (hi-lo) < 10 || hi/(hi-lo+1) > 1000) {
     for (i = lo; i <= hi; i++)
       totients[i-lo] = totient(i);
+    return totients;
+  }
+
+  /* If doing a full sieve, do it monolithic.  Faster. */
+  if (lo == 0) {
+    UV* prime;
+    double loghi = log(hi);
+    UV max_index = (hi < 67)     ? 18
+                 : (hi < 355991) ? 15+(hi/(loghi-1.09))
+                 : (hi/loghi) * (1.0+1.0/loghi+2.51/(loghi*loghi));
+    UV j, index, nprimes = 0;
+
+    New(0, prime, max_index, UV);  /* could use prime_count_upper(hi) */
+    memset(totients, 0, (hi-lo+1) * sizeof(UV));
+    for (i = 2; i <= hi/2; i++) {
+      index = 2*i;
+      if ( !(i&1) ) {
+        if (i == 2) { totients[2] = 1; prime[nprimes++] = 2; }
+        totients[index] = totients[i]*2;
+      } else {
+        if (totients[i] == 0) {
+          totients[i] = i-1;
+          prime[nprimes++] = i;
+        }
+        for (j=0; j < nprimes && index <= hi; index = i*prime[++j]) {
+          if (i % prime[j] == 0) {
+            totients[index] = totients[i]*prime[j];
+            break;
+          } else {
+            totients[index] = totients[i]*(prime[j]-1);
+          }
+        }
+      }
+    }
+    Safefree(prime);
+    /* All totient values have been filled in except the primes.  Mark them. */
+    for (i = ((hi/2) + 1) | 1; i <= hi; i += 2)
+      if (totients[i] == 0)
+        totients[i] = i-1;
+    totients[1] = 1;
+    totients[0] = 0;
     return totients;
   }
 
@@ -1197,13 +1397,14 @@ UV exp_mangoldt(UV n) {
   if      (n <= 1)           return 1;
   else if ((n & (n-1)) == 0) return 2;     /* Power of 2 */
   else if ((n & 1) == 0)     return 1;     /* Even number (not 2) */
+  else if (is_prob_prime(n)) return n;
   else {
-    UV i, factors[MPU_MAX_FACTORS+1];
-    UV nfactors = factor(n, factors);
-    for (i = 1; i < nfactors; i++)
-      if (factors[i] != factors[0])
-        return 1;
-    return factors[0];
+    int k = powerof(n);
+    if (k >= 2) {
+      n = (k==2) ? isqrt(n) : (UV)(pow(n,1.0/k)+0.0000001);
+      if (is_prob_prime(n)) return n;
+    }
+    return 1;
   }
 }
 

@@ -1,5 +1,36 @@
 Revision history for Perl module Math::Prime::Util
 
+0.40  2014-04-21
+
+    [ADDED]
+
+    - random_shawe_taylor_prime              FIPS 186-4 random proven prime
+    - random_shawe_taylor_prime_with_cert    as above with certificate
+    - twin_prime_count                       counts twin primes in range
+    - twin_prime_count_approx                fast approximation to Pi_2(n)
+    - nth_twin_prime                         returns the nth twin prime
+    - nth_twin_prime_approx                  estimates the nth twin prime
+
+    [FUNCTIONALITY AND PERFORMANCE]
+
+    - Update PP Frobenius-Underwood test.
+
+    - Speed up exp_mangoldt.
+
+    - nth_prime_approx uses inverse RiemannR in XS code for better accuracy.
+      Cippola 1902 is still used for PP and large values, with a slightly
+      more accurate third order correction.
+
+    - Tighten nth_prime_lower and nth_prime_upper for very small values.
+
+    - Fix legendre_phi when given tiny x and large a (odd test case).
+      Some speedups for huge a, from R. Andrew Ohana.
+
+    - Ranged totient is slightly faster with start of 0.
+
+    - Fix random_prime with a bigint prime high value.
+
+
 0.39  2014-03-01
 
     - Changed logl to log in AKS.  Critical for FreeBSD and NetBSD.

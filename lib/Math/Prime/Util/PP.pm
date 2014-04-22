@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.39';
+  $Math::Prime::Util::PP::VERSION = '0.40';
 }
 
 BEGIN {
@@ -149,12 +149,15 @@ sub _validate_positive_integer {
 }
 
 
-my @_primes_small = (
-   0,2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97,
-   101,103,107,109,113,127,131,137,139,149,151,157,163,167,173,179,181,191,
-   193,197,199,211,223,227,229,233,239,241,251,257,263,269,271,277,281,283,
-   293,307,311,313,317,331,337,347,349,353,359,367,373,379,383,389,397,401,
-   409,419,421,431,433,439,443,449,457,461,463,467,479,487,491,499,503,509);
+my @_primes_small = (0,2,3,5);
+{
+  my $sieveref = _sieve_erat_string(5000);
+  my $n = 5;
+  foreach my $s (split("0", substr($$sieveref, 3), -1)) {
+    $n += 2 + 2 * length($s);
+    push @_primes_small, $n if $n <= 5000;
+  }
+}
 my @_prime_next_small = (
    2,2,3,5,5,7,7,11,11,11,11,13,13,17,17,17,17,19,19,23,23,23,23,
    29,29,29,29,29,29,31,31,37,37,37,37,37,37,41,41,41,41,43,43,47,
@@ -459,6 +462,11 @@ sub next_prime {
   _validate_positive_integer($n);
 
   return $_prime_next_small[$n] if $n <= $#_prime_next_small;
+  if ($n < $_primes_small[-1]) {
+    my $i = _tiny_prime_count($n);  # Binary search
+    return $_primes_small[$i+1];
+  }
+
 
   $n = Math::BigInt->new(''.$_[0])
      if ref($n) ne 'Math::BigInt' && $n >= MPU_MAXPRIME;
@@ -752,10 +760,14 @@ sub exp_mangoldt {
   return 1 if defined $n && $n <= 1;  # n <= 1
   return 2 if ($n & ($n-1)) == 0;     # n power of 2
   return 1 unless $n & 1;             # even n can't be p^m
+  return $n if Math::Prime::Util::is_prob_prime($n); # prime n returns n
 
-  my @pe = Math::Prime::Util::factor_exp($n);
-  return 1 if scalar @pe > 1;
-  return $pe[0]->[0];
+  my $k = Math::Prime::Util::is_power($n);
+  if ($k >= 2) {
+    my $root = Math::BigInt->new("$n")->broot($k);
+    return $root if Math::Prime::Util::is_prob_prime($root);
+  }
+  1;
 }
 
 sub carmichael_lambda {
@@ -1155,9 +1167,8 @@ sub nth_prime_approx {
   elsif ($n <      12000) { $approx +=  3.0 * $order; }
   elsif ($n <     150000) { $approx +=  2.1 * $order; }
   elsif ($n <  200000000) { $approx +=  0.0 * $order; }
-  else                    { $approx += -0.010 * $order; }
-  # $approx = -0.025 is better for the last, but it gives problems with some
-  # other code that always wants the asymptotic approximation to be >= actual.
+  else                    { $approx += -0.025 * $order; }
+  # If we want the asymptotic approximation to be >= actual, use -0.010.
 
   return int($approx + 0.5);
 }
@@ -1328,6 +1339,67 @@ sub prime_count_upper {
 
   return Math::BigInt->new($result->bfloor->bstr()) if ref($result) eq 'Math::BigFloat';
   return int($result);
+}
+
+sub twin_prime_count {
+  my($low,$high) = @_;
+  if (defined $high) { _validate_positive_integer($low); }
+  else               { ($low,$high) = (2, $low);         }
+  _validate_positive_integer($high);
+  my $sum = 0;
+  # TODO: I suspect calling primes() on segments would be faster in most cases.
+  if ($high >= $low) {
+    my $p = next_prime($low-1);
+    my $p2 = next_prime($p);
+    while ($p <= $high) {
+      $sum++ if ($p2-$p) == 2;
+      ($p, $p2) = ($p2, next_prime($p2));
+    }
+  }
+  $sum;
+}
+
+sub twin_prime_count_approx {
+  my($n) = @_;
+  return twin_prime_count(3,$n) if $n < 2000;
+  $n = _upgrade_to_float($n) if ref($n);
+  my $logn = log($n);
+  my $li2 = ExponentialIntegral($logn) + 2.8853900817779268147198494 - ($n/$logn);
+  if    ($n <     4000) { $li2 *= 1.0005 * log(log(log($n*4000))); }
+  elsif ($n <     8000) { $li2 *= 0.9734 * log(log(log($n*4000))); }
+  elsif ($n <    32000) { $li2 *= 0.8967 * log(log(log($n*4000))); }
+  elsif ($n <   200000) { $li2 *= 0.8937 * log(log(log($n*4000))); }
+  elsif ($n <  1000000) { $li2 *= 0.8793 * log(log(log($n*4000))); }
+  elsif ($n <  4000000) { $li2 *= 0.8766 * log(log(log($n*4000))); }
+  elsif ($n < 10000000) { $li2 *= 0.8664 * log(log(log($n*4000))); }
+  return int(1.32032363169373914785562422 * $li2 + 0.5);
+}
+
+sub nth_twin_prime {
+  my($n) = @_;
+  my($nth, $p, $p2) = (0, 0, 3);
+  while ($n > 0) {
+    if (($p2-$p) == 2) { $nth = $p; $n--; }
+    ($p, $p2) = ($p2, next_prime($p2));
+  }
+  $nth;
+}
+
+sub nth_twin_prime_approx {
+  my($n) = @_;
+  return nth_twin_prime($n) if $n < 6;
+  $n = _upgrade_to_float($n) if ref($n);
+  my $nlogn2 = $n * log($n) * log($n);
+  return int(5.023 * $nlogn2/log(log(1600*$n*$n))) if $n > 59 && $n < 1200;
+
+  my $lo = int(1.0 * $nlogn2);
+  my $hi = int(3.0 * $nlogn2 + 3);
+  while ($lo < $hi) {
+    my $mid = $lo + (($hi-$lo) >> 1);
+    if (twin_prime_count_approx($mid) < $n) { $lo = $mid+1; }
+    else                                    { $hi = $mid;   }
+  }
+  return $lo;
 }
 
 
@@ -1993,41 +2065,43 @@ sub is_almost_extra_strong_lucas_pseudoprime {
 sub is_frobenius_underwood_pseudoprime {
   my($n) = @_;
   return 0+($n >= 2) if $n < 4;
-  return 0 if ($n % 2) == 0 || _is_perfect_square($n);
 
   $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+  return 0 if $n->is_even || _is_perfect_square($n);
 
   my $ZERO = $n->copy->bzero;
   my $ONE = $ZERO->copy->binc;
+  my $TWO = $ONE->copy->binc;
   my $fa = $ZERO + 1;
   my $fb = $ZERO + 2;
+  my $x;
 
-  my ($x, $t, $np1, $na) = (0, -1, $n+1, undef);
-  while ( kronecker($t, $n) != -1 ) {
-    $x++;
-    $t = $x*$x - 4;
+  if ($n % 4 == 3) {
+    $x = 0;
+  } elsif ($n % 6 == 5) {
+    $x = 1;
+  } else {
+    $x = 3;
+    $x++ while kronecker($x*$x-4, $n) == 1;
+    return 0 if kronecker($x*$x-4, $n) == 0; # gcd(x*x-4,n) is a factor
   }
-  my $len = length($np1->as_bin) - 2;
-  my $result = $x+$x+5;
+  my $np1string = substr( $n->copy->binc->as_bin, 2);
+  my $np1len = length($np1string);
   my $multiplier = $x+2;
-  $result %= $n if $result > $n;
   $multiplier %= $n if $multiplier > $n;
-  foreach my $bit (reverse 0 .. $len-2) {
-    $na = ($fa * $x) + ($fb + $fb);
-    $t = $fb + $fa;
-    $fb->bsub($fa)->bmul($t)->bmod($n);
-    $fa->bmul($na)->bmod($n);
-
-    #if ( ($np1 >> $bit) & 1 ) {
-    if ( $np1->copy->brsft($bit)->is_odd ) {
-      $t = $fb->copy;
-      $fb->badd($fb)->bsub($fa);
-      $fa->bmul($multiplier)->badd($t);
+  foreach my $bit (1 .. $np1len-1) {
+    my $t = ( $fa * ( $fa * $x + $TWO * $fb ) ) % $n;
+    $fb   = ( ( $fb - $fa ) * ( $fb + $fa ) ) % $n;
+    $fa   = $t;
+    if ( substr( $np1string, $bit, 1 ) ) {
+      $t  = $fa * $multiplier + $fb;
+      $fb = $fb * $TWO - $fa;
+      $fa = $t;
     }
   }
-  $fa->bmod($n);
-  $fb->bmod($n);
-  return ($fa == 0 && $fb == $result) ? 1 : 0;
+  $fa %= $n;
+  $fb %= $n;
+  return ($fa == 0 && $fb == (($TWO * $x + 5) % $n)) ? 1 : 0;
 }
 
 
@@ -2155,9 +2229,14 @@ sub is_aks_prime {
     $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
   }
 
+  my $_verbose = Math::Prime::Util::prime_get_config()->{'verbose'};
+  print "# aks r = $r  s = $rlimit\n" if $_verbose;
+  local $| = 1 if $_verbose > 1;
   for (my $a = 1; $a <= $rlimit; $a++) {
     return 0 unless _test_anr($a, $n, $r);
+    print "." if $_verbose > 1;
   }
+  print "\n" if $_verbose > 1;
 
   return 1;
 }
@@ -2229,7 +2308,7 @@ sub trial_factor {
       foreach my $finc (@incs) {
         if ($n->copy->bmod($f)->is_zero && $f->bacmp($limit) <= 0) {
           my $sf = ($f <= ''.~0) ? _bigint_to_int($f) : $f;
-          do { push @factors, $sf; $n = int($n/$f); } while (($n % $f) == 0);
+          do { push @factors, $sf; $n = ($n/$f)->bfloor(); } while (($n % $f) == 0);
           last SEARCH if $n->is_one;
           $limit = int( sqrt($n) + 0.001);
           $limit = $maxlim if $limit > $maxlim;
@@ -3442,7 +3521,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.39
+Version 0.40
 
 
 =head1 SYNOPSIS

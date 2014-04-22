@@ -104,6 +104,7 @@ t/20-primorial.t
 t/21-conseq-lcm.t
 t/22-aks-prime.t
 t/23-primality-proofs.t
+t/23-random-certs.t
 t/24-partitions.t
 t/30-relations.t
 t/31-threading.t
@@ -145,6 +146,8 @@ xt/test-primes-script2.pl
 xt/test-factor-yafu.pl
 xt/test-nextprime-yafu.pl
 xt/test-ispower.pl
+xt/twin_prime_count.t
+xt/nth_twin_prime.t
 .travis.yml
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)
