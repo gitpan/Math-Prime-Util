@@ -10,6 +10,7 @@ use Carp qw/carp croak confess/;
 package Math::Prime::Util;
 
 *_validate_num = \&Math::Prime::Util::PP::_validate_num;
+*_validate_integer = \&Math::Prime::Util::PP::_validate_integer;
 *_prime_memfreeall = \&Math::Prime::Util::PP::_prime_memfreeall;
 *prime_memfree  = \&Math::Prime::Util::PP::prime_memfree;
 *prime_precalc  = \&Math::Prime::Util::PP::prime_precalc;
@@ -149,14 +150,14 @@ sub is_pseudoprime {
   my($n, $base) = @_;
   return 0 if defined $n && int($n) < 0;
   _validate_positive_integer($n);
-  _validate_positive_integer($base);
+  _validate_positive_integer($base) if defined $base;
   return Math::Prime::Util::PP::is_pseudoprime($n, $base);
 }
 sub is_strong_pseudoprime {
   my($n, @bases) = @_;
   return 0 if defined $n && int($n) < 0;
   _validate_positive_integer($n);
-  croak "No bases given to miller_rabin" unless @bases;
+  croak "No bases given to is_strong_pseudoprime" unless @bases;
   return Math::Prime::Util::PP::is_strong_pseudoprime($n, @bases);
 }
 sub is_lucas_pseudoprime {
@@ -207,6 +208,13 @@ sub kronecker {
   _validate_positive_integer($va);
   _validate_positive_integer($vb);
   return Math::Prime::Util::PP::kronecker(@_);
+}
+
+sub binomial {
+  my($n, $k) = @_;
+  _validate_integer($n);
+  _validate_integer($k);
+  return Math::Prime::Util::PP::binomial($n, $k);
 }
 
 sub znorder {
@@ -316,10 +324,25 @@ sub divisor_sum {
 }
 
 sub gcd {
-  return Math::Prime::Util::PP::gcd(@_);
+  my(@v) = @_;
+  _validate_integer($_) for @v;
+  return Math::Prime::Util::PP::gcd(@v);
 }
 sub lcm {
-  return Math::Prime::Util::PP::lcm(@_);
+  my(@v) = @_;
+  _validate_integer($_) for @v;
+  return Math::Prime::Util::PP::lcm(@v);
+}
+sub vecsum {
+  my(@v) = @_;
+  _validate_integer($_) for @v;
+  return Math::Prime::Util::PP::vecsum(@v);
+}
+sub invmod {
+  my ($a, $n) = @_;
+  _validate_integer($a);
+  _validate_integer($n);
+  return Math::Prime::Util::PP::invmod($a,$n);
 }
 
 sub legendre_phi {
@@ -346,6 +369,14 @@ sub is_power {
   _validate_positive_integer($n);
   _validate_positive_integer($a) if defined $a;
   return Math::Prime::Util::PP::is_power($n, $a);
+}
+sub valuation {
+  my($n, $k) = @_;
+  $n = -$n if defined $n && $n < 0;
+  $k = -$k if defined $k && $k < 0;
+  _validate_positive_integer($n);
+  _validate_positive_integer($k);
+  return Math::Prime::Util::PP::valuation($n, $k);
 }
 
 #############################################################################
@@ -397,6 +428,10 @@ sub fordivisors (&$) {    ## no critic qw(ProhibitSubroutinePrototypes)
       $sub->();
     }
   }
+}
+
+sub forpart (&$;$) {    ## no critic qw(ProhibitSubroutinePrototypes)
+  Math::Prime::Util::PP::forpart(@_);
 }
 
 1;

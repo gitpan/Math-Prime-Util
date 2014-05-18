@@ -590,13 +590,13 @@ UV twin_prime_count_approx(UV n)
     long double logn = logl(ln);
     long double li2 = _XS_ExponentialIntegral(logn) + two_over_log_two-ln/logn;
     /* try to minimize MSE */
-    if      (n <    4000) li2 *= 1.0005 * logl(logl(logl(ln*4000)));
-    if      (n <    8000) li2 *= 0.9734 * logl(logl(logl(ln*4000)));
-    if      (n <   32000) li2 *= 0.8967 * logl(logl(logl(ln*4000)));
+    if      (n <    4000) li2 *= 1.2035 * logl(logl(logl(ln)));
+    else if (n <    8000) li2 *= 0.9439 * logl(logl(logl(ln*1000)));
+    else if (n <   32000) li2 *= 0.8967 * logl(logl(logl(ln*4000)));
     else if (n <  200000) li2 *= 0.8937 * logl(logl(logl(ln*4000)));
-    else if (n < 1000000) li2 *= 0.8793 * logl(logl(logl(ln*4000)));
-    else if (n < 4000000) li2 *= 0.8766 * logl(logl(logl(ln*4000)));
-    else if (n <10000000) li2 *= 0.8664 * logl(logl(logl(ln*4000)));
+    else if (n < 1000000) li2 *= 0.8640 * logl(logl(logl(ln*16000)));
+    else if (n < 4000000) li2 *= 0.8627 * logl(logl(logl(ln*16000)));
+    else if (n <10000000) li2 *= 0.8536 * logl(logl(logl(ln*16000)));
     return (UV) (two_C2 * li2 + 0.5L);
   }
 }
@@ -985,18 +985,18 @@ UV nth_twin_prime_approx(UV n)
 {
   long double fn = (long double) n;
   long double flogn = logl(n);
+  long double fnlog2n = fn * flogn * flogn;
   UV lo, hi;
 
   if (n < 6)
     return nth_twin_prime(n);
-  if (n > 59 && n < 1200)  /* Curve fit */
-    return (UV) (5.023 * fn*flogn*flogn / logl(logl(1600*fn*fn)));
 
   /* Binary search on the TPC estimate.
    * Good results require that the TPC estimate is both fast and accurate.
+   * These bounds are good for the actual nth_twin_prime values.
    */
-  lo = (UV) (0.0 * fn * flogn * flogn);
-  hi = (UV) (3.0 * fn * flogn * flogn + 3);
+  lo = (UV) (1.2 * fnlog2n);
+  hi = (UV) ( (n >= 1200) ? (1.7 * fnlog2n) : (2.3 * fnlog2n + 5) );
   if (hi <= lo) hi = UV_MAX;
   while (lo < hi) {
     UV mid = lo + (hi-lo)/2;
@@ -1257,6 +1257,18 @@ int is_power(UV n, UV a)
   return (ret == 1) ? 0 : ret;
 }
 
+UV valuation(UV n, UV k)
+{
+  UV v = 0;
+  UV kpower = k;
+  if (k < 2 || n < 2) return 0;
+  if (k == 2) return ctz(n);
+  while ( !(n % kpower) ) {
+    kpower *= k;
+    v++;
+  }
+  return v;
+}
 
 /* How many times does 2 divide n? */
 #define padic2(n)  ctz(n)
@@ -1312,6 +1324,28 @@ int kronecker_ss(IV a, IV b) {
   return kronecker_su(a, -b) * ((a < 0) ? -1 : 1);
 }
 
+/* Thanks to MJD and RosettaCode */
+UV binomial(UV n, UV k) {
+  UV d, g, r = 1;
+  if (k >= n) return (k == n);
+  if (k > n/2) k = n-k;
+  for (d = 1; d <= k; d++) {
+    if (r >= UV_MAX/n) {  /* Possible overflow */
+      UV nr, dr;  /* reduced numerator / denominator */
+      g = gcd_ui(n, d);  nr = n/g;  dr = d/g;
+      g = gcd_ui(r, dr);  r = r/g;  dr = dr/g;
+      if (r >= UV_MAX/nr) return 0;  /* Unavoidable overflow */
+      r *= nr;
+      r /= dr;
+      n--;
+    } else {
+      r *= n--;
+      r /= d;
+    }
+  }
+  return r;
+}
+
 UV totient(UV n) {
   UV i, nfacs, totient, lastf, facs[MPU_MAX_FACTORS+1];
   if (n <= 1) return n;
@@ -1344,6 +1378,9 @@ UV jordan_totient(UV k, UV n) {
   if (k > 6 || (k > 1 && n >= jordan_overflow[k-2])) return 0;
 
   totient = 1;
+  /* Similar to Euler totient, shortcut even inputs */
+  while ((n & 0x3) == 0) { n >>= 1; totient *= (1<<k); }
+  if ((n & 0x1) == 0) { n >>= 1; totient *= ((1<<k)-1); }
   nfac = factor(n,factors);
   for (i = 0; i < nfac; i++) {
     UV p = factors[i];
@@ -1439,25 +1476,19 @@ UV znorder(UV a, UV n) {
 UV znprimroot(UV n) {
   UV fac[MPU_MAX_FACTORS+1];
   UV exp[MPU_MAX_FACTORS+1];
-  UV a, j, phi;
+  UV a, phi;
   int i, nfactors;
   if (n <= 4) return (n == 0) ? 0 : n-1;
   if (n % 4 == 0)  return 0;
   if (is_prob_prime(n)) {
     phi = n-1;
-  } else {  /* Calculate Totient and Carmichael Lambda at same time */
-    UV lambda = 1;
-    nfactors = factor_exp(n, fac, exp);
-    phi = 1;
-    for (i = 0; i < nfactors; i++) {
-      UV pk = fac[i]-1;
-      for (j = 1; j < exp[i]; j++)
-        pk *= fac[i];
-      phi *= pk;
-      if (i == 0 && fac[0] == 2 && exp[0] > 2)  pk >>= 1;
-      lambda = lcm_ui(lambda, pk);
-    }
-    if (phi != lambda) return 0; /* prim root exists only if phi(n) = CL(n) */
+  } else {  /* prim root exists if n is 2, 4, p^a, or 2(p^a) for odd prime p */
+    if (n & 0x3) nfactors = factor_exp( (n&1) ? n : n>>1, fac, exp);
+    else         nfactors = 0;
+    if (nfactors != 1) return 0;
+    phi = fac[0]-1;  /* n = p^a for odd prime p.  Calculate totient. */
+    for (i = 1; i < (int)exp[0]; i++)
+      phi *= fac[0];
   }
   nfactors = factor_exp(phi, fac, exp);
   for (i = 0; i < nfactors; i++)
@@ -1472,38 +1503,18 @@ UV znprimroot(UV n) {
   return 0;
 }
 
-/* Calculate 1/a mod p.  From William Hart. */
-UV modinverse(UV a, UV p) {
-  IV u1 = 1, u3 = a;
-  IV v1 = 0, v3 = p;
-  IV t1 = 0, t3 = 0;
-  IV quot;
-  while (v3) {
-    quot = u3 - v3;
-    if (u3 < (v3<<2)) {
-      if (quot < v3) {
-        if (quot < 0) {
-          t1 = u1; u1 = v1; v1 = t1;
-          t3 = u3; u3 = v3; v3 = t3;
-        } else {
-          t1 = u1 - v1; u1 = v1; v1 = t1;
-          t3 = u3 - v3; u3 = v3; v3 = t3;
-        }
-      } else if (quot < (v3<<1)) {
-        t1 = u1 - (v1<<1); u1 = v1; v1 = t1;
-        t3 = u3 - (v3<<1); u3 = v3; v3 = t3;
-      } else {
-        t1 = u1 - v1*3; u1 = v1; v1 = t1;
-        t3 = u3 - v3*3; u3 = v3; v3 = t3;
-      }
-    } else {
-      quot = u3 / v3;
-      t1 = u1 - v1*quot; u1 = v1; v1 = t1;
-      t3 = u3 - v3*quot; u3 = v3; v3 = t3;
-    }
- }
- if (u1 < 0) u1 += p;
- return u1;
+/* Calculate 1/a mod n. */
+UV modinverse(UV a, UV n) {
+  IV t = 0;  UV nt = 1;
+  UV r = n;  UV nr = a;
+  while (nr != 0) {
+    UV quot = r / nr;
+    { UV tmp = nt;  nt = t - quot*nt;  t = tmp; }
+    { UV tmp = nr;  nr = r - quot*nr;  r = tmp; }
+  }
+  if (r > 1) return 0;  /* No inverse */
+  if (t < 0) t += n;
+  return t;
 }
 
 UV divmod(UV a, UV b, UV n) {   /* a / b  mod n */

@@ -6,7 +6,8 @@ use Test::More;
 use Math::Prime::Util
    qw/moebius mertens euler_phi jordan_totient divisor_sum exp_mangoldt
       chebyshev_theta chebyshev_psi carmichael_lambda znorder liouville
-      znprimroot znlog kronecker legendre_phi gcd lcm is_power
+      znprimroot znlog kronecker legendre_phi gcd lcm is_power valuation
+      invmod vecsum binomial
      /;
 
 my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
@@ -261,6 +262,14 @@ if ($use64) {
   push @kroneckers, [-5694706465843977004,9365273357682496999,-1];
 }
 
+my @valuations = (
+  [-4,2, 2],
+  [0,0, 0],
+  [1,0, 0],
+  [96552,6, 3],
+  [1879048192,2, 28],
+);
+
 my @legendre_sums = (
   [ 0,  92372, 0],
   [ 5,  15, 1],
@@ -358,6 +367,60 @@ if ($use64) {
   push @{$powers{9}}, 118587876497;
 }
 
+my @invmods = (
+ [ 0, 0, undef],
+ [ 1, 0, undef],
+ [ 0, 1, undef],
+ [ 1, 1, 0],
+ [ 45, 59, 21],
+ [  42,  2017, 1969],
+ [  42, -2017, 1969],
+ [ -42,  2017, 48],
+ [ -42, -2017, 48],
+ [ 14, 28474, undef],
+);
+if ($use64) {
+ push @invmods, [ 13, 9223372036854775808, 5675921253449092805 ];
+ push @invmods, [ 14, 18446744073709551615, 17129119497016012214 ];
+}
+
+my @vecsums = (
+  [ 0 ],
+  [ -1, -1 ],
+  [ 0, 1,-1 ],
+  [ 0, -1,1 ],
+  [ 0, -1,1 ],
+  [ 0, -2147483648,2147483648 ],
+  [ 0, "-4294967296","4294967296" ],
+  [ 0, "-9223372036854775808","9223372036854775808" ],
+  [ "18446744073709551615", "18446744073709551615","-18446744073709551615","18446744073709551615" ],
+  [ "55340232221128654848", "18446744073709551616","18446744073709551616","18446744073709551616" ],
+);
+
+my @binomials = (
+ [ 0,0, 1 ],
+ [ 0,1, 0 ],
+ [ 1,0, 1 ],
+ [ 1,1, 1 ],
+ [ 1,2, 0 ],
+ [ 13,13, 1 ],
+ [ 13,14, 0 ],
+ [ 35,16, 4059928950 ],             # We can do this natively even in 32-bit
+ [ 40,19, "131282408400" ],         # We can do this in 64-bit
+ [ 67,31, "11923179284862717872" ], # ...and this
+ [ 228,12, "30689926618143230620" ],# But the result of this is too big.
+ [ 177,78, "3314450882216440395106465322941753788648564665022000" ],
+ [ -10,5, -2002 ],
+ [ -11,22, 64512240 ],
+ [ -12,23, -286097760 ],
+ [ -23,-26, -2300 ],     # Kronenburg extension
+ [ -12,-23, -705432 ],   # same
+ [  12,-23, 0 ],
+ [  12,-12, 0 ],
+ [ -12,0, 1 ],
+ [  0,-1, 0 ],
+);
+
 # These are slow with XS, and *really* slow with PP.
 if (!$usexs) {
   %big_mertens = map { $_ => $big_mertens{$_} }
@@ -390,6 +453,10 @@ plan tests => 0 + 1
                 + scalar(@mult_orders)
                 + scalar(@znlogs)
                 + scalar(@legendre_sums)
+                + scalar(@valuations)
+                + 3 + scalar(@invmods)
+                + scalar(@vecsums)
+                + 2 + scalar(@binomials)
                 + scalar(keys %powers)
                 + scalar(keys %primroots) + 2
                 + scalar(keys %jordan_totients)
@@ -594,6 +661,37 @@ while (my($e, $vals) = each (%powers)) {
   }
   ok( @fail == 0, "is_power returns $e for " . join(",",@fail) );
 }
+
+###### valuation
+foreach my $r (@valuations) {
+  my($n, $k, $exp) = @$r;
+  is( valuation($n, $k), $exp, "valuation($n,$k) = $exp" );
+}
+###### invmod
+ok(!eval { invmod(undef,11); }, "invmod(undef,11)");
+ok(!eval { invmod(11,undef); }, "invmod(11,undef)");
+ok(!eval { invmod('nan',11); }, "invmod('nan',11)");
+
+foreach my $r (@invmods) {
+  my($a, $n, $exp) = @$r;
+  is( invmod($a,$n), $exp, "invmod($a,$n) = ".((defined $exp)?$exp:"<undef>") );
+}
+###### vecsum
+foreach my $r (@vecsums) {
+  my($exp, @vals) = @$r;
+  is( vecsum(@vals), $exp, "vecsum(@vals) = $exp" );
+}
+###### binomial
+foreach my $r (@binomials) {
+  my($n, $k, $exp) = @$r;
+  is( binomial($n,$k), $exp, "binomial($n,$k)) = $exp" );
+}
+is_deeply( [map { binomial(10, $_) } -15 .. 15],
+           [qw/0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 10 45 120 210 252 210 120 45 10 1 0 0 0 0 0/],
+           "binomial(10,n) for n in -15 .. 15" );
+is_deeply( [map { binomial(-10, $_) } -15 .. 15],
+           [qw/-2002 715 -220 55 -10 1 0 0 0 0 0 0 0 0 0 1 -10 55 -220 715 -2002 5005 -11440 24310 -48620 92378 -167960 293930 -497420 817190 -1307504/],
+           "binomial(-10,n) for n in -15 .. 15" );
 
 sub cmp_closeto {
   my $got = shift;

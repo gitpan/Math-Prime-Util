@@ -208,6 +208,7 @@ static int _vcallsubn(pTHX_ I32 flags, I32 stashflags, const char* name, int nar
        else                     { PUSHs(sv_2mortal(newSViv(r_))); } \
   } while (0)
 
+
 MODULE = Math::Prime::Util	PACKAGE = Math::Prime::Util
 
 PROTOTYPES: ENABLE
@@ -467,7 +468,7 @@ is_strong_pseudoprime(IN SV* svn, ...)
     int c, status = 1;
   PPCODE:
     if (items < 2)
-      croak("No bases given to miller_rabin");
+      croak("No bases given to is_strong_pseudoprime");
     /* Check all arguments */
     for (c = 0; c < items && status == 1; c++)
       if (_validate_int(aTHX_ ST(c), 0) != 1)
@@ -495,28 +496,49 @@ gcd(...)
   PROTOTYPE: @
   ALIAS:
     lcm = 1
+    vecsum = 2
   PREINIT:
     int i, status = 1;
     UV ret, nullv, n;
   PPCODE:
-    /* For each arg, while valid input, validate+gcd/lcm.  Shortcut stop. */
-    if (ix == 0) { ret = 0; nullv = 1; }
-    else         { ret = (items == 0) ? 0 : 1; nullv = 0; }
-    for (i = 0; i < items && ret != nullv && status != 0; i++) {
-      status = _validate_int(aTHX_ ST(i), 2);
-      if (status == 0)
-        break;
-      n = status * my_svuv(ST(i));  /* n = abs(arg) */
-      if (i == 0) {
-        ret = n;
-      } else {
-        UV gcd = gcd_ui(ret, n);
-        if (ix == 0) {
-          ret = gcd;
+    if (ix == 2) {
+      UV lo = 0;
+      IV hi = 0;
+      for (ret = i = 0; i < items; i++) {
+        status = _validate_int(aTHX_ ST(i), 2);
+        if (status == 0) break;
+        n = my_svuv(ST(i));
+        if (status == 1) {
+          hi += (n > (UV_MAX - lo));
         } else {
-          n /= gcd;
-          if (n <= (UV_MAX / ret) )    ret *= n;
-          else                         status = 0;   /* Overflow */
+          if (UV_MAX-n == (UV)IV_MAX) { status = 0; break; }  /* IV Overflow */
+          hi -= ((UV_MAX-n) >= lo);
+        }
+        lo += n;
+      }
+      if (status != 0 && hi == -1 && lo > IV_MAX)  XSRETURN_IV((IV)lo);
+      if (hi != 0) status = 0;  /* Overflow */
+      ret = lo;
+    } else {
+      /* For each arg, while valid input, validate+gcd/lcm.  Shortcut stop. */
+      if (ix == 0) { ret = 0; nullv = 1; }
+      else         { ret = (items == 0) ? 0 : 1; nullv = 0; }
+      for (i = 0; i < items && ret != nullv && status != 0; i++) {
+        status = _validate_int(aTHX_ ST(i), 2);
+        if (status == 0)
+          break;
+        n = status * my_svuv(ST(i));  /* n = abs(arg) */
+        if (i == 0) {
+          ret = n;
+        } else {
+          UV gcd = gcd_ui(ret, n);
+          if (ix == 0) {
+            ret = gcd;
+          } else {
+            n /= gcd;
+            if (n <= (UV_MAX / ret) )    ret *= n;
+            else                         status = 0;   /* Overflow */
+          }
         }
       }
     }
@@ -524,8 +546,9 @@ gcd(...)
       XSRETURN_UV(ret);
     switch (ix) {
       case 0: _vcallsub_with_gmp("gcd");  break;
-      case 1:
-      default:_vcallsub_with_gmp("lcm");  break;
+      case 1: _vcallsub_with_gmp("lcm");  break;
+      case 2:
+      default:_vcallsub_with_gmp("vecsum");  break;
     }
     return; /* skip implicit PUTBACK */
 
@@ -589,7 +612,7 @@ is_prime(IN SV* svn, ...)
       case 6: _vcallsub_with_gmp("is_frobenius_underwood_pseudoprime"); break;
       case 7: _vcallsub_with_gmp("is_aks_prime"); break;
       case 8: _vcallsub_with_gmp("is_power"); break;
-      case 9:_vcallsub_with_gmp("is_pseudoprime"); break;
+      case 9: _vcallsub_with_gmp("is_pseudoprime"); break;
       case 10:
       default:_vcallsub_with_gmp("is_almost_extra_strong_lucas_pseudoprime"); break;
     }
@@ -737,36 +760,54 @@ divisor_sum(IN SV* svn, ...)
 void
 znorder(IN SV* sva, IN SV* svn)
   ALIAS:
-    jordan_totient = 1
-    legendre_phi = 2
+    binomial = 1
+    jordan_totient = 2
+    legendre_phi = 3
   PREINIT:
     int astatus, nstatus;
   PPCODE:
-    astatus = _validate_int(aTHX_ sva, 0);
-    nstatus = _validate_int(aTHX_ svn, 0);
-    if (astatus == 1 && nstatus == 1) {
+    astatus = _validate_int(aTHX_ sva, (ix==1) ? 2 : 0);
+    nstatus = _validate_int(aTHX_ svn, (ix==1) ? 2 : 0);
+    if (astatus != 0 && nstatus != 0) {
       UV a = my_svuv(sva);
       UV n = my_svuv(svn);
       UV ret;
       switch (ix) {
         case 0:  ret = znorder(a, n);
-                 if (ret == 0) XSRETURN_UNDEF;  /* not defined */
                  break;
-        case 1:  ret = jordan_totient(a, n);
+        case 1:  if ( (astatus == 1 && (nstatus == -1 || n > a)) ||
+                      (astatus ==-1 && (nstatus == -1 && n > a)) )
+                   { ret = 0; break; }
+                 if (nstatus == -1)
+                   n = a - n; /* n<0,k<=n:  (-1)^(n-k) * binomial(-k-1,n-k) */
+                 if (astatus == -1) {
+                   ret = binomial( -my_sviv(sva)+n-1, n );
+                   if (ret > 0 && ret <= (UV)IV_MAX)
+                     XSRETURN_IV( (IV)ret * ((n&1) ? -1 : 1) );
+                   goto overflow;
+                 } else {
+                   ret = binomial(a, n);
+                   if (ret == 0)
+                     goto overflow;
+                 }
+                 break;
+        case 2:  ret = jordan_totient(a, n);
                  if (ret == 0 && n > 1)
                    goto overflow;
                  break;
-        case 2:
+        case 3:
         default: ret = legendre_phi(a, n);
                  break;
       }
+      if (ret == 0 && ix == 0)  XSRETURN_UNDEF;  /* not defined */
       XSRETURN_UV(ret);
     }
     overflow:
     switch (ix) {
       case 0:  _vcallsub_with_gmp("znorder");  break;
-      case 1:  _vcallsub_with_pp("jordan_totient");  break;
-      case 2:
+      case 1:  _vcallsub_with_pp("binomial");  break;
+      case 2:  _vcallsub_with_pp("jordan_totient");  break;
+      case 3:
       default: _vcallsub_with_pp("legendre_phi"); break;
     }
     return; /* skip implicit PUTBACK */
@@ -790,24 +831,54 @@ znlog(IN SV* sva, IN SV* svg, IN SV* svp)
 
 void
 kronecker(IN SV* sva, IN SV* svb)
+  ALIAS:
+    valuation = 1
+    invmod = 2
   PREINIT:
     int astatus, bstatus, abpositive, abnegative;
   PPCODE:
     astatus = _validate_int(aTHX_ sva, 2);
     bstatus = _validate_int(aTHX_ svb, 2);
-    /* Are both a and b positive? */
-    abpositive = astatus == 1 && bstatus == 1;
-    /* Will both fit in IVs?  We should use a bitmask return. */
-    abnegative = !abpositive
-                 && (astatus != 0 && SvIOK(sva) && !SvIsUV(sva))
-                 && (bstatus != 0 && SvIOK(svb) && !SvIsUV(svb));
-    if (abpositive || abnegative) {
-      UV a = my_svuv(sva);
-      UV b = my_svuv(svb);
-      int k = (abpositive) ? kronecker_uu(a,b) : kronecker_ss(a,b);
-      RETURN_NPARITY(k);
+    if (astatus != 0 && bstatus != 0) {
+      if (ix == 0) {
+        /* Are both a and b positive? */
+        abpositive = astatus == 1 && bstatus == 1;
+        /* Will both fit in IVs?  We should use a bitmask return. */
+        abnegative = !abpositive
+                     && (SvIOK(sva) && !SvIsUV(sva))
+                     && (SvIOK(svb) && !SvIsUV(svb));
+        if (abpositive || abnegative) {
+          UV a = my_svuv(sva);
+          UV b = my_svuv(svb);
+          int k = (abpositive) ? kronecker_uu(a,b) : kronecker_ss(a,b);
+          RETURN_NPARITY(k);
+        }
+      } else if (ix == 1) {
+        UV n = (astatus == -1) ? (UV)(-(my_sviv(sva))) : my_svuv(sva);
+        UV k = (bstatus == -1) ? (UV)(-(my_sviv(svb))) : my_svuv(svb);
+        /* valuation of 0-2 is very common, so return a constant if possible */
+        RETURN_NPARITY( valuation(n, k) );
+      } else {
+        UV a, n, ret = 0;
+        n = (bstatus != -1) ? my_svuv(svb) : (UV)(-(my_sviv(svb)));
+        if (n > 0) {
+          a = (astatus != -1) ? my_svuv(sva)
+                              : n * ((UV)(-my_sviv(sva))/n + 1) + my_sviv(sva);
+          if (a > 0) {
+            if (n == 1) XSRETURN_UV(0);
+            ret = modinverse(a, n);
+          }
+        }
+        if (ret == 0) XSRETURN_UNDEF;
+        XSRETURN_UV(ret);
+      }
     }
-    _vcallsub_with_gmp("kronecker");
+    switch (ix) {
+      case 0:  _vcallsub_with_gmp("kronecker");  break;
+      case 1:  _vcallsub_with_gmp("valuation"); break;
+      case 2:
+      default: _vcallsub_with_gmp("invmod"); break;
+    }
     return; /* skip implicit PUTBACK */
 
 NV
@@ -1087,34 +1158,51 @@ forcomposites (SV* block, IN SV* svbeg, IN SV* svend = 0)
     svarg = newSVuv(0);
     GvSV(PL_defgv) = svarg;
 #if USE_MULTICALL
-    if (!CvISXSUB(cv) && (end-beg) > 200) {
+    if (!CvISXSUB(cv) && end >= beg) {
       unsigned char* segment;
       UV seg_base, seg_low, seg_high, c, cbeg, cend, prevprime, nextprime;
       void* ctx;
       dMULTICALL;
       I32 gimme = G_VOID;
       PUSH_MULTICALL(cv);
-      if (beg <= 4) { /* sieve starts at 7, so handle this here */
-        sv_setuv(svarg, 4);  MULTICALL;
-        beg = 6;
+      if (beg >= MPU_MAX_PRIME ||
+#if BITS_PER_WORD == 64
+          (beg >= UVCONST(     100000000000000) && end-beg <    120000) ||
+          (beg >= UVCONST(      10000000000000) && end-beg <     50000) ||
+          (beg >= UVCONST(       1000000000000) && end-beg <     20000) ||
+#endif
+          end-beg < 1000 ) {
+        beg = (beg <= 4) ? 3 : beg-1;
+        nextprime = next_prime(beg);
+        while (beg++ < end) {
+          if (beg == nextprime)  nextprime = next_prime(beg);
+          else                   { sv_setuv(svarg, beg); MULTICALL; }
+        }
+      } else {
+        if (beg <= 4) { /* sieve starts at 7, so handle this here */
+          sv_setuv(svarg, 4);  MULTICALL;
+          beg = 6;
+        }
+        /* Find the two primes that bound their interval. */
+        /* beg must be < max_prime, and end >= max_prime is special. */
+        prevprime = prev_prime(beg);
+        nextprime = (end >= MPU_MAX_PRIME) ? MPU_MAX_PRIME : next_prime(end);
+        ctx = start_segment_primes(beg, nextprime, &segment);
+        while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
+          START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {
+            cbeg = prevprime+1;  if (cbeg < beg) cbeg = beg;
+            prevprime = seg_base + p;
+            cend = prevprime-1;  if (cend > end) cend = end;
+            for (c = cbeg; c <= cend; c++) {
+              sv_setuv(svarg, c);  MULTICALL;
+            }
+          } END_DO_FOR_EACH_SIEVE_PRIME
+        }
+        end_segment_primes(ctx);
+        if (end > nextprime)   /* Complete the case where end > max_prime */
+          while (nextprime++ < end)
+            { sv_setuv(svarg, nextprime);  MULTICALL; }
       }
-      /* Find the two primes that bound their interval. */
-      /* If beg or end are >= max_prime, then this will die. */
-      prevprime = prev_prime(beg);
-      nextprime = next_prime(end);
-      ctx = start_segment_primes(beg, nextprime, &segment);
-      while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
-        START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {
-          cbeg = prevprime+1;  if (cbeg < beg) cbeg = beg;
-          prevprime = seg_base + p;
-          cend = prevprime-1;  if (cend > end) cend = end;
-          for (c = cbeg; c <= cend; c++) {
-            sv_setuv(svarg, c);  MULTICALL;
-          }
-        } END_DO_FOR_EACH_SIEVE_PRIME
-      }
-      end_segment_primes(ctx);
-      MPUassert( nextprime >= end, "composite sieve skipped end numbers" );
       FIX_MULTICALL_REFCOUNT;
       POP_MULTICALL;
     }
@@ -1181,3 +1269,94 @@ fordivisors (SV* block, IN SV* svn)
     }
     SvREFCNT_dec(svarg);
     Safefree(divs);
+
+void
+forpart (SV* block, IN SV* svn, IN SV* svh = 0)
+  PROTOTYPE: &$;$
+  PREINIT:
+    UV i, n, amin, amax, nmin, nmax;
+    GV *gv;
+    HV *stash;
+    CV *cv;
+    SV** svals;
+  PPCODE:
+    cv = sv_2cv(block, &stash, &gv, 0);
+    if (cv == Nullcv)
+      croak("Not a subroutine reference");
+    if (!_validate_int(aTHX_ svn, 0)) {
+      _vcallsub_with_pp("forpart");
+      return;
+    }
+    n = my_svuv(svn);
+    if (n > (UV_MAX-2)) croak("forpart argument overflow");
+
+    New(0, svals, n+1, SV*);
+    for (i = 0; i <= n; i++) {
+      svals[i] = newSVuv(i);
+      SvREADONLY_on(svals[i]);
+    }
+
+    amin = 0;  amax = n;  nmin = 0;  nmax = n;
+    if (svh != 0) {
+      HV* rhash;
+      SV** svp;
+      if (!SvROK(svh) || SvTYPE(SvRV(svh)) != SVt_PVHV)
+        croak("forpart second argument must be a hash reference");
+      rhash = (HV*) SvRV(svh);
+      if ((svp = hv_fetchs(rhash, "n", 0)) != NULL)
+        { nmin = my_svuv(*svp);  nmax = nmin; }
+      if ((svp = hv_fetchs(rhash, "amin", 0)) != NULL) amin = my_svuv(*svp);
+      if ((svp = hv_fetchs(rhash, "amax", 0)) != NULL) amax = my_svuv(*svp);
+      if ((svp = hv_fetchs(rhash, "nmin", 0)) != NULL) nmin = my_svuv(*svp);
+      if ((svp = hv_fetchs(rhash, "nmax", 0)) != NULL) nmax = my_svuv(*svp);
+      if (amin < 1) amin = 1;
+      if (amax > n) amax = n;
+      if (nmax > n) nmax = n;
+    }
+
+    { /* ZS1 algorithm from Zoghbi and Stojmenovic 1998) */
+      UV *x, m, h;
+      New(0, x, n+2, UV);  /* plus 2 because of n=0 */
+      for (i = 0; i <= n; i++)  x[i] = 1;
+      x[1] = n;
+      m = (n > 0) ? 1 : 0;   /* n=0 => one call with empty list */
+      h = 1;
+
+      if (x[1] > amax) { /* x[1] is always decreasing, so handle it here */
+        UV t = n - amax;
+        x[h] = amax;
+        while (t >= amax) {  x[++h] = amax;  t -= amax;  }
+        m = h + (t > 0);
+        if (t > 1)  x[++h] = t;
+      }
+
+      /* More restriction optimizations would be useful. */
+      while (1) {
+        if (m >= nmin && m <= nmax && x[m] >= amin)
+        { dSP; ENTER; PUSHMARK(SP);
+          EXTEND(SP, m); for (i=1; i <= m; i++) { PUSHs(svals[x[i]]); }
+          PUTBACK; call_sv((SV*)cv, G_VOID|G_DISCARD); LEAVE;
+        }
+        if (x[1] <= 1 || x[1] < amin) break;
+        /* Skip forward if restricted and we can move on. */
+        if (x[2] < amin || (m > nmax && (n-x[1]+x[2]-1)/x[2] >= nmax)) {
+          for (m = 1; n >= (x[1] + m); m++)
+            x[m+1] = 1;
+          h = 1;
+        }
+        if (x[h] == 2) {
+          m++;  x[h--] = 1;
+        } else {
+          UV r = x[h]-1;
+          UV t = m-h+1;
+          x[h] = r;
+          while (t >= r) {  x[++h] = r;  t -= r;  }
+          m = h + (t > 0);
+          if (t > 1)  x[++h] = t;
+        }
+      }
+      Safefree(x);
+    }
+    for (i = 0; i <= n; i++)
+      SvREFCNT_dec(svals[i]);
+    Safefree(svals);

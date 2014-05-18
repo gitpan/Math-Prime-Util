@@ -27,6 +27,7 @@ extern UV  nth_twin_prime_approx(UV n);
 
 extern int powerof(UV n);
 extern int is_power(UV n, UV a);
+extern UV valuation(UV n, UV k);
 
 extern signed char* _moebius_range(UV low, UV high);
 extern UV*    _totient_range(UV low, UV high);
@@ -43,6 +44,7 @@ extern int kronecker_uu(UV a, UV b);
 extern int kronecker_su(IV a, UV b);
 extern int kronecker_ss(IV a, IV b);
 
+extern UV binomial(UV n, UV k);
 extern UV modinverse(UV a, UV p);    /* Returns 1/a mod p */
 extern UV divmod(UV a, UV b, UV n);  /* Returns a/b mod n */
 

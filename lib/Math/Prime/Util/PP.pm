@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.40';
+  $Math::Prime::Util::PP::VERSION = '0.41';
 }
 
 BEGIN {
@@ -145,6 +145,32 @@ sub _validate_positive_integer {
   $_[0]->upgrade(undef) if ref($_[0]) && $_[0]->upgrade();
   croak "Parameter '$_[0]' must be >= $min" if defined $min && $_[0] < $min;
   croak "Parameter '$_[0]' must be <= $max" if defined $max && $_[0] > $max;
+  1;
+}
+
+sub _validate_integer {
+  my($n) = @_;
+  croak "Parameter must be defined" if !defined $n;
+  if (ref($n) eq 'CODE') {
+    $_[0] = $_[0]->();
+    $n = $_[0];
+  }
+  my $poscmp = OLD_PERL_VERSION ?  562949953421312 : ''.~0;
+  my $negcmp = OLD_PERL_VERSION ? -562949953421312 : -(~0 >> 1);
+  if (ref($n) eq 'Math::BigInt') {
+    croak "Parameter '$n' must be an integer" if !$n->is_int();
+    $_[0] = _bigint_to_int($_[0]) if $n <= $poscmp && $n >= $negcmp;
+  } else {
+    my $strn = "$n";
+    croak "Parameter '$strn' must be an integer"
+      if $strn =~ tr/-0123456789//c && $strn !~ /^[-+]?\d+$/;
+    if ($n <= $poscmp && $n >= $negcmp) {
+      $_[0] = $strn if ref($n);
+    } else {
+      $_[0] = Math::BigInt->new($strn)
+    }
+  }
+  $_[0]->upgrade(undef) if ref($_[0]) && $_[0]->upgrade();
   1;
 }
 
@@ -467,9 +493,9 @@ sub next_prime {
     return $_primes_small[$i+1];
   }
 
-
-  $n = Math::BigInt->new(''.$_[0])
-     if ref($n) ne 'Math::BigInt' && $n >= MPU_MAXPRIME;
+  return Math::BigInt->new(MPU_32BIT ? "4294967311" : "18446744073709551629")
+    if ref($n) ne 'Math::BigInt' && $n >= MPU_MAXPRIME;
+  # n is now either 1) not bigint and < maxprime, or (2) bigint and >= uvmax
 
   #$n = ($n+1) | 1;
   #while (    !($n%3) || !($n%5) || !($n%7) || !($n%11) || !($n%13)
@@ -1484,6 +1510,41 @@ sub lcm {
   $lcm = _bigint_to_int($lcm) if $lcm->bacmp(''.~0) <= 0;
   return $lcm;
 }
+sub vecsum {
+  my $sum = 0;
+  my $neglim = -(~0 >> 1) - 1;
+  foreach my $v (@_) {
+    $sum += $v;
+    if ($sum > ~0 || $sum < $neglim) {
+      $sum = BZERO->copy;
+      $sum->badd("$_") for @_;
+      return $sum;
+    }
+  }
+  $sum;
+}
+sub invmod {
+  my($a,$n) = @_;
+  return if $n == 0 || $a == 0;
+  return 0 if $n == 1;
+  $n = -$n if $n < 0;  # Pari semantics
+  if ($n > ~0) {
+    my $invmod = Math::BigInt->new("$a")->bmodinv("$n");
+    return if !defined $invmod || $invmod->is_nan;
+    $invmod = _bigint_to_int($invmod) if $invmod->bacmp(''.~0) <= 0;
+    return $invmod;
+  }
+  my($t,$nt,$r,$nr) = (0, 1, $n, $a % $n);
+  while ($nr != 0) {
+    # Use mod before divide to force correct behavior with high bit set
+    my $quot = int( ($r-($r % $nr))/$nr );
+    ($nt,$t) = ($t-$quot*$nt,$nt);
+    ($nr,$r) = ($r-$quot*$nr,$nr);
+  }
+  return if $r > 1;
+  $t += $n if $t < 0;
+  $t;
+}
 
 # no validation, x is allowed to be negative, y must be >= 0
 sub _gcd_ui {
@@ -1521,6 +1582,26 @@ sub is_power {
   0;
 }
 
+sub valuation {
+  my($n, $k) = @_;
+  return 0 if $n < 2 || $k < 2;
+  my $v = 0;
+  if ($k == 2) { # Accelerate power of 2
+    if (ref($n) eq 'Math::BigInt') {   # This can pay off for big inputs
+      return 0 unless $n->is_even;
+      my $s = $n->as_bin;              # We could do same for k=10
+      return length($s) - rindex($s,'1') - 1;
+    }
+    while (!($n & 0xFFFF) ) {  $n >>=16;  $v +=16;  }
+    while (!($n & 0x000F) ) {  $n >>= 4;  $v += 4;  }
+  }
+  while ( !($n % $k) ) {
+    $n /= $k;
+    $v++;
+  }
+  $v;
+}
+
 
 sub is_pseudoprime {
   my($n, $base) = @_;
@@ -1528,6 +1609,7 @@ sub is_pseudoprime {
   _validate_positive_integer($n);
 
   if ($n < 5) { return ($n == 2) || ($n == 3) ? 1 : 0; }
+  $base = 2 if !defined $base;
   croak "Base $base is invalid" if $base < 2;
   if ($base >= $n) {
     $base = $base % $n;
@@ -1713,6 +1795,69 @@ sub kronecker {
   return ($b == 1) ? $k : 0;
 }
 
+sub _binomialu {
+  my($r, $n, $k) = (1, @_);
+  return ($k == $n) ? 1 : 0 if $k >= $n;
+  $k = $n - $k if $k > ($n >> 1);
+  foreach my $d (1 .. $k) {
+    if ($r >= int(~0/$n)) {
+      my($g, $nr, $dr);
+      $g = _gcd_ui($n, $d);   $nr = int($n/$g);   $dr = int($d/$g);
+      $g = _gcd_ui($r, $dr);  $r  = int($r/$g);   $dr = int($dr/$g);
+      return 0 if $r >= int(~0/$nr);
+      $r *= $nr;
+      $r = int($r/$dr);
+    } else {
+      $r *= $n;
+      $r = int($r/$d);
+    }
+    $n--;
+  }
+  $r;
+}
+
+sub binomial {
+  my($n, $k) = @_;
+
+  # 1. Try GMP
+  if (defined &Math::Prime::Util::GMP::binomial && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+    return Math::Prime::Util::_reftyped($_[0], Math::Prime::Util::GMP::binomial($n,$k));
+  }
+
+  # 2. Exit early for known 0 cases, and adjust k to be positive.
+  if ($n >= 0) {  return 0 if $k < 0 || $k > $n;  }
+  else         {  return 0 if $k < 0 && $k > $n;  }
+  $k = $n - $k if $k < 0;
+
+  # 3. Try to do in integer Perl
+  my $r;
+  if ($n >= 0) {
+    $r = _binomialu($n, $k);
+    return $r  if $r > 0;
+  } else {
+    $r = _binomialu(-$n+$k-1, $k);
+    return $r   if $r > 0 && !($k & 1);
+    return -$r  if $r > 0 && $r <= (~0>>1);
+  }
+
+  # 4. Overflow.  Solve using Math::BigInt
+  return 1 if $k == 0;        # Work around bug in old
+  return $n if $k == $n-1;    # Math::BigInt (fixed in 1.90)
+  if ($n >= 0) {
+    $r = Math::BigInt->new($n)->bnok($k);
+    $r = _bigint_to_int($r) if $r->bacmp(''.~0) <= 0;
+  } else { # Math::BigInt is incorrect for negative n
+    $r = Math::BigInt->new(-$n+$k-1)->bnok($k);
+    if ($k & 1) {
+      $r->bneg;
+      $r = _bigint_to_int($r) if $r->bacmp(''.(~0>>1)) <= 0;
+    } else {
+      $r = _bigint_to_int($r) if $r->bacmp(''.~0) <= 0;
+    }
+  }
+  $r;
+}
+
 sub _is_perfect_square {
   my($n) = @_;
 
@@ -1868,8 +2013,8 @@ sub lucas_sequence {
 
   croak "lucas_sequence: n must be >= 2" if $n < 2;
   croak "lucas_sequence: k must be >= 0" if $k < 0;
-  croak "lucas_sequence: P out of range" if $P < 0 || $P >= $n;
-  croak "lucas_sequence: Q out of range" if $Q >= $n;
+  croak "lucas_sequence: P out of range" if abs($P) >= $n;
+  croak "lucas_sequence: Q out of range" if abs($Q) >= $n;
 
   $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
 
@@ -1877,7 +2022,13 @@ sub lucas_sequence {
   $P = $ZERO+$P unless ref($P) eq 'Math::BigInt';
   $Q = $ZERO+$Q unless ref($Q) eq 'Math::BigInt';
   my $D = $P*$P - BTWO*BTWO*$Q;
-  croak "lucas_sequence: D is zero" if $D->is_zero;
+  if ($D->is_zero) {
+    my $S = ($ZERO+$P) >> 1;
+    my $U = $S->copy->bmodpow($k-1,$n)->bmul($k)->bmod($n);
+    my $V = $S->copy->bmodpow($k,$n)->bmul(BTWO)->bmod($n);
+    my $Qk = ($ZERO+$Q)->bmodpow($k, $n);
+    return ($U, $V, $Qk);
+  }
   my $U = BONE->copy;
   my $V = $P->copy;
   my $Qk = $Q->copy;
@@ -2209,7 +2360,7 @@ sub is_aks_prime {
   while ($r < $n) {
     return 0 if !($n % $r);
     #return 1 if $r >= $sqrtn;
-    last if znorder($r, $n) > $limit;
+    last if znorder($n, $r) > $limit;  # Note the arguments!
     $r = next_prime($r);
   }
 
@@ -3108,6 +3259,7 @@ sub ExponentialIntegral {
     Math::MPFR::Rmpfr_set_prec($eix, $bit_precision);
     Math::MPFR::Rmpfr_eint($eix, $rx, $rnd);
     my $strval = Math::MPFR::Rmpfr_get_str($eix, 10, 0, $rnd);
+    Math::MPFR::Rmpfr_free_cache();
     return ($wantbf)  ?  Math::BigFloat->new($strval,$wantbf)  :  0.0 + $strval;
   }
 
@@ -3209,6 +3361,7 @@ sub LogarithmicIntegral {
     Math::MPFR::Rmpfr_set_prec($lix, $bit_precision);
     Math::MPFR::Rmpfr_eint($lix, $rx, $rnd);
     my $strval = Math::MPFR::Rmpfr_get_str($lix, 10, 0, $rnd);
+    Math::MPFR::Rmpfr_free_cache();
     return ($wantbf)  ?  Math::BigFloat->new($strval,$wantbf)  :  0.0 + $strval;
   }
 
@@ -3502,6 +3655,44 @@ sub RiemannR {
   return $sum;
 }
 
+sub forpart {
+  my($sub, $n, $rhash) = @_;
+  _validate_positive_integer($n);
+  my($mina, $maxa, $minn, $maxn) = (0,$n,0,$n);
+  if (defined $rhash) {
+    croak "forpart second argument must be a hash reference"
+      unless ref($rhash) eq 'HASH';
+    $minn = $maxn = $rhash->{n} if defined $rhash->{n};
+    $mina = $rhash->{amin} if defined $rhash->{amin};
+    $maxa = $rhash->{amax} if defined $rhash->{amax};
+    $minn = $rhash->{nmin} if defined $rhash->{nmin};
+    $maxn = $rhash->{nmax} if defined $rhash->{nmax};
+   _validate_positive_integer($mina);
+   _validate_positive_integer($maxa);
+   _validate_positive_integer($minn);
+   _validate_positive_integer($maxn);
+  }
+  my @x = (1) x ($n+1);
+  my $m = ($n > 0) ? 1 : 0;
+  my $h = 1;
+  $x[1] = $n;
+  while (1) {
+    $sub->(@x[1 .. $m])
+      if $m >= $minn && $m <= $maxn && $x[$m] >= $mina && $x[1] <= $maxa;
+    last if $x[1] <= 1;
+    if ($x[$h] == 2) {
+      $m++; $x[$h] = 1; $h--; }
+    else {
+      my $r = $x[$h] - 1;
+      my $t = $m - $h + 1;
+      $x[$h] = $r;
+      while ($t >= $r) { $h++; $x[$h] = $r; $t -= $r; }
+      if ($t == 0) { $m = $h }
+      else         { $m = $h+1; if ($t > 1) { $h++; $x[$h] = $t; } }
+    }
+  }
+}
+
 1;
 
 __END__
@@ -3521,7 +3712,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.40
+Version 0.41
 
 
 =head1 SYNOPSIS

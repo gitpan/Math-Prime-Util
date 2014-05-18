@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.40';
+  $Math::Prime::Util::VERSION = '0.41';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -27,7 +27,7 @@ our @EXPORT_OK =
       miller_rabin miller_rabin_random
       lucas_sequence
       primes
-      forprimes forcomposites fordivisors
+      forprimes forcomposites fordivisors forpart
       prime_iterator prime_iterator_object
       next_prime  prev_prime
       prime_count
@@ -40,12 +40,12 @@ our @EXPORT_OK =
       random_maurer_prime random_maurer_prime_with_cert
       random_shawe_taylor_prime random_shawe_taylor_prime_with_cert
       primorial pn_primorial consecutive_integer_lcm
-      gcd lcm factor factor_exp all_factors divisors
+      gcd lcm factor factor_exp all_factors divisors valuation invmod vecsum
       moebius mertens euler_phi jordan_totient exp_mangoldt liouville
       partitions
       chebyshev_theta chebyshev_psi
-      divisor_sum
-      carmichael_lambda kronecker znorder znprimroot znlog legendre_phi
+      divisor_sum carmichael_lambda
+      kronecker binomial znorder znprimroot znlog legendre_phi
       ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR
   );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
@@ -626,6 +626,7 @@ sub _generic_factor_exp {
 sub lucas_sequence {
   my($n, $P, $Q, $k) = @_;
   _validate_num($n) || _validate_positive_integer($n);
+  croak("Invalid input to lucas_sequence:  modulus n must be > 1") if $n <= 1;
   _validate_num($k) || _validate_positive_integer($k);
   { my $testP = (!defined $P || $P >= 0) ? $P : -$P;
     _validate_num($testP) || _validate_positive_integer($testP); }
@@ -812,7 +813,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords forprimes forcomposites fordivisors Möbius Deléglise totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm
+=for stopwords forprimes forcomposites fordivisors forpart Möbius Deléglise totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum
 
 
 =head1 NAME
@@ -822,7 +823,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.40
+Version 0.41
 
 
 =head1 SYNOPSIS
@@ -915,6 +916,8 @@ Version 0.40
   say chebyshev_psi(234984);
   say chebyshev_theta(92384234);
   say partitions(1000);
+  # Show all prime partitions of 25
+  forpart { say "@_" unless scalar grep { !is_prime($_) } @_ } 25;
 
   # divisor sum
   $sigma  = divisor_sum( $n );       # sum of divisors
@@ -1164,9 +1167,9 @@ Objects can be passed to functions, and allow early loop exits.
   forcomposites { say } 2000,2020;
 
 Given a block and either an end number or a start and end pair, calls the
-block for each composite in the inclusive range.  The composites are the
-numbers greater than 1 which are not prime:
-C<4, 6, 8, 9, 10, 12, 14, 15, ...>
+block for each composite in the inclusive range.  The composites,
+L<OEIS A002808|http://oeis.org/A002808>, are the numbers greater than 1
+which are not prime:  C<4, 6, 8, 9, 10, 12, 14, 15, ...>
 
 
 =head2 fordivisors
@@ -1175,6 +1178,30 @@ C<4, 6, 8, 9, 10, 12, 14, 15, ...>
 
 Given a block and a non-negative number C<n>, the block is called with
 C<$_> set to each divisor in sorted order.  Also see L</divisor_sum>.
+
+
+=head2 forpart
+
+  forpart { say "@_" } 25;           # unrestricted partitions
+  forpart { say "@_" } 25,{n=>5}     # ... with exactly 5 values
+  forpart { say "@_" } 25,{nmax=>5}  # ... with <=5 values
+
+Given a non-negative number C<n>, the block is called with C<@_> set to
+the array of additive integer partitions.  The operation is very similar
+to the C<forpart> function in Pari/GP 2.6.x, though the ordering is
+different.  The algorithm is ZS1 from Zoghbi and Stojmenović (1998), hence
+the ordering is identical to that of L<Integer::Partition>.
+Use L</partitions> to get just the count of unrestricted partitions.
+
+
+An optional hash reference may be given to produce restricted partitions.
+Each value must be a non-negative integer.  The allowable keys are:
+
+  n       restrict to exactly this many values
+  amin    all elements must be at least this value
+  amax    all elements must be at most this value
+  nmin    the array must have at least this many values
+  nmax    the array must have at most this many values
 
 =head2 prime_iterator
 
@@ -1858,9 +1885,8 @@ Computes C<U_k>, C<V_k>, and C<Q_k> for the Lucas sequence defined by
 C<P>,C<Q>, modulo C<n>.  The modular Lucas sequence is used in a
 number of primality tests and proofs.
 The following conditions must hold:
-C< D = P*P - 4*Q != 0>  ;
-C< 0 E<lt> P E<lt> n>  ;
-C< Q E<lt> n>  ;
+C< |P| E<lt> n>  ;
+C< |Q| E<lt> n>  ;
 C< k E<gt>= 0>  ;
 C< n E<gt>= 2>.
 
@@ -1878,10 +1904,47 @@ follow the semantics of Mathematica, Pari, and Perl 6, re:
   lcm(0, n) = 0              Any zero in list results in zero return
   lcm(n,-m) = lcm(n, m)      We use the absolute values
 
+
+=head2 vecsum
+
+  say "Totient sum 500,000: ", vecsum(euler_phi(0,500_000));
+
+Returns the sum of all arguments, each of which must be an integer.  This
+is similar to List::Util's L<List::Util/sum0> function, but has a very
+important difference.  List::Util turns all inputs into doubles and returns
+a double, which will mean incorrect results with large integers.  C<vecsum>
+sums (signed) integers and returns the untruncated result.  Processing is
+done on native integers while possible.
+
+
+=head2 invmod
+
+  say "The inverse of 42 mod 2017 = ", invmod(42,2017);
+
+Given two integers C<a> and C<n>, return the inverse of C<a> modulo C<n>.
+If not defined, undef is returned.  If defined, then the return value
+multiplied by C<a> equals C<1> modulo C<n>.
+
+This results correspond to the Pari result of C<lift(Mod(1/a,n))>.  The
+semantics with respect to negative arguments match Pari.  Notably, a
+negative C<n> is negated, which is different from Math::BigInt, but in both
+cases the return value is still congruent to C<1> modulo C<n> as expected.
+
+=head2 valuation
+
+  say "$n is divisible by 2 ", valuation($n,2), " times.";
+
+Given integers C<n> and C<k>, returns the numbers of times C<n> is divisible
+by C<k>.  This is a very limited version of the algebraic valuation meaning,
+just applied to integers.
+This corresponds to Pari's C<valuation> function.
+C<0> is returned if C<n> or C<k> is one of the values C<-1>, C<0>, or C<1>.
+
 =head2 moebius
 
   say "$n is square free" if moebius($n) != 0;
   $sum += moebius($_) for (1..200); say "Mertens(200) = $sum";
+  say "Mertens(2000) = ", vecsum(moebius(0,2000));
 
 Returns μ(n), the Möbius function (also known as the Moebius, Mobius, or
 MoebiusMu function) for an integer input.  This function is 1 if
@@ -1911,15 +1974,16 @@ function is defined as C<sum(moebius(1..n))>, but calculated more efficiently
 for large inputs.  For example, computing Mertens(100M) takes:
 
    time    approx mem
-     0.3s      0.1MB   mertens(100_000_000)
-     1.2s    890MB     List::Util::sum(moebius(1,100_000_000))
-    77s        0MB     $sum += moebius($_) for 1..100_000_000
+     0.4s      0.1MB   mertens(100_000_000)
+     5.6s    880MB     vecsum(moebius(1,100_000_000))
+   102s        0MB     $sum += moebius($_) for 1..100_000_000
 
 The summation of individual terms via factoring is quite expensive in time,
 though uses O(1) space.  Using the range version of moebius is much faster,
-but returns a 100M element array which is not good for memory with this many
-items.  In comparison, this function will generate the equivalent output
-via a sieving method that is relatively sparse memory and very fast.
+but returns a 100M element array which, even though they are shared constants,
+is not good for memory at this size.
+In comparison, this function will generate the equivalent output
+via a sieving method that is relatively memory frugal and very fast.
 The current method is a simple C<n^1/2> version of Deléglise and Rivat (1996),
 which involves calculating all moebius values to C<n^1/2>, which in turn will
 require prime sieving to C<n^1/4>.
@@ -2100,15 +2164,14 @@ This uses a combinatorial calculation, which means it will not be very
 fast compared to Pari, Mathematica, or FLINT which use the Rademacher
 formula using multi-precision floating point.  In 10 seconds:
 
-           65    Integer::Partition
+           70    Integer::Partition
+           90    MPU forpart { $n++ }
        10_000    MPU pure Perl partitions
-      200_000    MPU GMP partitions
-   22_000_000    Pari's numbpart
+      250_000    MPU GMP partitions
+   35_000_000    Pari's numbpart
   500_000_000    Jonathan Bober's partitions_c.cc v0.6
 
-If you want the enumerated partitions, see L<Integer::Partition>.  It uses
-a memory efficient iterator and is very fast for enumeration.  It is not
-practical for producing large partition numbers as seen above.
+If you want the enumerated partitions, see L</forpart>.
 
 
 =head2 carmichael_lambda
@@ -2134,6 +2197,21 @@ only defined for odd prime values of C<n>.  This corresponds to Pari's
 C<kronecker(a,n)> function, Mathematica's C<KroneckerSymbol[n,m]>
 function, and GMP's C<mpz_kronecker(a,n)>, C<mpz_jacobi(a,n)>, and
 C<mpz_legendre(a,n)> functions.
+
+
+=head2 binomial
+
+Given integer arguments C<n> and C<k>, returns the binomial coefficient
+C<n*(n-1)*...*(n-k+1)/k!>, also known as the choose function.  Negative
+arguments use the L<Kronenburg extensions|http://arxiv.org/abs/1105.3689/>.
+This corresponds to Pari's C<binomial(n,k)> function, Mathematica's
+C<Binomial[n,k]> function, and GMP's C<mpz_bin_ui> function.
+
+For negative arguments, this matches Mathematica.  Pari does not implement
+the C<n E<lt> 0, k E<lt>= n> extension and instead returns C<0> for this
+case.  GMP's API does not allow negative C<k> but otherwise matches.
+L<Math::BigInt> does not implement any extensions and the results for
+C<n E<lt> 0, k > 0> are undefined.
 
 
 =head2 znorder
@@ -2226,6 +2304,10 @@ Examples of various ways to set your own irand function:
   # System rand.  You probably don't want to do this.
   prime_set_config(irand => sub { int(rand(4294967296)) });
 
+  # Math::Random::MTwist.  Fastest RNG by quite a bit.
+  use Math::Random::MTwist;
+  prime_set_config(irand => \&Math::Random::MTwist::_irand32);
+
   # Math::Random::Secure.  Uses ISAAC and strong seed methods.
   use Math::Random::Secure;
   prime_set_config(irand => \&Math::Random::Secure::irand);
@@ -2238,7 +2320,7 @@ Examples of various ways to set your own irand function:
   }
   prime_set_config(irand => \&irand);
 
-  # Crypt::Random.  Uses Pari and /dev/random.  Very slow.
+  # Crypt::Random.  Uses Pari and /dev/random.  *VERY* slow.
   use Crypt::Random qw/makerandom/;
   prime_set_config(irand => sub { makerandom(Size=>32, Uniform=>1); });
 
@@ -2247,10 +2329,6 @@ Examples of various ways to set your own irand function:
   { my $rng = Net::Random->new(src=>"fourmilab.ch",max=>0xFFFFFFFF);
     sub nr_irand { return $rng->get(1); } }
   prime_set_config(irand => \&nr_irand);
-
-  # Mersenne Twister.  Very fast, decent RNG, auto seeding.
-  use Math::Random::MT::Auto;
-  prime_set_config(irand=>sub {Math::Random::MT::Auto::irand() & 0xFFFFFFFF});
 
   # Go back to MPU's default configuration
   prime_set_config(irand => undef);
@@ -2849,6 +2927,9 @@ Project Euler, problem 10 (summation of primes):
   my $sum = 0;
   forprimes { $sum += $_ } 2_000_000;
   say $sum;
+  # Or (fine for this size, not good for very large values)
+  use Math::Prime::Util qw/vecsum primes/;
+  say vecsum( @{primes(2_000_000)} );
 
 Project Euler, problem 21 (Amicable numbers):
 
@@ -2859,6 +2940,12 @@ Project Euler, problem 21 (Amicable numbers):
     $sum += $x + $y if $y > $x && $x == divisor_sum($y)-$y;
   }
   say $sum;
+  # Or using a pipeline:
+  use Math::Prime::Util qw/vecsum divisor_sum/;
+  say vecsum( map { divisor_sum($_) }
+              grep { my $y = divisor_sum($_)-$_;
+                     $y > $_ && $_==(divisor_sum($y)-$y) }
+              1 .. 10000 );
 
 Project Euler, problem 41 (Pandigital prime), brute force command line:
 
@@ -2889,7 +2976,7 @@ Here is the right way to do PE problem 69 (under 0.03s):
   $n++ while pn_primorial($n+1) < 1000000;
   say pn_primorial($n);
 
-Project Euler, problem 187, stupid brute force solution, ~3 minutes:
+Project Euler, problem 187, stupid brute force solution, 2 to 3 minutes:
 
   use Math::Prime::Util qw/forcomposites factor/;
   my $nsemis = 0;
@@ -2897,10 +2984,11 @@ Project Euler, problem 187, stupid brute force solution, ~3 minutes:
   say $nsemis;
 
 Here is one of the best ways for PE187:  under 20 milliseconds from the
-command line.  This is faster than Mathematica until C<10^13>.
+command line.  Much faster than Pari, and competitive with Mathematica.
 
   use Math::Prime::Util qw/forprimes prime_count/;
-  my $limit = shift || int(10**8)-1;
+  my $limit = shift || int(10**8);
+  $limit--;
   my ($sum, $pc) = (0, 1);
   forprimes {
     $sum += prime_count(int($limit/$_)) + 1 - $pc++;
@@ -3267,11 +3355,15 @@ return the smallest root if it exists, and C<undef> otherwise.
 Similar to MPU's L</divisor_sum>.  MPU is ~10x faster for native integers
 and about 2x slower for bigints.
 
-=item C<numbpart>
+=item C<numbpart>, C<forpart>
 
-Similar to MPU's L</partitions>.  This function is not in Pari 2.1, which
-is the default version used by Math::Pari.  With Pari 2.3 or newer, the
-functions produce identical results, but Pari is much, much faster.
+Similar to MPU's L</partitions> and L</forpart>.  These functions were
+introduced in Pari 2.3 and 2.6, hence are not in Math::Pari.  C<numbpart>
+produce identical results to C<partitions>, but Pari is I<much> faster.
+L<forpart> is very similar to Pari's function, but produces a different
+ordering (MPU is the standard anti-lexicographical, Pari uses a size sort).
+Currently Pari is somewhat faster due to Perl function call overhead.  When
+using restrictions, Pari has much better optimizations.
 
 =item C<eint1>
 
@@ -3305,15 +3397,15 @@ First, for those looking for the state of the art non-Perl solutions:
 
 =item Primality testing
 
-For general numbers smaller than 2000 or so digits, I believe MPU is the
-fastest solution (it is faster than Pari 2.6.2 and PFGW), though FLINT
-might be a little faster for native sizes.  For large inputs,
+For general numbers smaller than 2000 or so digits, MPU is the fastest
+solution I am aware of (it is faster than Pari 2.7, PFGW, and FLINT).
+For very large inputs,
 L<PFGW|http://sourceforge.net/projects/openpfgw/> is the fastest primality
 testing software I'm aware of.  It has fast trial division, and is especially
 fast on many special forms.  It does not have a BPSW test however, and there
-are quite a few counterexamples for a given base of its PRP test, so for
-primality testing it is most useful for fast filtering of very large
-candidates.  A test such as the BPSW test in this module is then recommended.
+are quite a few counterexamples for a given base of its PRP test, so it is
+commonly used for fast filtering of large candidates.
+A test such as the BPSW test in this module is then recommended.
 
 =item Primality proofs
 

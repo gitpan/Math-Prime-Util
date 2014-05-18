@@ -1,5 +1,35 @@
 Revision history for Perl module Math::Prime::Util
 
+0.41  2014-05-18
+
+    [ADDED]
+
+    - valuation(n,k)                         how many times does k divide n?
+    - invmod(a,n)                            inverse of a modulo n
+    - forpart { ... } n[,{...}]              loop over partitions (Pari 2.6.x)
+    - vecsum(...)                            sum list of integers
+    - binomial(n,k)                          binomial coefficient
+
+    [FUNCTIONALITY AND PERFORMANCE]
+
+    - Big speedup for primality testing in range ~2^25 to 2^64, which also
+      affects functions like next_prime, prev_prime, etc.  This is due to two
+      changes in the Montgomery math section -- an improvement to mont_prod64
+      and using a new modular inverse from W. Izykowski based on Arazi (1994).
+
+    - factoring small inputs (n < 20M) is ~10% faster, which speeds up some
+      misc functions (e.g. euler_phi, divisor_sum) for small inputs.
+
+    - Small improvement to twin_prime_count_approx and nth_twin_prime_approx.
+
+    - Better AKS testing in xt/primality-aks.pl.
+
+    - Loosen requirements of lucas_sequence.  More useful for general seqs.
+      Add tests for some common sequences.
+
+    - forcomposites handles beg and end near ~0.
+
+
 0.40  2014-04-21
 
     [ADDED]

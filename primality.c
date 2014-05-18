@@ -18,7 +18,7 @@ static const UV mr_bases_const2[1] = {2};
   Code inside USE_MONT_PRIMALITY is Montgomery math and efficient M-R from
   Wojciech Izykowski.  See:  https://github.com/wizykowski/miller-rabin
 
-Copyright (c) 2013, Wojciech Izykowski
+Copyright (c) 2013-2014, Wojciech Izykowski
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -46,16 +46,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 static INLINE uint64_t mont_prod64(uint64_t a, uint64_t b, uint64_t n, uint64_t npi)
 {
   uint64_t t_hi, t_lo, m, mn_hi, mn_lo, u;
-  int carry;
   /* t_hi * 2^64 + t_lo = a*b */
   asm("mulq %3" : "=a"(t_lo), "=d"(t_hi) : "a"(a), "rm"(b));
   m = t_lo * npi;
   /* mn_hi * 2^64 + mn_lo = m*n */
   asm("mulq %3" : "=a"(mn_lo), "=d"(mn_hi) : "a"(m), "rm"(n));
-  carry = t_lo + mn_lo < t_lo ? 1 : 0;
-  u = t_hi + mn_hi + carry;
-  if (u < t_hi) return u-n;
-  return u >= n ? u-n : u;
+  u = t_hi + mn_hi;
+  if (t_lo + mn_lo < t_lo) u++;
+  return (u < t_hi || u >= n)  ?  u-n  :  u;
 }
 #define mont_square64(a, n, npi)  mont_prod64(a, a, n, npi)
 static INLINE UV mont_powmod64(uint64_t a, uint64_t k, uint64_t one, uint64_t n, uint64_t npi)
@@ -68,28 +66,44 @@ static INLINE UV mont_powmod64(uint64_t a, uint64_t k, uint64_t one, uint64_t n,
   }
   return t;
 }
+/* Returns -a^-1 mod 2^64.  From B. Arazi "On Primality Testing Using Purely
+ * Divisionless Operations", Computer Journal (1994) 37 (3): 219-222, Proc 5 */
 static INLINE uint64_t modular_inverse64(const uint64_t a)
 {
-  uint64_t u,x,w,z,q;
-
-  x = 1; z = a;
-
-  q = (-z)/z + 1;  /* = 2^64 / z                 */
-  u = - q;         /* = -q * x                   */
-  w = - q * z;     /* = b - q * z = 2^64 - q * z */
-
-  /* after first iteration all variables are 64-bit */
-
-  while (w) {
-    if (w < z) {
-      q = u; u = x; x = q; /* swap(u, x) */
-      q = w; w = z; z = q; /* swap(w, z) */
+#if 0
+  uint64_t S = 1, J = 0;
+  int i;
+  for (i = 0; i < 64; i++) {
+    if (S & 1) {
+      J |= (1ULL << i);
+      S += a;
     }
-    q = w / z;
-    u -= q * x;
-    w -= q * z;
+    S >>= 1;
   }
-  return x;
+#else
+  /* 2 at a time. */
+  uint64_t S = 1, J = 0;
+  const uint64_t a1p = (a>>1)+1, a2 = a>>2, a2p = a2+1;
+  int i;
+  if (a & 2) {
+    const uint64_t tab[4] = { 0,  a2p,  a1p,  a1p+a2p };
+    for (i = 0; i < 32; i++) {
+      uint64_t S2 = S >> 2;
+      int index = S & 3;
+      J |= (uint64_t)index << (2 * i);
+      S = S2 + tab[index];
+    }
+  } else {
+    const uint64_t tab[4] = { 0,  a1p+a2,  a1p,  a2p };
+    for (i = 0; i < 32; i++) {
+      uint64_t S2 = S >> 2;
+      int index = S & 3;
+      J |= (uint64_t)((4-index)&3) << (2 * i);
+      S = S2 + tab[index];
+    }
+  }
+#endif
+  return J;
 }
 static INLINE uint64_t compute_modn64(const uint64_t n)
 {
@@ -118,7 +132,7 @@ static INLINE uint64_t compute_2_65_mod_n(const uint64_t n, const uint64_t modn)
 static int monty_mr64(const uint64_t n, const UV* bases, int cnt)
 {
   int i, j, t;
-  const uint64_t npi = modular_inverse64(-((int64_t)n));
+  const uint64_t npi = modular_inverse64(n);
   const uint64_t r = compute_modn64(n);
   uint64_t u = n - 1;
   const uint64_t nr = n - r;
@@ -191,19 +205,18 @@ int _XS_is_pseudoprime(UV const n, UV a)
  */
 int _XS_miller_rabin(UV const n, const UV *bases, int nbases)
 {
+#if USE_MONT_PRIMALITY
+  MPUassert(n > 3, "MR called with n <= 3");
+  if ((n & 1) == 0) return 0;
+  return monty_mr64((uint64_t)n, bases, nbases);
+#else
   UV d = n-1;
   int b, r, s = 0;
 
   MPUassert(n > 3, "MR called with n <= 3");
   if ((n & 1) == 0) return 0;
 
-#if USE_MONT_PRIMALITY
-  if (n >= UVCONST(4294967295))
-    return monty_mr64((uint64_t)n, bases, nbases);
-#endif
-
   while (!(d&1)) {  s++;  d >>= 1;  }
-
   for (b = 0; b < nbases; b++) {
     UV x, a = bases[b];
     if (a < 2)  croak("Base %"UVuf" is invalid", a);
@@ -224,6 +237,7 @@ int _XS_miller_rabin(UV const n, const UV *bases, int nbases)
     if (r >= s)  return 0;
   }
   return 1;
+#endif
 }
 
 int _XS_BPSW(UV const n)
@@ -235,11 +249,8 @@ int _XS_BPSW(UV const n)
   return    _XS_miller_rabin(n, mr_bases_const2, 1)
          && _XS_is_almost_extra_strong_lucas_pseudoprime(n,1);
 #else
-  if (n < UVCONST(4294967295)) {
-    return    _XS_miller_rabin(n, mr_bases_const2, 1)
-           && _XS_is_almost_extra_strong_lucas_pseudoprime(n,1);
-  } else {
-    const uint64_t npi = modular_inverse64(-((int64_t)n));
+  {
+    const uint64_t npi = modular_inverse64(n);
     const uint64_t montr = compute_modn64(n);
     const uint64_t mont2 = compute_2_65_mod_n(n, montr);
     uint64_t u = n-1;
@@ -320,6 +331,7 @@ void lucas_seq(UV* Uret, UV* Vret, UV* Qkret, UV n, IV P, IV Q, UV k)
 {
   UV U, V, b, Dmod, Qmod, Pmod, Qk;
 
+  MPUassert(n > 1, "lucas_sequence:  modulus n must be > 1");
   if (k == 0) {
     *Uret = 0;
     *Vret = 2;
@@ -330,7 +342,13 @@ void lucas_seq(UV* Uret, UV* Vret, UV* Qkret, UV n, IV P, IV Q, UV k)
   Qmod = (Q < 0)  ?  (UV)(Q + (IV)n)  :  (UV)Q;
   Pmod = (P < 0)  ?  (UV)(P + (IV)n)  :  (UV)P;
   Dmod = submod( mulmod(Pmod, Pmod, n), mulmod(4, Qmod, n), n);
-  MPUassert(Dmod != 0, "lucas_seq: D is 0");
+  if (Dmod == 0) {
+    b = Pmod >> 1;
+    *Uret = mulmod(k, powmod(b, k-1, n), n);
+    *Vret = mulmod(2, powmod(b, k, n), n);
+    *Qkret = powmod(Qmod, k, n);
+    return;
+  }
   U = 1;
   V = Pmod;
   Qk = Qmod;
@@ -437,8 +455,8 @@ int _XS_is_lucas_pseudoprime(UV n, int strength)
     while ( (d & 1) == 0 ) {  s++;  d >>= 1; }
 
 #if USE_MONT_PRIMALITY
-  if (n > UVCONST(4294967295)) {
-    const uint64_t npi = modular_inverse64(-((int64_t)n));
+  {
+    const uint64_t npi = modular_inverse64(n);
     const uint64_t mont1 = compute_modn64(n);
     const uint64_t mont2 = compute_2_65_mod_n(n, mont1);
     const uint64_t montP = (P == 1) ? mont1
@@ -520,8 +538,7 @@ int _XS_is_lucas_pseudoprime(UV n, int strength)
     }
     return 0;
   }
-#endif
-
+#else
   lucas_seq(&U, &V, &Qk, n, P, Q, d);
 
   if (strength == 0) {
@@ -552,14 +569,17 @@ int _XS_is_lucas_pseudoprime(UV n, int strength)
     }
   }
   return 0;
+#endif
 }
 
 /* A generalization of Pari's shortcut to the extra-strong Lucas test.
+ *
+ * This only calculates and tests V, which means less work, but it does result
+ * in a few more pseudoprimes than the full extra-strong test.
+ *
  * I've added a gcd check at the top, which needs to be done and also results
  * in fewer pseudoprimes.  Pari always does trial division to 100 first so
- * is unlikely to come up there.  This only calculate V, which can be done
- * faster, but that means we have more pseudoprimes than the standard
- * extra-strong test.
+ * is unlikely to come up there.
  *
  * increment:  1 for Baillie OEIS, 2 for Pari.
  *
@@ -596,8 +616,8 @@ int _XS_is_almost_extra_strong_lucas_pseudoprime(UV n, UV increment)
   { UV v = d; b = 0; while (v >>= 1) b++; }
 
 #if USE_MONT_PRIMALITY
-  if (n > UVCONST(4294967295)) {
-    const uint64_t npi = modular_inverse64(-((int64_t)n));
+  {
+    const uint64_t npi = modular_inverse64(n);
     const uint64_t montr = compute_modn64(n);
     const uint64_t mont2 = compute_2_65_mod_n(n, montr);
     const uint64_t montP = compute_a_times_2_64_mod_n(P, n, montr);
@@ -625,7 +645,7 @@ int _XS_is_almost_extra_strong_lucas_pseudoprime(UV n, UV increment)
     }
     return 0;
   }
-#endif
+#else
   W = mulsubmod(P, P, 2, n);
   V = P;
   while (b--) {
@@ -648,6 +668,7 @@ int _XS_is_almost_extra_strong_lucas_pseudoprime(UV n, UV increment)
       return 0;
   }
   return 0;
+#endif
 }
 
 /*
@@ -681,8 +702,8 @@ int _XS_is_frobenius_underwood_pseudoprime(UV n)
   { UV v = np1; len = 1;  while (v >>= 1) len++; }
 
 #if USE_MONT_PRIMALITY
-  if (n > UVCONST(4294967295)) {
-    const uint64_t npi = modular_inverse64(-((int64_t)n));
+  {
+    const uint64_t npi = modular_inverse64(n);
     const uint64_t mont1 = compute_modn64(n);
     const uint64_t mont2 = compute_2_65_mod_n(n, mont1);
     const uint64_t mont5 = compute_a_times_2_64_mod_n(5, n, mont1);
@@ -719,7 +740,7 @@ int _XS_is_frobenius_underwood_pseudoprime(UV n)
     }
     return (a == 0 && b == result);
   }
-#endif
+#else
   a = 1;
   b = 2;
 
@@ -754,6 +775,7 @@ int _XS_is_frobenius_underwood_pseudoprime(UV n)
   if (a == 0 && b == result)
     return 1;
   return 0;
+#endif
 }
 
 
