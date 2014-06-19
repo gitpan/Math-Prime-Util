@@ -23,7 +23,7 @@ recommends:
   Digest::SHA: '5.87'
   Math::BigInt::GMP: '0'
   Math::MPFR: '2.03'
-  Math::Prime::Util::GMP: '0.16'
+  Math::Prime::Util::GMP: '0.2'
 requires:
   Bytes::Random::Secure: '0.23'
   Carp: '0'
@@ -40,4 +40,4 @@ resources:
   homepage: https://github.com/danaj/Math-Prime-Util
   license: http://dev.perl.org/licenses/
   repository: https://github.com/danaj/Math-Prime-Util
-version: '0.41'
+version: '0.42'

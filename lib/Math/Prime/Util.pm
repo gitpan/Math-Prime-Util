@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.41';
+  $Math::Prime::Util::VERSION = '0.42';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -39,7 +39,7 @@ our @EXPORT_OK =
       random_proven_prime random_proven_prime_with_cert
       random_maurer_prime random_maurer_prime_with_cert
       random_shawe_taylor_prime random_shawe_taylor_prime_with_cert
-      primorial pn_primorial consecutive_integer_lcm
+      primorial pn_primorial consecutive_integer_lcm gcdext chinese
       gcd lcm factor factor_exp all_factors divisors valuation invmod vecsum
       moebius mertens euler_phi jordan_totient exp_mangoldt liouville
       partitions
@@ -204,11 +204,18 @@ sub _reftyped {
   if ($ref0) {
     return  ($ref0 eq ref($_[1])) ?  $_[1]  :  $ref0->new("$_[1]");
   }
-  my $strn = "$_[1]";
-  return $_[1] if $strn <= ~0;
+  if (OLD_PERL_VERSION) {
+    # Perl 5.6 truncates arguments to doubles if you look at them funny
+    return "$_[1]" if "$_[1]" <= 562949953421312;
+  } elsif ($_[1] >= 0) {
+    # Perl 5.20.0 brought back a stupid double conversion bug
+    return $_[1] if $_[1] <= 18446744073709550591 || ''.int($_[1]) <= ~0;
+  } else {
+    return $_[1] if ''.int($_[1]) >= -(~0>>1);
+  }
   do { require Math::BigInt;  Math::BigInt->import(try=>"GMP,Pari"); }
     unless defined $Math::BigInt::VERSION;
-  return Math::BigInt->new($strn);
+  return Math::BigInt->new("$_[1]");
 }
 
 
@@ -557,7 +564,7 @@ sub _generic_next_prime {
   }
 
   require Math::Prime::Util::PP;
-  return Math::Prime::Util::PP::next_prime($_[0]);
+  return Math::Prime::Util::PP::next_prime($n);
 }
 
 sub _generic_prev_prime {
@@ -569,7 +576,7 @@ sub _generic_prev_prime {
   }
 
   require Math::Prime::Util::PP;
-  return Math::Prime::Util::PP::prev_prime($_[0]);
+  return Math::Prime::Util::PP::prev_prime($n);
 }
 
 sub _generic_prime_count {
@@ -752,8 +759,11 @@ sub RiemannZeta {
   my($n) = @_;
   croak("Invalid input to ReimannZeta:  x must be > 0") if $n <= 0;
 
+  return $n-$n if $n > 10_000_000;   # Over 3M leading zeros
+
   return _XS_RiemannZeta($n)
-    if !defined $bignum::VERSION && ref($n) ne 'Math::BigFloat' && $n <= $_XS_MAXVAL;
+  if !defined $bignum::VERSION && ref($n) ne 'Math::BigFloat' && $_Config{'xs'};
+
   require Math::Prime::Util::PP;
   return Math::Prime::Util::PP::RiemannZeta($n);
 }
@@ -763,7 +773,8 @@ sub RiemannR {
   croak("Invalid input to ReimannR:  x must be > 0") if $n <= 0;
 
   return _XS_RiemannR($n)
-    if !defined $bignum::VERSION && ref($n) ne 'Math::BigFloat' && $n <= $_XS_MAXVAL;
+  if !defined $bignum::VERSION && ref($n) ne 'Math::BigFloat' && $_Config{'xs'};
+
   require Math::Prime::Util::PP;
   return Math::Prime::Util::PP::RiemannR($n);
 }
@@ -775,7 +786,7 @@ sub ExponentialIntegral {
   return $_Infinity     if $n == $_Infinity;
 
   return _XS_ExponentialIntegral($n)
-   if !defined $bignum::VERSION && ref($n) ne 'Math::BigFloat' && $_Config{'xs'};
+  if !defined $bignum::VERSION && ref($n) ne 'Math::BigFloat' && $_Config{'xs'};
 
   require Math::Prime::Util::PP;
   return Math::Prime::Util::PP::ExponentialIntegral($n);
@@ -813,7 +824,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords forprimes forcomposites fordivisors forpart Möbius Deléglise totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum
+=for stopwords forprimes forcomposites fordivisors forpart Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum gcdext chinese
 
 
 =head1 NAME
@@ -823,7 +834,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.41
+Version 0.42
 
 
 =head1 SYNOPSIS
@@ -1904,6 +1915,38 @@ follow the semantics of Mathematica, Pari, and Perl 6, re:
   lcm(0, n) = 0              Any zero in list results in zero return
   lcm(n,-m) = lcm(n, m)      We use the absolute values
 
+=head2 gcdext
+
+Given two integers C<x> and C<y>, returns C<u,v,d> such that C<d = gcd(x,y)>
+and C<u*x + v*y = d>.  This uses the extended Euclidian algorithm to compute
+the values satisfying Bézout's Identity.
+
+This corresponds to Pari's C<gcdext> function, which was renamed from
+C<bezout> out Pari 2.6.  The results will hence match L<Math::Pari/bezout>.
+
+=head2 chinese
+
+  say chinese( [14,643], [254,419], [87,733] );  # 87041638
+
+Solves a system of simultaneous congruences using the Chinese Remainder
+Theorem (with extension to non-coprime moduli).  A list of C<[a,n]> pairs
+are taken as input, each representing an equation C<x ≡ a mod n>.  If no
+solution exists, C<undef> is returned.  If a solution is returned, the
+modulus is equal to the lcm of all the given moduli (see L</lcm>.  In
+the standard case where all values of C<n> are coprime, this is just the
+product.  The C<n> values must be positive integers, while the C<a> values
+are integers.
+
+Comparison to similar functions in other software:
+
+  Math::ModInt::ChineseRemainder:
+    cr_combine( mod(a1,m1), mod(a2,m2), ... )
+
+  Pari/GP:
+    chinese( [Mod(a1,m1), Mod(a2,m2), ...] )
+
+  Mathematica:
+    ChineseRemainder[{a1, a2, ...}{m1, m2, ...}]
 
 =head2 vecsum
 
@@ -1976,7 +2019,7 @@ for large inputs.  For example, computing Mertens(100M) takes:
    time    approx mem
      0.4s      0.1MB   mertens(100_000_000)
      5.6s    880MB     vecsum(moebius(1,100_000_000))
-   102s        0MB     $sum += moebius($_) for 1..100_000_000
+    98s        0MB     $sum += moebius($_) for 1..100_000_000
 
 The summation of individual terms via factoring is quite expensive in time,
 though uses O(1) space.  Using the range version of moebius is much faster,
@@ -2007,8 +2050,8 @@ function) for an integer value.  This is an arithmetic function which counts
 the number of positive integers less than or equal to C<n> that are relatively
 prime to C<n>.  Given the definition used, C<euler_phi> will return 0 for all
 C<n E<lt> 1>.  This follows the logic used by SAGE.  Mathematica and Pari
-return C<euler_phi(-n)> for C<n E<lt> 0>.  Mathematica returns 0 for C<n = 0>
-while Pari raises an exception.
+return C<euler_phi(-n)> for C<n E<lt> 0>.  Mathematica returns 0 for C<n = 0>,
+Pari pre-2.6.2 raises and exception, and Pari 2.6.2 and newer returns 2.
 
 If called with two arguments, they define a range C<low> to C<high>, and the
 function returns an array with the totient of every n from low to high
@@ -2243,7 +2286,14 @@ produces.
 
 Returns the integer C<k> that solves the equation C<a = g^k mod p>, or
 undef if no solution is found.  This is the discrete logarithm problem.
-The implementation in this version is not very useful, but may be improved.
+
+The implementation for native integers first applies Silver-Pohlig-Hellman
+on the group order to possibly reduce the problem to a set of smaller
+problems.  The solutions are then performed using a relatively fast Shanks
+BSGS, as well as trial and Pollard's DLP Rho.
+
+The PP implementation is less sophisticated, with only a memory-heavy BSGS
+being used.
 
 
 =head2 legendre_phi
@@ -3124,6 +3174,17 @@ C<prime_count>, or C<nth_prime> with large inputs.  This is B<only>
 an issue if you use non-Cygwin Win32 B<and> call these routines from within
 Perl threads.
 
+Because the loop functions like L</forprimes> use C<MULTICALL>, there is
+some odd behavior with anonymous sub creation inside the block.  This is
+shared with most XS modules that use C<MULTICALL>, and is rarely seen
+because it is such an unusual use.  An example is:
+
+  forprimes { my $var = "p is $_"; push @subs, sub {say $var}; } 50;
+  $_->() for @subs;
+
+This can be worked around by using double braces for the function, e.g.
+C<forprimes {{ ... }} 50>.
+
 
 =head1 SEE ALSO
 
@@ -3251,6 +3312,12 @@ is the uniform access mechanism for a I<lot> of sequences.  For those methods
 that overlap, MPU is usually much faster.  Importantly, most of the sequences
 in Math::NumSeq are limited to 32-bit indices.
 
+L<Math::ModInt::ChineseRemainder/cr_combine> is similar to MPU's L</chinese>,
+and in fact they use the same algorithm.  The former module uses caching
+of moduli to speed up further operations.  MPU does not do this.  This would
+only be important for cases where the lcm is larger than a native int (noting
+that use in cryptography would always have large moduli).
+
 L<Math::Pari> supports a lot of features, with a great deal of overlap.  In
 general, MPU will be faster for native 64-bit integers, while it's differs
 for bigints (Pari will always be faster if L<Math::Prime::Util::GMP> is not
@@ -3349,6 +3416,10 @@ smallest root for prime powers.  The behavior is undefined when the group is
 not cyclic (sometimes it throws an exception, sometimes it returns
 an incorrect answer, sometimes it hangs).  MPU's L</znprimroot> will always
 return the smallest root if it exists, and C<undef> otherwise.
+Similarly, MPU's L</znlog> will return the smallest C<x> and work with
+non-primitive-root C<g>, which is similar to Pari/GP 2.6, but not the
+older versions in L<Math::Pari>.  The performance of L</znlog> is fairly
+good compared to older Pari/GP, but much worse than 2.6's new methods.
 
 =item C<sigma>
 
@@ -3486,33 +3557,33 @@ directory of this distribution): pure Python in 12.1s and NUMPY in 2.8s.
 
 =item Small inputs:  is_prime from 1 to 20M
 
-    2.6s  Math::Prime::Util      (sieve lookup if prime_precalc used)
-    3.4s  Math::Prime::FastSieve (sieve lookup)
-    4.4s  Math::Prime::Util      (trial + deterministic M-R)
-   10.9s  Math::Prime::XS        (trial)
-   36.5s  Math::Pari w/2.3.5     (BPSW)
-   78.2s  Math::Pari             (10 random M-R)
-  501.3s  Math::Primality        (deterministic M-R)
+    2.0s  Math::Prime::Util      (sieve lookup if prime_precalc used)
+    2.5s  Math::Prime::FastSieve (sieve lookup)
+    3.3s  Math::Prime::Util      (trial + deterministic M-R)
+   10.4s  Math::Prime::XS        (trial)
+   19.1s  Math::Pari w/2.3.5     (BPSW)
+   52.4s  Math::Pari             (10 random M-R)
+  480s    Math::Primality        (deterministic M-R)
 
 =item Large native inputs:  is_prime from 10^16 to 10^16 + 20M
 
-    7.0s  Math::Prime::Util      (BPSW)
-   42.6s  Math::Pari w/2.3.5     (BPSW)
-  144.3s  Math::Pari             (10 random M-R)
-  664.0s  Math::Primality        (BPSW)
+    4.5s  Math::Prime::Util      (BPSW)
+   24.9s  Math::Pari w/2.3.5     (BPSW)
+  117.0s  Math::Pari             (10 random M-R)
+  682s    Math::Primality        (BPSW)
   30 HRS  Math::Prime::XS        (trial)
 
   These inputs are too large for Math::Prime::FastSieve.
 
 =item bigints:  is_prime from 10^100 to 10^100 + 0.2M
 
-    2.5s  Math::Prime::Util          (BPSW + 1 random M-R)
-    3.0s  Math::Pari w/2.3.5         (BPSW)
-   12.9s  Math::Primality            (BPSW)
-   35.3s  Math::Pari                 (10 random M-R)
-   53.5s  Math::Prime::Util w/o GMP  (BPSW)
-   94.4s  Math::Prime::Util          (n-1 or ECPP proof)
-  102.7s  Math::Pari w/2.3.5         (APR-CL proof)
+    2.2s  Math::Prime::Util          (BPSW + 1 random M-R)
+    2.7s  Math::Pari w/2.3.5         (BPSW)
+   13.0s  Math::Primality            (BPSW)
+   35.2s  Math::Pari                 (10 random M-R)
+   38.6s  Math::Prime::Util w/o GMP  (BPSW)
+   70.7s  Math::Prime::Util          (n-1 or ECPP proof)
+  102.9s  Math::Pari w/2.3.5         (APR-CL proof)
 
 =back
 
@@ -3659,9 +3730,6 @@ primes.
 
 Terje Mathisen, A.R. Quesada, and B. Van Pelt all had useful ideas which I
 used in my wheel sieve.
-
-Tomás Oliveira e Silva has released the source for a very fast segmented sieve.
-The current implementation does not use these ideas.  Future versions might.
 
 The SQUFOF implementation being used is a slight modification to the public
 domain racing version written by Ben Buhrow.  Enhancements with ideas from

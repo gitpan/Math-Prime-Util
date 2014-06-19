@@ -6,6 +6,8 @@
 #include "XSUB.h"
 #include "multicall.h"  /* only works in 5.6 and newer */
 
+#define NEED_newCONSTSUB
+#define NEED_newRV_noinc
 #define NEED_sv_2pv_flags
 #include "ppport.h"
 
@@ -172,7 +174,7 @@ static int _vcallsubn(pTHX_ I32 flags, I32 stashflags, const char* name, int nar
     /* If given a GMP function, and GMP enabled, and function exists, use it. */
     int use_gmp = stashflags & VCALL_GMP && _XS_get_callgmp();
     assert(!(stashflags & ~(VCALL_PP|VCALL_GMP)));
-    if (use_gmp) {
+    if (use_gmp && hv_exists(MY_CXT.MPUGMP,name,namelen)) {
       GV ** gvp = (GV**)hv_fetch(MY_CXT.MPUGMP,name,namelen,0);
       if (gvp) gv = *gvp;
     }
@@ -548,8 +550,43 @@ gcd(...)
       case 0: _vcallsub_with_gmp("gcd");  break;
       case 1: _vcallsub_with_gmp("lcm");  break;
       case 2:
-      default:_vcallsub_with_gmp("vecsum");  break;
+      default:_vcallsub_with_pp("vecsum");  break;
     }
+    return; /* skip implicit PUTBACK */
+
+void
+chinese(...)
+  PROTOTYPE: @
+  PREINIT:
+    int i, status;
+    UV* an;
+    UV ret;
+  PPCODE:
+    status = 1;
+    New(0, an, 2*items, UV);
+    ret = 0;
+    for (i = 0; i < items; i++) {
+      AV* av;
+      SV** psva;
+      SV** psvn;
+      if (!SvROK(ST(i)) || SvTYPE(SvRV(ST(i))) != SVt_PVAV || av_len((AV*)SvRV(ST(i))) != 1)
+        croak("chinese arguments are two-element array references");
+      av = (AV*) SvRV(ST(i));
+      psva = av_fetch(av, 0, 0);
+      psvn = av_fetch(av, 1, 0);
+      if (psva == 0 || psvn == 0 || _validate_int(aTHX_ *psva, 1) != 1 || !_validate_int(aTHX_ *psvn, 0)) {
+        status = 0;
+        break;
+      }
+      an[i+0]     = my_svuv(*psva);
+      an[i+items] = my_svuv(*psvn);
+    }
+    if (status)
+      ret = chinese(an, an+items, items, &status);
+    Safefree(an);
+    if (status == -1) XSRETURN_UNDEF;
+    if (status)       XSRETURN_UV(ret);
+    _vcallsub_with_pp("chinese");
     return; /* skip implicit PUTBACK */
 
 void
@@ -823,6 +860,7 @@ znlog(IN SV* sva, IN SV* svg, IN SV* svp)
     if (astatus == 1 && gstatus == 1 && pstatus == 1) {
       UV a = my_svuv(sva), g = my_svuv(svg), p = my_svuv(svp);
       UV ret = znlog(a, g, p);
+      /* TODO: perhaps return p to mean no solution? */
       if (ret == 0 && a > 1) XSRETURN_UNDEF;
       XSRETURN_UV(ret);
     }
@@ -880,6 +918,31 @@ kronecker(IN SV* sva, IN SV* svb)
       default: _vcallsub_with_gmp("invmod"); break;
     }
     return; /* skip implicit PUTBACK */
+
+void
+gcdext(IN SV* sva, IN SV* svb)
+  PREINIT:
+    int astatus, bstatus;
+  PPCODE:
+    astatus = _validate_int(aTHX_ sva, 2);
+    bstatus = _validate_int(aTHX_ svb, 2);
+    /* TODO: These should be built into validate_int */
+    if ( (astatus == 1 && SvIsUV(sva)) || (astatus == -1 && !SvIOK(sva)) )
+      astatus = 0;  /* too large */
+    if ( (bstatus == 1 && SvIsUV(svb)) || (bstatus == -1 && !SvIOK(svb)) )
+      bstatus = 0;  /* too large */
+    if (astatus != 0 && bstatus != 0) {
+      IV u, v, d;
+      IV a = my_sviv(sva);
+      IV b = my_sviv(svb);
+      d = gcdext(a, b, &u, &v, 0, 0);
+      XPUSHs(sv_2mortal(newSViv( u )));
+      XPUSHs(sv_2mortal(newSViv( v )));
+      XPUSHs(sv_2mortal(newSViv( d )));
+    } else {
+      _vcallsubn(aTHX_ GIMME_V, VCALL_PP, "gcdext", items);
+      return; /* skip implicit PUTBACK */
+    }
 
 NV
 _XS_ExponentialIntegral(IN SV* x)
@@ -1071,7 +1134,7 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
     }
 
     SAVESPTR(GvSV(PL_defgv));
-    svarg = newSVuv(0);
+    svarg = newSVuv(beg);
     GvSV(PL_defgv) = svarg;
     /* Handle early part */
     while (beg < 6) {
@@ -1102,8 +1165,13 @@ forprimes (SV* block, IN SV* svbeg, IN SV* svend = 0)
       } else {                      /* MULTICALL segment sieve */
         void* ctx = start_segment_primes(beg, end, &segment);
         while (next_segment_primes(ctx, &seg_base, &seg_low, &seg_high)) {
+          int crossuv = (seg_high > IV_MAX) && !SvIsUV(svarg);
           START_DO_FOR_EACH_SIEVE_PRIME( segment, seg_low - seg_base, seg_high - seg_base ) {
-            sv_setuv(svarg, seg_base + p);
+            p += seg_base;
+            /* sv_setuv(svarg, p); */
+            if      (SvTYPE(svarg) != SVt_IV) { sv_setuv(svarg, p);            }
+            else if (crossuv && p > IV_MAX)   { sv_setuv(svarg, p); crossuv=0; }
+            else                              { SvUV_set(svarg, p);            }
             MULTICALL;
           } END_DO_FOR_EACH_SIEVE_PRIME
         }

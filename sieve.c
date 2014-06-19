@@ -11,9 +11,21 @@
 #include "util.h"
 #include "primality.h"
 
-/* If the base sieve is larger than this, presieve and test */
-#define BASE_SIEVE_LIMIT  4000000
-
+/* Is it better to do a partial sieve + primality tests vs. full sieve? */
+static int do_partial_sieve(UV startp, UV endp) {
+  UV range = endp - startp;
+  if (USE_MONT_PRIMALITY) range /= 8;  /* Fast primality tests */
+#if BITS_PER_WORD == 64
+  if ( (startp > UVCONST(     100000000000000) && range <     20000) ||
+       (startp > UVCONST(    1000000000000000) && range <    100000) ||
+       (startp > UVCONST(   10000000000000000) && range <    200000) ||
+       (startp > UVCONST(  100000000000000000) && range <   2000000) ||
+       (startp > UVCONST( 1000000000000000000) && range <  10000000) ||
+       (startp > UVCONST(10000000000000000000) && range <  20000000) )
+    return 1;
+#endif
+  return 0;
+}
 
 /* 1001 bytes of presieved mod-30 bytes.  If the area to be sieved is
  * appropriately filled with this data, then 7, 11, and 13 do not have
@@ -315,7 +327,8 @@ int sieve_segment(unsigned char* mem, UV startd, UV endd)
   /* Don't use a sieve prime such that p*p > UV_MAX */
   if (limit > max_sieve_prime)  limit = max_sieve_prime;
   slimit = limit;
-  if (slimit > BASE_SIEVE_LIMIT) slimit = BASE_SIEVE_LIMIT;
+  if (do_partial_sieve(startp, endp))
+    slimit >>= ((startp < (UV)1e16) ? 8 : 10);
   /* printf("segment sieve from %"UVuf" to %"UVuf" (aux sieve to %"UVuf")\n", startp, endp, slimit); */
   if (slimit > sieve_size) {
     release_prime_cache(sieve);
@@ -437,13 +450,27 @@ void* start_segment_primes(UV low, UV high, unsigned char** segmentmem)
   ctx->hid = high / 30;
   ctx->endp = (ctx->hid >= (UV_MAX/30))  ?  UV_MAX-2  :  30*ctx->hid+29;
 
+#if BITS_PER_WORD == 64
+  if (high > 1e11 && high-low > 1e6) {
+    UV range = (high-low+29)/30;
+    /* Select what we think would be a good segment size */
+    UV size = isqrt(isqrt(high)) * ((high < 1e15) ? 500 : 250);
+    /* Evenly split the range into segments */
+    UV div = (range+size-1)/size;
+    size = (div <= 1)  ?  range  :  (range+div-1)/div;
+    if (_XS_get_verbose() >= 2)
+      printf("segment sieve: byte range %lu split into %lu segments of size %lu\n", (unsigned long)range, (unsigned long)div, (unsigned long)size);
+    ctx->segment_size = size;
+    New(0, ctx->segment, size, unsigned char);
+  } else
+#endif
   ctx->segment = get_prime_segment( &(ctx->segment_size) );
   *segmentmem = ctx->segment;
 
   ctx->base = 0;
   /* Expand primary cache so we won't regen each call */
   slimit = isqrt(ctx->endp)+1;
-  if (slimit > BASE_SIEVE_LIMIT) slimit = BASE_SIEVE_LIMIT;
+  if (do_partial_sieve(low, high))  slimit >>= 8;
   get_prime_cache( slimit, 0);
 
   return (void*) ctx;

@@ -11,7 +11,7 @@ use Math::Prime::Util qw/is_prob_prime is_strong_pseudoprime
 
 BEGIN {
   $Math::Prime::Util::PrimalityProving::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PrimalityProving::VERSION = '0.41';
+  $Math::Prime::Util::PrimalityProving::VERSION = '0.42';
 }
 
 BEGIN {
@@ -167,7 +167,11 @@ sub primality_proof_bls75 {
 
     my $m = pop @nstack;
     # Don't use bignum if it has gotten small enough.
-    $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= ''.~0;
+    if ($] < 5.008) {
+      $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= 562949953421312;
+    } else {
+      $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= ''.~0;
+    }
     # Try to find factors of m, using the default set of factor subs.
     my @ftry;
     foreach my $sub (@_fsublist) {
@@ -864,7 +868,7 @@ Math::Prime::Util::PrimalityProving - Primality proofs and certificates
 
 =head1 VERSION
 
-Version 0.41
+Version 0.42
 
 
 =head1 SYNOPSIS

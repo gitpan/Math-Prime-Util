@@ -939,15 +939,19 @@ int squfof_factor(UV n, UV *factors, UV rounds)
 }
 
 UV dlp_trial(UV a, UV g, UV p, UV maxrounds) {
-  UV t, k = 1;
+  UV k, t = g;
   if (maxrounds > p) maxrounds = p;
   for (k = 1; k < maxrounds; k++) {
-    t = powmod(g, k, p);
     if (t == a)
       return k;
+    t = mulmod(t, g, p);
   }
   return 0;
 }
+
+/******************************************************************************/
+/* DLP - Pollard Rho */
+/******************************************************************************/
 
 #define pollard_rho_cycle(u,v,w,p,n,a,g) \
     switch (u % 3) { \
@@ -956,9 +960,8 @@ UV dlp_trial(UV a, UV g, UV p, UV maxrounds) {
       case 2: u = mulmod(u,g,p);                      w = addmod(w,1,n); break;\
     }
 
-UV dlp_prho(UV a, UV g, UV p, UV maxrounds) {
+UV dlp_prho(UV a, UV g, UV p, UV n, UV maxrounds) {
   UV i;
-  UV n = znorder(g, p);
   UV u=1, v=0, w=0;
   UV U=u, V=v, W=w;
 #ifdef DEBUG
@@ -967,7 +970,6 @@ UV dlp_prho(UV a, UV g, UV p, UV maxrounds) {
   int const verbose = 0;
 #endif
 
-  if (verbose > 1 && n != p-1) printf("for g=%lu p=%lu, order is %lu\n", g, p, n);
   if (maxrounds > n) maxrounds = n;
   for (i = 1; i < maxrounds; i++) {
     pollard_rho_cycle(u,v,w,p,n,a,g);   /* xi, ai, bi */
@@ -975,14 +977,27 @@ UV dlp_prho(UV a, UV g, UV p, UV maxrounds) {
     pollard_rho_cycle(U,V,W,p,n,a,g);   /* x2i, a2i, b2i */
     if (verbose > 3) printf( "%3"UVuf"  %4"UVuf" %3"UVuf" %3"UVuf"  %4"UVuf" %3"UVuf" %3"UVuf"\n", i, u, v, w, U, V, W );
     if (u == U) {
-      UV r1, r2, k;
+      UV r1, r2, k, G, G2;
       r1 = submod(v, V, n);
-      if (r1 == 0) {
-        if (verbose) printf("DLP Rho failure, r=0\n");
-        return 0;
-      }
+      if (r1 == 0) { if (verbose) printf("DLP Rho failure, r=0\n"); return 0; }
       r2 = submod(W, w, n);
-      k = divmod(r2, r1, n);
+
+      G = gcd_ui(r1,n);
+      G2 = gcd_ui(G,r2);
+      k = divmod(r2/G2, r1/G2, n/G2);
+      if (G > 1) {
+        if (powmod(g,k,p) == a) {
+          if (verbose > 2) printf("  common GCD %lu\n", G2);
+        } else {
+          UV m, l = divmod(r2, r1, n/G);
+          for (m = 0; m < G; m++) {
+            k = addmod(l, mulmod(m,(n/G),n), n);
+            if (powmod(g,k,p) == a) break;
+          }
+          if (m<G && verbose > 2) printf("  GCD %lu, found with m=%lu\n", G, m);
+        }
+      }
+
       if (powmod(g,k,p) != a) {
         if (verbose > 2) printf("r1 = %"UVuf"  r2 = %"UVuf" k = %"UVuf"\n", r1, r2, k);
         if (verbose) printf("Incorrect DLP Rho solution: %"UVuf"\n", k);
@@ -993,4 +1008,252 @@ UV dlp_prho(UV a, UV g, UV p, UV maxrounds) {
     }
   }
   return 0;
+}
+
+/******************************************************************************/
+/* DLP - BSGS */
+/******************************************************************************/
+
+typedef struct bsgs_hash_t {
+  UV M;    /* The baby step index */
+  UV V;    /* The powmod value */
+  struct bsgs_hash_t* next;
+} bsgs_hash_t;
+
+/****************************************/
+/*  Simple and limited pool allocation  */
+#define BSGS_ENTRIES_PER_PAGE 8000
+typedef struct bsgs_page_top_t {
+  struct bsgs_page_t* first;
+  bsgs_hash_t** table;
+  UV  size;
+  int nused;
+  int npages;
+} bsgs_page_top_t;
+
+typedef struct bsgs_page_t {
+  bsgs_hash_t entries[BSGS_ENTRIES_PER_PAGE];
+  struct bsgs_page_t* next;
+} bsgs_page_t;
+
+static bsgs_hash_t* get_entry(bsgs_page_top_t* top) {
+  if (top->nused == 0 || top->nused >= BSGS_ENTRIES_PER_PAGE) {
+    bsgs_page_t* newpage;
+    Newz(0, newpage, 1, bsgs_page_t);
+    newpage->next = top->first;
+    top->first = newpage;
+    top->nused = 0;
+    top->npages++;
+  }
+  return top->first->entries + top->nused++;
+}
+static void destroy_pages(bsgs_page_top_t* top) {
+  bsgs_page_t* head = top->first;
+  while (head != 0) {
+    bsgs_page_t* next = head->next;
+    Safefree(head);
+    head = next;
+  }
+  top->first = 0;
+}
+/****************************************/
+
+static void bsgs_hash_put(bsgs_page_top_t* pagetop, UV v, UV i) {
+  UV idx = v % pagetop->size;
+  bsgs_hash_t** table = pagetop->table;
+  bsgs_hash_t* entry = table[idx];
+
+  while (entry && entry->V != v)
+    entry = entry->next;
+
+  if (!entry) {
+    entry = get_entry(pagetop);
+    entry->M = i;
+    entry->V = v;
+    entry->next = table[idx];
+    table[idx] = entry;
+  }
+}
+
+static UV bsgs_hash_get(bsgs_page_top_t* pagetop, UV v) {
+  bsgs_hash_t* entry = pagetop->table[v % pagetop->size];
+  while (entry && entry->V != v)
+    entry = entry->next;
+  return (entry) ? entry->M : 0;
+}
+
+UV dlp_bsgs(UV a, UV g, UV p, UV n, UV maxent) {
+  bsgs_page_top_t PAGES;
+  UV i, m, maxm, hashmap_count;
+  UV result = 0;
+#ifdef DEBUG
+  int const verbose = _XS_get_verbose();
+#else
+  int const verbose = 0;
+#endif
+
+  if (a == 0) return 0;  /* We don't handle this case */
+
+  maxm = isqrt(n);
+  m = (maxent > maxm) ? maxm : maxent;
+
+  /* We will be adding m items.  Keep average depth around 2. */
+  hashmap_count = next_prime( m / 2 );
+  if (hashmap_count < 65537) hashmap_count = 65537;
+
+  /* 1. Create table.  Size: 8*hashmap_count bytes. */
+  PAGES.size = hashmap_count;
+  PAGES.first = 0;
+  PAGES.nused = 0;
+  PAGES.npages = 0;
+  Newz(0, PAGES.table, hashmap_count, bsgs_hash_t*);
+
+  /* 2. Baby Step.  Build hash. */
+  {
+    UV S = a;
+    UV aa = mulmod(a,a,p);
+    for (i = 0; i <= m; i++) {
+      bsgs_hash_put(&PAGES, S, i);
+      S = mulmod(S, g, p);
+      if (S == aa) {  /* We discovered the solution! */
+        if (verbose) printf("  dlp bsgs: solution at BS step %lu\n", i+1);
+        result = i+1;
+        break;
+      }
+    }
+  }
+  if (verbose) printf("  dlp bsgs using %d pages (%.1fMB) for hash\n", PAGES.npages, ((double)PAGES.npages * sizeof(bsgs_page_t)) / (1024*1024));
+
+  /* 3. Giant Step.  Search for solution. */
+  if (result == 0) {
+    UV b = (p+m-1)/m;
+    UV gm = powmod(g, m, p);
+    UV T = gm;
+    /* If we didn't fill all baby step values, limit our search */
+    if (m < maxm && b > 8*m) b = 8*m;
+    for (i = 1; i < b; i++) {
+      result = bsgs_hash_get(&PAGES, T);
+      if (result) {
+        /* printf("result is %lu + %lu * %lu\n", result, i, m); */
+        result = submod(mulmod(i, m, p), result, p);
+        break;
+      }
+      T = mulmod(T, gm, p);
+    }
+  }
+  destroy_pages(&PAGES);
+  Safefree(PAGES.table);
+  if (result != 0 && powmod(g,result,p) != a) {
+    if (verbose) printf("Incorrect DLP BSGS solution: %"UVuf"\n", result);
+    return 0;
+  }
+  return result;
+}
+
+/* Find smallest k where a = g^k mod p */
+#define DLP_TRIAL_NUM  10000
+#define DLP_RHO_NUM    40000
+UV znlog_solve(UV a, UV g, UV p) {
+  UV i, k, n, sqrtn;
+  const int verbose = _XS_get_verbose();
+  const UV bsgs_maxent[] = {8000,80000,800000,10000000};
+
+  if (a >= p) a %= p;
+  if (g >= p) g %= p;
+
+  if (a == 1 || g == 0 || p < 2)
+    return 0;
+
+  n = znorder(g, p);
+  if (verbose > 1 && n != p-1) printf("  g=%lu p=%lu, order %lu\n", g, p, n);
+  if (n == 0) {
+    sqrtn = 0;
+    n = p;
+    k = dlp_trial(a, g, p, DLP_TRIAL_NUM);
+    if (verbose) printf("  dlp trial 1k %s\n", (k!=0 || p<= DLP_TRIAL_NUM) ? "success" : "failure");
+    if (k != 0 || p <= DLP_TRIAL_NUM) return k;
+  } else {
+    /* Simple existence check (not very thorough) */
+    if (powmod(a, n, p) != 1) return 0;
+    sqrtn = isqrt(n);
+  }
+
+  /* Rho has low overhead and works well for small values */
+  if (sqrtn > 0 && n <= UVCONST(1000000)) {
+    k = dlp_prho(a, g, p, n, DLP_RHO_NUM);
+    if (verbose) printf("  dlp rho 40k %s\n", k!=0 ? "success" : "failure");
+    if (k != 0) return k;
+  }
+
+  /* Try BSGS in increasing sizes.  Not the most efficient method. */
+  for (i = 0; i < 4; i++) {
+    UV maxent = bsgs_maxent[i];
+    k = dlp_bsgs(a, g, p, n, maxent);
+    if (verbose) printf("  dlp bsgs %luk %s\n", maxent/1000, k!=0 ? "success" : "failure");
+    if (k != 0) return k;
+    if (sqrtn > 0 && sqrtn < maxent) return 0;
+
+    if (i == 2 && sqrtn > 0) {
+      k = dlp_prho(a, g, p, n, 10000000);
+      if (verbose) printf("  dlp rho 10M %s\n", k!=0 ? "success" : "failure");
+      if (k != 0) return k;
+    }
+  }
+
+  if (sqrtn > 0) {
+    k = dlp_prho(a, g, p, n, 0xFFFFFFFFUL);
+    if (verbose) printf("  dlp rho 4000M %s\n", k!=0 ? "success" : "failure");
+    if (k != 0) return k;
+  }
+
+  if (verbose) printf("  dlp doing exhaustive trial\n");
+  k = dlp_trial(a, g, p, p);
+  return k;
+}
+
+/* Silver-Pohlig-Hellman */
+UV znlog_ph(UV a, UV g, UV p) {
+  UV fac[MPU_MAX_FACTORS+1];
+  UV exp[MPU_MAX_FACTORS+1];
+  int i, nfactors;
+  UV x, j, p1 = znorder(g,p);
+
+  if (p1 == 0) return 0;   /* TODO: Should we plow on with p1=p-1? */
+  nfactors = factor_exp(p1, fac, exp);
+  if (nfactors == 1)
+    return znlog_solve(a, g, p);
+  for (i = 0; i < nfactors; i++) {
+    UV pi, delta, gamma;
+    pi = fac[i];   for (j = 1; j < exp[i]; j++)  pi *= fac[i];
+    delta = powmod(a,p1/pi,p);
+    gamma = powmod(g,p1/pi,p);
+    /* printf(" solving znlog(%lu,%lu,%lu)\n", delta, gamma, p); */
+    fac[i] = znlog_solve( delta, gamma, p );
+    exp[i] = pi;
+  }
+  x = chinese(fac, exp, nfactors, &i);
+  if (i == 1 && powmod(g, x, p) == a)
+    return x;
+  return 0;
+}
+
+/* Find smallest k where a = g^k mod p */
+UV znlog(UV a, UV g, UV p) {
+  UV k;
+  const int verbose = _XS_get_verbose();
+
+  if (a >= p) a %= p;
+  if (g >= p) g %= p;
+
+  if (a == 1 || g == 0 || p < 2)
+    return 0;
+
+  /* TODO: come up with a better solution for this */
+  if (a == 0) return dlp_trial(a, g, p, p);
+
+  k = znlog_ph(a, g, p);
+  if (verbose) printf("  dlp PH %s\n", k!=0 ? "success" : "failure");
+  if (k != 0) return k;
+
+  return znlog_solve(a, g, p);
 }

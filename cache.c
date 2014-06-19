@@ -172,7 +172,7 @@ void release_prime_cache(const unsigned char* mem) {
 static unsigned char* prime_segment = 0;
 static int prime_segment_is_available = 1;
 /* If that's in use, malloc a new one of this size */
-#define SECONDARY_SEGMENT_CHUNK_SIZE  UVCONST( 64*1024-16)
+#define SECONDARY_SEGMENT_CHUNK_SIZE  UVCONST(128*1024-16)
 
 unsigned char* get_prime_segment(UV *size) {
   unsigned char* mem;

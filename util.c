@@ -942,6 +942,7 @@ UV twin_prime_count(UV beg, UV end)
 UV nth_twin_prime(UV n)
 {
   unsigned char* segment;
+  double dend;
   UV nth = 0;
   UV beg, end;
 
@@ -957,9 +958,25 @@ UV nth_twin_prime(UV n)
     }
     return nth;
   }
-  n -= 5;
-  beg = 31;
+
   end = UV_MAX - 16;
+  dend = 800.0 + 1.01L * (double)nth_twin_prime_approx(n);
+  if (dend < (double)end) end = (UV) dend;
+
+  beg = 2;
+  if (n > 58980) { /* Use twin_prime_count tables to accelerate if possible */
+    UV mult, exp, step = 0, base = 10000000;
+    for (exp = 0; exp < twin_num_exponents && end >= base; exp++) {
+      for (mult = 1; mult < 10 && n > twin_steps[step]; mult++) {
+        n -= twin_steps[step++];
+        beg = mult*base;
+        if (exp == twin_num_exponents-1 && mult >= twin_last_mult) break;
+      }
+      base *= 10;
+    }
+  }
+  if (beg == 2) { beg = 31; n -= 5; }
+
   {
     UV seg_base, seg_low, seg_high;
     void* ctx = start_segment_primes(beg, end, &segment);
@@ -1327,6 +1344,8 @@ int kronecker_ss(IV a, IV b) {
 /* Thanks to MJD and RosettaCode */
 UV binomial(UV n, UV k) {
   UV d, g, r = 1;
+  if (k == 0) return 1;
+  if (k == 1) return n;
   if (k >= n) return (k == n);
   if (k > n/2) k = n-k;
   for (d = 1; d <= k; d++) {
@@ -1503,6 +1522,25 @@ UV znprimroot(UV n) {
   return 0;
 }
 
+IV gcdext(IV a, IV b, IV* u, IV* v, IV* cs, IV* ct) {
+  IV s = 0;  IV os = 1;
+  IV t = 1;  IV ot = 0;
+  IV r = b;  IV or = a;
+  while (r != 0) {
+    IV quot = or / r;
+    { IV tmp = r; r = or - quot * r;  or = tmp; }
+    { IV tmp = s; s = os - quot * s;  os = tmp; }
+    { IV tmp = t; t = ot - quot * t;  ot = tmp; }
+  }
+  if (or < 0) /* correct sign */
+    { or = -or; os = -os; ot = -ot; }
+  if (u  != 0) *u = os;
+  if (v  != 0) *v = ot;
+  if (cs != 0) *cs = s;
+  if (ct != 0) *ct = t;
+  return or;
+}
+
 /* Calculate 1/a mod n. */
 UV modinverse(UV a, UV n) {
   IV t = 0;  UV nt = 1;
@@ -1523,26 +1561,35 @@ UV divmod(UV a, UV b, UV n) {   /* a / b  mod n */
   return mulmod(a, binv, n);
 }
 
-/* Find smallest k where a = g^k mod p
- * This implementation is just a stupid placeholder.
- * When prho or bsgs starts working well, lower the trial limit
- */
-#define DLP_TRIAL_NUM  1000000
-UV znlog(UV a, UV g, UV p) {
-  UV k;
-  const int verbose = _XS_get_verbose();
-  if (a <= 1 || g == 0 || p < 2)
-    return 0;
-  k = dlp_trial(a, g, p, DLP_TRIAL_NUM);
-  if (k != 0 || p <= DLP_TRIAL_NUM)
-    return k;
-  if (verbose) printf("  dlp trial failed.  Trying prho\n");
-  k = dlp_prho(a, g, p, 1000000);
-  if (k != 0)
-    return k;
-  if (verbose) printf("  dlp prho failed.  Back to trial\n");
-  k = dlp_trial(a, g, p, p);
-  return k;
+/* status: 1 ok, -1 no inverse, 0 overflow */
+UV chinese(UV* a, UV* n, UV num, int* status) {
+  UV p, gcd, i, j, lcm, sum;
+  *status = 1;
+  if (num == 0) return 0;
+
+  /* Sort modulii, largest first */
+  for (i = 1; i < num; i++)
+    for (j = i; j > 0 && n[j-1] < n[j]; j--)
+      { p=n[j-1]; n[j-1]=n[j]; n[j]=p;   p=a[j-1]; a[j-1]=a[j]; a[j]=p; }
+
+  if (n[0] > IV_MAX) { *status = 0; return 0; }
+  lcm = n[0]; sum = a[0] % n[0];
+  for (i = 1; i < num; i++) {
+    IV u, v, t, s;
+    UV vs, ut;
+    gcd = gcdext(lcm, n[i], &u, &v, &s, &t);
+    if (gcd != 1 && ((sum % gcd) != (a[i] % gcd))) { *status = -1; return 0; }
+    if (s < 0) s = -s;
+    if (t < 0) t = -t;
+    if (s > (IV)(IV_MAX/lcm)) { *status = 0; return 0; }
+    lcm *= s;
+    if (u < 0) u += lcm;
+    if (v < 0) v += lcm;
+    vs = mulmod((UV)v, (UV)s, lcm);
+    ut = mulmod((UV)u, (UV)t, lcm);
+    sum = addmod(  mulmod(vs, sum, lcm),  mulmod(ut, a[i], lcm),  lcm  );
+  }
+  return sum;
 }
 
 long double chebyshev_function(UV n, int which)
@@ -1903,11 +1950,27 @@ long double ld_riemann_zeta(long double x) {
 }
 
 long double _XS_RiemannR(long double x) {
-  long double part_term, term, flogx;
+  long double part_term, term, flogx, ki;
   unsigned int k;
   KAHAN_INIT(sum);
 
   if (x <= 0) croak("Invalid input to ReimannR:  x must be > 0");
+
+  if (x > 1e19) {
+    const signed char* amob = _moebius_range(0, 100);
+    KAHAN_SUM(sum, _XS_ExponentialIntegral(logl(x)));
+    for (k = 2; k <= 100; k++) {
+      if (amob[k] == 0) continue;
+      ki = 1.0L / (long double) k;
+      part_term = powl(x,ki);
+      if (part_term > LDBL_MAX) return INFINITY;
+      term = amob[k] * ki * _XS_ExponentialIntegral(logl(part_term));
+      KAHAN_SUM(sum, term);
+      if (fabsl(term) < fabsl(LDBL_EPSILON*sum)) break;
+    }
+    Safefree(amob);
+    return sum;
+  }
 
   KAHAN_SUM(sum, 1.0);
 

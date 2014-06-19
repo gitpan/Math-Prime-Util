@@ -4,7 +4,7 @@ use warnings;
 
 BEGIN {
   $Math::Prime::Util::PrimeArray::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PrimeArray::VERSION = '0.41';
+  $Math::Prime::Util::PrimeArray::VERSION = '0.42';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -17,6 +17,8 @@ our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
 use Math::Prime::Util qw/nth_prime nth_prime_upper nth_prime_lower primes prime_precalc next_prime prev_prime/;
 use Tie::Array;
 use Carp qw/carp croak confess/;
+
+use constant SEGMENT_SIZE  =>  10_000;
 
 sub TIEARRAY {
   my $class = shift;
@@ -49,8 +51,7 @@ sub FETCHSIZE { 0x7FFF_FFFF }   # Even on 64-bit
 # sub FETCH { return nth_prime($_[1]+1); }
 
 sub FETCH {
-  my $self = shift;
-  my $index = shift;
+  my ($self, $index) = @_;
   # We actually don't get negative indices -- they get turned into big numbers
   croak "Negative index given to prime array" if $index < 0;
   $index += $self->{SHIFTINDEX};  # take into account any shifts
@@ -63,7 +64,7 @@ sub FETCH {
 
       $self->{ACCESS_TYPE}++;
       if ($self->{ACCESS_TYPE} > 2) {
-        my $end_prime = nth_prime_upper($index + 10_000);
+        my $end_prime = nth_prime_upper($index + SEGMENT_SIZE);
         $self->{PRIMES} = primes( $self->{PRIMES}->[-1]+1, $end_prime );
         $begidx = $endidx+1;
       } else {
@@ -74,8 +75,8 @@ sub FETCH {
 
       $self->{ACCESS_TYPE}--;
       if ($self->{ACCESS_TYPE} < -2) {
-        my $num = 10_000;
-        my $beg_prime = $index <= $num ? 2 : nth_prime_lower($index - $num );
+        my $beg_prime = $index <= SEGMENT_SIZE
+                               ?  2  :  nth_prime_lower($index - SEGMENT_SIZE);
         $self->{PRIMES} = primes($beg_prime, $self->{PRIMES}->[0]-1);
         $begidx -= scalar @{ $self->{PRIMES} };
       } else {
@@ -86,7 +87,8 @@ sub FETCH {
     } else {                         # Random access
 
       $self->{ACCESS_TYPE} = int($self->{ACCESS_TYPE} / 2);
-      # Alternately we could get a small window
+      # Alternately we could get a small window, but that will be quite
+      # a bit slower if true random access.
       $begidx = $index;
       $self->{PRIMES} = [nth_prime($begidx+1)];
 
@@ -105,8 +107,8 @@ sub SHIFT {
   $head;
 }
 sub UNSHIFT {
-  my $self = shift;
-  my $shiftamount = defined $_[0] ? shift : 1;
+  my ($self, $shiftamount) = @_;
+  $shiftamount = 1 unless defined $shiftamount;
   $self->{SHIFTINDEX} = ($shiftamount >= $self->{SHIFTINDEX})
                         ? 0
                         : $self->{SHIFTINDEX} - $shiftamount;
@@ -135,7 +137,7 @@ Math::Prime::Util::PrimeArray - A tied array for primes
 
 =head1 VERSION
 
-Version 0.41
+Version 0.42
 
 
 =head1 SYNOPSIS
@@ -146,24 +148,24 @@ Version 0.41
   tie my @primes, 'Math::Prime::Util::PrimeArray';
 
   # Use in a loop by index:
-  for my $n (1..10) {
+  for my $n (0..9) {
     print "prime $n = $primes[$n]\n";
   }
 
   # Use in a loop over array:
   for my $p (@primes) {
-    print "$p\n";
     last if $p > $limit;   # stop sometime
+    print "$p\n";
   }
 
   # Use via array slice:
-  print join(",", @primes[0..50]), "\n";
+  print join(",", @primes[0..49]), "\n";
 
   # Use via each:
   use 5.012;
   while( my($index,$value) = each @primes ) {
-    print "The ${index}th prime is $value\n";
     last if $p > $limit;   # stop sometime
+    print "The ${index}th prime is $value\n";
   }
 
   # Use with shift:
@@ -184,8 +186,10 @@ then C<nth_prime> is used.
 
 Shifting acts like the array is losing elements at the front, so after two
 shifts, C<$primes[0] == 5>.  Unshift will move the internal shift index back
-one, unless given an argument which is the number to move back (it silently
-truncates so it does not shift past the beginning).
+one, unless given an argument which is the number to move back.  It will
+not shift past the beginning, so C<unshift @primes, ~0> is a useful way to
+reset from any shifts.
+
 Example:
 
   say shift @primes;     # 2
@@ -213,48 +217,48 @@ using the C<shift> operation, consider the iterator.
 The size of the array will always be shown as 2147483647 (IV32 max), even in
 a 64-bit environment where primes through C<2^64> are available.
 
-There are some people that find the idea of shifting a prime array abhorrent,
-as after two shifts, "the second prime is 7?!".  If this bothers you, do not
-use C<shift> on the tied array.
+Some people find the idea of shifting a prime array abhorrent, as after
+two shifts, "the second prime is 7?!".  If this bothers you, do not use
+C<shift> on the tied array.
 
 
 =head1 PERFORMANCE
 
   MPU forprimes:  forprimes { $sum += $_ } nth_prime(100_000);
   MPU iterator:   my $it = prime_iterator; $sum += $it->() for 1..100000;
-  MPU array:      $sum += $_ for @{primes(nth_prime(100_000))};
+  MPU array:      $sum = vecsum( @{primes(nth_prime(100_000))} );
   MPUPA:          tie my @primes, ...; $sum += $primes[$_] for 0..99999;
   MNSP:           my $seq = Math::NumSeq::Primes->new;
                   $sum += ($seq->next)[1] for 1..100000;
   MPTA:           tie my @primes, ...; $sum += $primes[$_] for 0..99999;
 
 Memory use is comparing the delta between just loading the module and running
-the test.  Perl 5.19.2, Math::NumSeq v61, Math::Prime::TiedArray v0.04.
+the test.  Perl 5.20.0, Math::NumSeq v70, Math::Prime::TiedArray v0.04.
 
 Summing the first 0.1M primes via walking the array:
 
-       7ms     52k    Math::Prime::Util      forprimes
-     140ms      0     Math::Prime::Util      prime_iterator
-      12ms   4400k    Math::Prime::Util      sum big array
-     220ms    840k    Math::Prime::Util::PrimeArray
-     130ms    280k    Math::NumSeq::Primes   sequence iterator
-    7560ms   65 MB    Math::Prime::TiedArray (extend 1k)
+       6ms     56k    Math::Prime::Util      forprimes
+       7ms    4 MB    Math::Prime::Util      sum big array
+     110ms      0     Math::Prime::Util      prime_iterator
+     155ms    644k    Math::Prime::Util::PrimeArray
+     120ms   1476k    Math::NumSeq::Primes   sequence iterator
+    7540ms   61 MB    Math::Prime::TiedArray (extend 1k)
 
 Summing the first 1M primes via walking the array:
 
-      0.1s    300k    Math::Prime::Util      forprimes
-      1.8s      0     Math::Prime::Util      prime_iterator
-      0.2s   40 MB    Math::Prime::Util      sum big array
-      1.9s   1.1MB    Math::Prime::Util::PrimeArray
-      7.5s   1.2MB    Math::NumSeq::Primes   sequence iterator
-    110.5s  785 MB    Math::Prime::TiedArray (extend 1k)
+      0.07s   268k    Math::Prime::Util      forprimes
+      0.09s  41 MB    Math::Prime::Util      sum big array
+      1.4s      0     Math::Prime::Util      prime_iterator
+      1.6s    644k    Math::Prime::Util::PrimeArray
+      7.1s   2428k    Math::NumSeq::Primes   sequence iterator
+    108.4s  760 MB    Math::Prime::TiedArray (extend 1k)
 
 Summing the first 10M primes via walking the array:
 
-      0.8s   5.9MB    Math::Prime::Util      forprimes
-     22.4s      0     Math::Prime::Util      prime_iterator
-      1.5s  368 MB    Math::Prime::Util      sum big array
-     19.1s   1.2MB    Math::Prime::Util::PrimeArray
+      0.7s    432k    Math::Prime::Util      forprimes
+      0.9s  394 MB    Math::Prime::Util      sum big array
+     16.9s      0     Math::Prime::Util      prime_iterator
+     15.4s    772k    Math::Prime::Util::PrimeArray
    3680  s  11.1MB    Math::NumSeq::Primes   sequence iterator
           >5000 MB    Math::Primes::TiedArray (extend 1k)
 
@@ -262,17 +266,19 @@ L<Math::Prime::Util> offers three obvious solutions: a big array, an iterator,
 and the C<forprimes> construct.  The big array is fast but uses a B<lot> of
 memory, forcing the user to start programming segments.  Using the iterator
 avoids all the memory use, but isn't as fast (this may improve in a later
-release, as this is a new feature).  The C<forprimes> construct is by far
-the fastest, but it isn't quite as flexible as the iterator (most notably
+release, as this is a new feature).  The C<forprimes> construct is both fast
+and low memory, but it isn't quite as flexible as the iterator (most notably
 there is no way to exit early, and it doesn't lend itself to wrapping inside
 a filter).
 
 L<Math::NumSeq::Primes> offers an iterator alternative, and works quite well
-for reasonably small numbers.  It does not support random access.  It is
-very fast for small values, but is very slow with large counts.
+as long as you don't need lots of primes.  It does not support random access.
+It has reasonable performance for the first few hundred thousand, but each
+successive value takes much longer to generate, and once past 1 million it
+isn't very practical.
 
 L<Math::Primes::TiedArray> is remarkably impractical for anything other
-than very small numbers.
+than tiny numbers.
 
 
 =head1 SEE ALSO

@@ -16,6 +16,7 @@ my $broken64 = (18446744073709550592 == ~0);
 use Test::More;
 
 my @primes = qw/
+100000982717289000001 100170437171734071001
 777777777777777777777767 777777777777777777777787
 877777777777777777777753 877777777777777777777871
 87777777777777777777777795577 890745785790123461234805903467891234681243
@@ -80,6 +81,8 @@ plan tests =>  0
              + 2   # liouville
              + 3   # gcd
              + 3   # lcm
+             + 1   # gcdext
+             + 1   # chinese
              + 2   # ispower
              + 15  # random primes
              + 2   # miller-rabin random
@@ -114,6 +117,8 @@ use Math::Prime::Util qw/
   liouville
   gcd
   lcm
+  gcdext
+  chinese
   is_power
   pn_primorial
   ExponentialIntegral
@@ -273,7 +278,6 @@ SKIP: {
   is( znprimroot(333822190384002421914469856494764513809), 3, "znprimroot(333822190384002421914469856494764513809)" );
 
   is( znlog(232752345212475230211680, 23847293847923847239847098123812075234, 804842536444911030681947), 13, "znlog(b,g,p): find k where b^k = g mod p" );
-
 }
 
 ###############################################################################
@@ -286,6 +290,9 @@ is( gcd(745845206184162095041321,61540282492897317017092677682588744425929751009
 is( lcm(9999999998987,10000000001011), 99999999999979999998975857, "lcm(p1,p2)" );
 is( lcm(892478777297173184633,892478777297173184633), 892478777297173184633, "lcm(p1,p1)" );
 is( lcm(23498324,32497832409432,328732487324,328973248732,3487234897324), 1124956497899814324967019145509298020838481660295598696, "lcm(a,b,c,d,e)" );
+
+is_deeply( [gcdext(803028077895224634710139483024654235947,101394830246542359478030280778952246347)], [7687627417944666569835322284775478836, -60884570288210047004733169112173096587, 3], "gcdext(a,b)" );
+is( chinese([26,17179869209],[17,34359738421]), 103079215280, "chinese([26,17179869209],[17,34359738421] = 103079215280" );
 
 is( is_power(18475335773296164196), "0", "ispower(18475335773296164196) == 0" );
 is( is_power(3089265681159475043336839581081873360674602365963130114355701114591322241990483812812582393906477998611814245513881), 14, "ispower(150607571^14) == 14" );
@@ -313,10 +320,10 @@ cmp_ok( $randprime, '>', 2**79, "random 80-bit prime is not too small");
 cmp_ok( $randprime, '<', 2**80, "random 80-bit prime is not too big");
 ok( is_prime($randprime), "random 80-bit prime is just right");
 
-$randprime = random_strong_prime(190);
-cmp_ok( $randprime, '>', 2**189, "random 190-bit strong prime is not too small");
-cmp_ok( $randprime, '<', 2**190, "random 190-bit strong prime is not too big");
-ok( is_prime($randprime), "random 190-bit strong prime is just right");
+$randprime = random_strong_prime(180);
+cmp_ok( $randprime, '>', 2**179, "random 180-bit strong prime is not too small");
+cmp_ok( $randprime, '<', 2**180, "random 180-bit strong prime is not too big");
+ok( is_prime($randprime), "random 180-bit strong prime is just right");
 
 $randprime = random_maurer_prime(80);
 cmp_ok( $randprime, '>', 2**79, "random 80-bit Maurer prime is not too small");

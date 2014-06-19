@@ -7,7 +7,7 @@ use Math::Prime::Util
    qw/moebius mertens euler_phi jordan_totient divisor_sum exp_mangoldt
       chebyshev_theta chebyshev_psi carmichael_lambda znorder liouville
       znprimroot znlog kronecker legendre_phi gcd lcm is_power valuation
-      invmod vecsum binomial
+      invmod vecsum binomial gcdext chinese
      /;
 
 my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
@@ -198,6 +198,9 @@ my @mult_orders = (
   [7410,2147475467,39409],
   [31407,2147475467,266],
 );
+if ($use64) {
+  push @mult_orders, [2, 2405286912458753, 1073741824];  # Pari #1031
+}
 
 my %primroots = (
    -11 => 2,
@@ -225,6 +228,7 @@ if ($use64) {
   $primroots{2232881419280027} = 6;         # factor divide goes to FP
   $primroots{14123555781055773271} = 6;     # bmodpow hits RT 71548
   $primroots{89637484042681} = 335;         # smallest root is large
+  $primroots{9223372036854775837} = 5;      # Pari #905
 }
 
 my @kroneckers = (
@@ -337,19 +341,66 @@ if ($use64) {
   push @lcms, [ [267220708,143775143,261076], 15015659316963449908];
 }
 
+my @gcdexts = (
+  [ [0, 28], [0, 1,28] ],
+  [ [ 28,0], [ 1,0,28] ],
+  [ [0,-28], [0,-1,28] ],
+  [ [-28,0], [-1,0,28] ],
+  [ [ 3706259912, 1223661804], [ 123862139,-375156991, 4] ],
+  [ [ 3706259912,-1223661804], [ 123862139, 375156991, 4] ],
+  [ [-3706259912, 1223661804], [-123862139,-375156991, 4] ],
+  [ [-3706259912,-1223661804], [-123862139, 375156991, 4] ],
+  [ [22,242], [1, 0, 22] ],
+  [ [2731583792,3028241442], [-187089956, 168761937, 2] ],
+  [ [42272720,12439910], [-21984, 74705, 70] ],
+);
+if ($use64) {
+  push @gcdexts, [ [10139483024654235947,8030280778952246347], [-2715309548282941287,3428502169395958570,1] ];
+}
+
+my @crts = (
+  [ [], 0 ],
+  [ [[4,5]], 4 ],
+  [ [[77,11]], 0 ],
+  [ [[0,5],[0,6]], 0 ],
+  [ [[14,5],[0,6]], 24 ],
+  [ [[10,11],[4,22],[9,19]], undef ],
+  [ [[77,13],[79,17]], 181 ],
+  [ [[2,3],[3,5],[2,7]], 23 ],
+  [ [[10,11],[4,12],[12,13]], 1000 ],
+  [ [[42,127],[24,128]], 2328 ],             # Some tests from Mod::Int
+  [ [[32,126],[23,129]], 410 ],
+  [ [[2328,16256],[410,5418]], 28450328 ],
+  [ [[1,10],[11,100]], 11 ],
+  [ [[11,100],[22,100]], undef ],
+);
+
 my @znlogs = (
  [ [5,2,1019], 10],
  [ [2,4,17], undef],
  [ [7,3,8], undef],
+ [ [7,17,36], undef],       # No solution (Pari #1463)
+ [ [1,8,9], 0],
  [ [3,3,8], 1],
  [ [10,2,101], 25],
  [ [2,55,101], 73],         # 2 = 55^73 mod 101
+ [ [5,2,401], 48],          # 5 = 2^48 mod 401  (Pari #1285)
  [ [228,2,383], 110],
  [ [3061666278, 499998, 3332205179], 22],
+ [ [5678,5,10007], 8620],   # 5678 = 5^8620 mod 10007
+ [ [7531,6,8101], 6689],    # 7531 = 6^6689 mod 8101
+ # Some odd cases.  Pari pre-2.6 and post 2.6 have issues with them.
+ [ [0,30,100], 2],          # 0 = 30^2 mod 100
+ [ [1,1,101], 0],           # 1 = 1^0 mod 101
+ [ [8,2,102], 3],           # 8 = 2^3 mod 102
+ [ [18,18,102], 1],         # 18 = 18^1 mod 102
 );
-if ($usexs) {
-  push @znlogs, [ [5678,5,10007], 8620];  # 5678 = 5^8620 mod 10007
+if ($usexs || $extra) {
   push @znlogs, [ [5675,5,10000019], 2003974];  # 5675 = 5^2003974 mod 10000019
+}
+if ($usexs && $use64) {
+  # Nice case for PH
+  push @znlogs, [ [32712908945642193,5,71245073933756341], 5945146967010377];
 }
 
 my %powers = (
@@ -396,6 +447,10 @@ my @vecsums = (
   [ "18446744073709551615", "18446744073709551615","-18446744073709551615","18446744073709551615" ],
   [ "55340232221128654848", "18446744073709551616","18446744073709551616","18446744073709551616" ],
 );
+
+if ($use64) {
+  push @vecsums, [ "18446744073709620400", 18446744073709540400, (1000) x 80 ];
+}
 
 my @binomials = (
  [ 0,0, 1 ],
@@ -450,6 +505,8 @@ plan tests => 0 + 1
                 + scalar(@kroneckers)
                 + scalar(@gcds)
                 + scalar(@lcms)
+                + scalar(@gcdexts)
+                + scalar(@crts)
                 + scalar(@mult_orders)
                 + scalar(@znlogs)
                 + scalar(@legendre_sums)
@@ -620,6 +677,18 @@ foreach my $garg (@lcms) {
   my($aref, $exp) = @$garg;
   my $lcm = lcm(@$aref);
   is( $lcm, $exp, "lcm(".join(",",@$aref).") = $exp" );
+}
+###### gcdext
+foreach my $garg (@gcdexts) {
+  my($aref, $eref) = @$garg;
+  my($x,$y) = @$aref;
+  is_deeply( [gcdext($x,$y)], $eref, "gcdext($x,$y) = [@$eref]" );
+}
+###### chinese
+foreach my $carg (@crts) {
+  my($aref, $exp) = @$carg;
+  my $crt = chinese(@$aref);
+  is( $crt, $exp, "crt(".join(",",map { "[@$_]" } @$aref).") = " . ((defined $exp) ? $exp : "<undef>") );
 }
 ###### znorder
 foreach my $moarg (@mult_orders) {

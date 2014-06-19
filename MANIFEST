@@ -65,7 +65,9 @@ examples/abundant.pl
 examples/find_mr_bases.pl
 examples/inverse_totient.pl
 examples/numseqs.pl
-examples/parallel_fibprime.pl
+examples/fibprime-serial.pl
+examples/fibprime-threads.pl
+examples/fibprime-mce.pl
 examples/porter.pl
 examples/verify-gmp-ecpp-cert.pl
 examples/verify-sage-ecpp-cert.pl
@@ -112,6 +114,7 @@ t/25-lucas_sequences.t
 t/30-relations.t
 t/31-threading.t
 t/32-iterators.t
+t/33-examples.t
 t/50-factoring.t
 t/51-primearray.t
 t/70-rt-bignum.t
@@ -122,6 +125,7 @@ t/91-release-pod-syntax.t
 t/92-release-pod-coverage.t
 t/93-release-spelling.t
 t/94-weaken.t
+xt/chinese.pl
 xt/moebius-mertens.pl
 xt/totient-range.pl
 xt/primality-small.pl
