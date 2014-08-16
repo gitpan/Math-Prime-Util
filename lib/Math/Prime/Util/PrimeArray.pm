@@ -4,7 +4,7 @@ use warnings;
 
 BEGIN {
   $Math::Prime::Util::PrimeArray::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PrimeArray::VERSION = '0.42';
+  $Math::Prime::Util::PrimeArray::VERSION = '0.43';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -137,7 +137,7 @@ Math::Prime::Util::PrimeArray - A tied array for primes
 
 =head1 VERSION
 
-Version 0.42
+Version 0.43
 
 
 =head1 SYNOPSIS
@@ -154,7 +154,7 @@ Version 0.42
 
   # Use in a loop over array:
   for my $p (@primes) {
-    last if $p > $limit;   # stop sometime
+    last if $p > 1000;   # stop sometime
     print "$p\n";
   }
 
@@ -164,12 +164,12 @@ Version 0.42
   # Use via each:
   use 5.012;
   while( my($index,$value) = each @primes ) {
-    last if $p > $limit;   # stop sometime
+    last if $value > 1000;   # stop sometime
     print "The ${index}th prime is $value\n";
   }
 
   # Use with shift:
-  while ((my $p = shift @primes) < $limit) {
+  while ((my $p = shift @primes) < 1000) {
     print "$p\n";
   }
 

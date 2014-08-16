@@ -66,22 +66,22 @@ int factor(UV n, UV *factors)
   if (f*f <= n) {
     UV sp = 4, lastsp = 83;
     while (sp < lastsp) {            /* Trial division from 7 to 421 */
-      if (f*f > n) break;
       while ( (n%f) == 0 ) {
         factors[nfactors++] = f;
         n /= f;
       }
       f = primes_small[++sp];
+      if (f*f > n) break;
     }
     /* If n is small and still composite, finish it here */
     if (n < 2011*2011 && f*f <= n) {  /* Trial division from 431 to 2003 */
       while (sp < NPRIMES_SMALL) {
-        if (f*f > n) break;
         while ( (n%f) == 0 ) {
           factors[nfactors++] = f;
           n /= f;
         }
         f = primes_small[++sp];
+        if (f*f > n) break;
       }
     }
   }
@@ -132,6 +132,11 @@ int factor(UV n, UV *factors)
       if (!split_success) {
         split_success = pbrent_factor(n, tofac_stack+ntofac, br_rounds, 3)-1;
         if (verbose) { if (split_success) printf("pbrent 1:  %"UVuf" %"UVuf"\n", tofac_stack[ntofac], tofac_stack[ntofac+1]); else printf("pbrent 0\n"); }
+      }
+      /* Give larger inputs a run with p-1 before SQUFOF */
+      if (!split_success && n > (UV_MAX >> 15) && MULMODS_ARE_FAST) {
+        split_success = pminus1_factor(n, tofac_stack+ntofac, 2000, 20000)-1;
+        if (verbose) printf("small p-1 %d\n", split_success);
       }
       /* SQUFOF with these parameters gets 99.9% of everything left */
       if (!split_success && n < (UV_MAX>>2)) {
@@ -198,19 +203,18 @@ int factor(UV n, UV *factors)
 
 int factor_exp(UV n, UV *factors, UV* exponents)
 {
-  int i, j, nfactors;
+  int i = 1, j = 1, nfactors;
 
   if (n == 1) return 0;
-  /* MPUassert(factors != 0, "factors array is null"); */
   nfactors = factor(n, factors);
 
   if (exponents == 0) {
-    for (i = 1, j = 1; i < nfactors; i++)
+    for (; i < nfactors; i++)
       if (factors[i] != factors[i-1])
         factors[j++] = factors[i];
   } else {
     exponents[0] = 1;
-    for (i = 1, j = 1; i < nfactors; i++) {
+    for (; i < nfactors; i++) {
       if (factors[i] != factors[i-1]) {
         exponents[j] = 1;
         factors[j++] = factors[i];
@@ -298,12 +302,15 @@ static int _divisors_from_factors(UV v, UV npe, UV* fp, UV* fe, UV* res) {
   }
 }
 
+static int numcmp(const void *a, const void *b)
+  { const UV *x = a, *y = b; return (*x > *y) ? 1 : (*x < *y) ? -1 : 0; }
+
 UV* _divisor_list(UV n, UV *num_divisors)
 {
   UV factors[MPU_MAX_FACTORS+1];
   UV exponents[MPU_MAX_FACTORS+1];
   UV* divs;
-  int i, j, nfactors, ndivisors;
+  int i, nfactors, ndivisors;
 
   if (n <= 1) {
     New(0, divs, 2, UV);
@@ -319,18 +326,9 @@ UV* _divisor_list(UV n, UV *num_divisors)
     ndivisors *= (exponents[i] + 1);
   New(0, divs, ndivisors, UV);
   (void) _divisors_from_factors(1, nfactors, factors, exponents, divs);
-  { /* Sort (Shell sort is easy and efficient) */
-    static int gaps[] = {301, 132, 57, 23, 10, 4, 1, 0};
-    int gap, gapi = 0;
-    for (gap = gaps[gapi]; gap > 0; gap = gaps[++gapi]) {
-      for (i = gap; i < ndivisors; i++) {
-        UV v = divs[i];
-        for (j = i; j >= gap && divs[j-gap] > v; j -= gap)
-          divs[j] = divs[j-gap];
-        divs[j] = v;
-      }
-    }
-  }
+  /* Sort divisors (numeric ascending) */
+  qsort(divs, ndivisors, sizeof(UV), numcmp);
+  /* Return number of divisors and list */
   *num_divisors = ndivisors;
   return divs;
 }
@@ -437,6 +435,26 @@ int holf_factor(UV n, UV *factors, UV rounds)
   UV i, s, m, f;
 
   MPUassert( (n >= 3) && ((n%2) != 0) , "bad n in holf_factor");
+
+  if (n <= (UV_MAX >> 9)) {    /* Try with premultiplier first */
+    UV npre = n * 480;
+    UV ni = npre;
+    while (rounds--) {
+      s = isqrt(ni) + 1;
+      m = (s*s) - ni;
+      if (is_perfect_square(m)) {
+        f = gcd_ui(n, s - isqrt(m));
+        if (f > 1 && f < n) {
+          factors[0] = f;
+          factors[1] = n/f;
+          MPUassert( factors[0] * factors[1] == n , "incorrect factoring");
+          return 2;
+        }
+      }
+      if (ni >= (ni+npre)) break;
+      ni += npre;
+    }
+  }
 
   for (i = 1; i <= rounds; i++) {
     s = (UV) sqrt( (double)n * (double)i );

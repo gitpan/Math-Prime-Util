@@ -4,7 +4,7 @@ use warnings;
 
 BEGIN {
   $Math::Prime::Util::MemFree::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::MemFree::VERSION = '0.42';
+  $Math::Prime::Util::MemFree::VERSION = '0.43';
 }
 
 use base qw( Exporter );
@@ -44,7 +44,7 @@ Math::Prime::Util::MemFree - An auto-free object for Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.42
+Version 0.43
 
 
 =head1 SYNOPSIS
@@ -53,7 +53,7 @@ Version 0.42
 
   {
     my $mf = Math::Prime::Util::MemFree->new;
-    ... do things with Math::Prime::Util ...
+    # ... do things with Math::Prime::Util ...
   }
   # When the last object leaves scope, prime_memfree is called.
 

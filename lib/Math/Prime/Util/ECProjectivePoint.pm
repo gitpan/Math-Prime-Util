@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::ECProjectivePoint::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::ECProjectivePoint::VERSION = '0.42';
+  $Math::Prime::Util::ECProjectivePoint::VERSION = '0.43';
 }
 
 BEGIN {
@@ -199,6 +199,8 @@ __END__
 
 =for stopwords mul
 
+=for test_synopsis use v5.14;  my($c,$n,$k,$ECP2);
+
 
 =head1 NAME
 
@@ -207,7 +209,7 @@ Math::Prime::Util::ECProjectivePoint - Elliptic curve operations for projective 
 
 =head1 VERSION
 
-Version 0.42
+Version 0.43
 
 
 =head1 SYNOPSIS
@@ -215,11 +217,11 @@ Version 0.42
   # Create a point on a curve (a,b,n) with coordinates 0,1
   my $ECP = Math::Prime::Util::ECProjectivePoint->new($c, $n, 0, 1);
 
-  # scalar multiplication by k.
-  $ECP->mul($k)
+  # scalar multiplication by $k.
+  $ECP->mul($k);
 
   # add two points on the same curve
-  $ECP->add($ECP2)
+  $ECP->add($ECP2);
 
   say "P = O" if $ECP->is_infinity();
 
