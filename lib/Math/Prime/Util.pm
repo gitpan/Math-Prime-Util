@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.43';
+  $Math::Prime::Util::VERSION = '0.44_001';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -22,12 +22,13 @@ our @EXPORT_OK =
       is_extra_strong_lucas_pseudoprime
       is_almost_extra_strong_lucas_pseudoprime
       is_frobenius_underwood_pseudoprime
-      is_aks_prime
+      is_aks_prime is_bpsw_prime
       is_power
       miller_rabin_random
       lucas_sequence
       primes twin_primes
-      forprimes forcomposites foroddcomposites fordivisors forpart
+      forprimes forcomposites foroddcomposites fordivisors
+      forpart forcomb forperm
       prime_iterator prime_iterator_object
       next_prime  prev_prime
       prime_count
@@ -45,13 +46,13 @@ our @EXPORT_OK =
       partitions
       chebyshev_theta chebyshev_psi
       divisor_sum carmichael_lambda
-      kronecker binomial znorder znprimroot znlog legendre_phi
+      kronecker binomial factorial znorder znprimroot znlog legendre_phi
       ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR
   );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
 
 # These are only exported if specifically asked for
-push @EXPORT_OK, (qw/trial_factor fermat_factor holf_factor squfof_factor prho_factor pbrent_factor pminus1_factor pplus1_factor/);
+push @EXPORT_OK, (qw/trial_factor fermat_factor holf_factor squfof_factor prho_factor pbrent_factor pminus1_factor pplus1_factor ecm_factor/);
 
 my %_Config;
 
@@ -208,8 +209,8 @@ sub _reftyped {
     # Perl 5.6 truncates arguments to doubles if you look at them funny
     return "$_[1]" if "$_[1]" <= 562949953421312;
   } elsif ($_[1] >= 0) {
-    # Perl 5.20.0 brought back a stupid double conversion bug
-    return $_[1] if $_[1] <= 18446744073709550591 || ''.int($_[1]) <= ~0;
+    # TODO: This wasn't working right in 5.20.0-RC1, verify correct
+    return $_[1] if $_[1] <= ~0;
   } else {
     return $_[1] if ''.int($_[1]) >= -(~0>>1);
   }
@@ -792,6 +793,26 @@ sub verify_prime {
 
 #############################################################################
 
+sub ecm_factor {
+  my($n, $B1, $B2, $ncurves) = @_;
+  _validate_positive_integer($n);
+  _validate_positive_integer($B1) if defined $B1;
+  _validate_positive_integer($B2) if defined $B2;
+  _validate_positive_integer($ncurves) if defined $ncurves;
+  return if $n == 1;
+  if ($_HAVE_GMP) {
+    $B1 = 0 if !defined $B1;
+    $ncurves = 0 if !defined $ncurves;
+    my @factors = Math::Prime::Util::GMP::ecm_factor($n, $B1, $ncurves);
+    if (ref($_[0]) eq 'Math::BigInt') {
+      @factors = map { ($_ > ~0) ? Math::BigInt->new(''.$_) : $_ } @factors;
+    }
+    return @factors;
+  }
+  require Math::Prime::Util::PP;
+  Math::Prime::Util::PP::ecm_factor($n, $B1, $B2, $ncurves);
+}
+
 #############################################################################
 
 sub RiemannZeta {
@@ -863,7 +884,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum gcdext chinese
+=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum gcdext chinese
 
 =for test_synopsis use v5.14;  my($k,$x);
 
@@ -875,7 +896,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.43
+Version 0.44_001
 
 
 =head1 SYNOPSIS
@@ -971,6 +992,11 @@ Version 0.43
   say partitions(1000);
   # Show all prime partitions of 25
   forpart { say "@_" unless scalar grep { !is_prime($_) } @_ } 25;
+  # List all 3-way combinations of an array
+  my @cdata = qw/apple bread curry donut eagle/;
+  forcomb { say "@cdata[@_]" } @cdata, 3;
+  # or all permutations
+  forperm { say "@cdata[@_]" } @cdata;
 
   # divisor sum
   my $sigma  = divisor_sum( $n );       # sum of divisors
@@ -1265,6 +1291,51 @@ Each value must be a non-negative integer.  The allowable keys are:
   amax    all elements must be at most this value
   nmin    the array must have at least this many values
   nmax    the array must have at most this many values
+
+Like forcomb and forperm, the partition return values are read-only.  Any
+attempt to modify them will result in undefined behavior.
+
+
+=head2 forcomb
+
+Given non-negative arguments C<n> and C<k>, the block is called with C<@_>
+set to the C<k> element array of values from C<0> to C<n-1> representing
+the combinations in lexicographical order.  While the L<binomial> function
+gives the total number, this function can be used to enumerate the choices.
+
+Rather than give a data array as input, an integer is used for C<n>.
+A convenient way to map to array elements is:
+
+  forcomb { say "@data[@_]" } @data, 3;
+
+where the block maps the combination array C<@_> to array values, the
+argument for C<n> is given the array since it will be evaluated as a scalar
+and hence give the size, and the argument for C<k> is the desired size of
+the combinations.
+
+Like forpart and forperm, the index return values are read-only.  Any
+attempt to modify them will result in undefined behavior.
+
+
+=head2 forperm
+
+Given non-negative argument C<n>, the block is called with C<@_> set to
+the C<k> element array of values from C<0> to C<n-1> representing
+permutations in lexicographical order.
+The total number of calls will be C<n!>.
+
+Rather than give a data array as input, an integer is used for C<n>.
+A convenient way to map to array elements is:
+
+  forperm { say "@data[@_]" } @data;
+
+where the block maps the permutation array C<@_> to array values, and the
+argument for C<n> is given the array since it will be evaluated as a scalar
+and hence give the size.
+
+Like forpart and forcomb, the index return values are read-only.  Any
+attempt to modify them will result in undefined behavior.
+
 
 =head2 prime_iterator
 
@@ -2308,6 +2379,14 @@ function, and GMP's C<mpz_kronecker(a,n)>, C<mpz_jacobi(a,n)>, and
 C<mpz_legendre(a,n)> functions.
 
 
+=head2 factorial
+
+Given positive integer argument C<n>, returns the factorial of C<n>,
+defined as the product of the integers 1 to C<n> with the special case
+of C<factorial(0) = 1>.  This corresponds to Pari's C<factorial(n)>
+and Mathematica's C<Factorial[n]> functions.
+
+
 =head2 binomial
 
 Given integer arguments C<n> and C<k>, returns the binomial coefficient
@@ -2870,6 +2949,14 @@ find a factor C<p> of C<n> where C<p-1> is smooth (it has no large factors).
 Produces factors, not necessarily prime, of the positive number input.  This
 is Williams' C<p+1> method, using one stage and two predefined initial points.
 
+=head2 ecm_factor
+
+  my @factors = ecm_factor($n);
+  my @factors = ecm_factor($n, 100, 400, 10);      # B1, B2, # of curves
+
+Produces factors, not necessarily prime, of the positive number input.  This
+is the elliptic curve method using two stages.
+
 
 
 =head1 MATHEMATICAL FUNCTIONS
@@ -3365,6 +3452,10 @@ typically much faster and will use less memory, but there are some cases where
 MP:TA is faster (MP:TA stores all entries up to the largest request, while
 MPU:PA stores only a window around the last request).
 
+L<List::Gen> is very interesting and includes a built-in primes iterator as
+well as a C<is_prime> filter for arbitrary sequences.  Unfortunately both
+are very slow.
+
 L<Math::Primality> supports C<is_prime>, C<is_pseudoprime>,
 C<is_strong_pseudoprime>, C<is_strong_lucas_pseudoprime>, C<next_prime>,
 C<prev_prime>, C<prime_count>, and C<is_aks_prime> functionality.
@@ -3396,6 +3487,17 @@ and in fact they use the same algorithm.  The former module uses caching
 of moduli to speed up further operations.  MPU does not do this.  This would
 only be important for cases where the lcm is larger than a native int (noting
 that use in cryptography would always have large moduli).
+
+For combinations and permutations there are many alternatives.  One
+difference with nearly all of them is that MPU's L</forcomb> and
+L</forperm> functions don't operate directly on a user array but on
+generic indices.
+L<Math::Combinatorics> and L<Algorithm::Combinatorics> have more features,
+but will be slower.
+L<List::Permutor> does permutations with an iterator.
+L<Algorithm::FastPermute> and L<Algorithm::Permute> are very similar
+but can be 2-10x faster than MPU (they use the same user-block
+structure but twiddle the user array each call).
 
 L<Math::Pari> supports a lot of features, with a great deal of overlap.  In
 general, MPU will be faster for native 64-bit integers, while it's differs

@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.43';
+  $Math::Prime::Util::PP::VERSION = '0.44_001';
 }
 
 BEGIN {
@@ -283,7 +283,7 @@ sub _is_prime7 {  # n must not be divisible by 2, 3, or 5
 
 sub is_prime {
   my($n) = @_;
-  return 0 if int($n) < 0;
+  return 0 if defined($n) && int($n) < 0;
   _validate_positive_integer($n);
 
   if (ref($n) eq 'Math::BigInt') {
@@ -304,6 +304,7 @@ sub is_prime {
 # Slow since it's all in PP and uses bigints.
 sub is_bpsw_prime {
   my($n) = @_;
+  return 0 if defined($n) && int($n) < 0;
   _validate_positive_integer($n);
   return 0 unless _miller_rabin_2($n);
   if ($n <= 18446744073709551615) {
@@ -1954,6 +1955,13 @@ sub binomial {
       $r = _bigint_to_int($r) if $r->bacmp(''.~0) <= 0;
     }
   }
+  $r;
+}
+
+sub factorial {
+  my($n) = @_;
+  my $r = Math::BigInt->new(''.$n)->bfac();
+  $r = _bigint_to_int($r) if $r->bacmp(''.~0) <= 0;
   $r;
 }
 
@@ -3903,6 +3911,51 @@ sub forpart {
     }
   }
 }
+sub forcomb {
+  my($sub, $n, $k) = @_;
+  _validate_positive_integer($n);
+  if (defined $k) {
+    _validate_positive_integer($k);
+  } else {
+    $k = $n;
+  }
+  return if $k > $n || $n == 0 || $k == 0;
+  my @x = (0, 0 .. $n);
+  my @c = reverse 1 .. $k;
+  while (1) {
+    $sub->(@x[reverse @c]);
+    next if $c[0]++ < $n;
+    my $i = 1;
+    $i++ while $i < $k && $c[$i] >= $n-$i;
+    last if $i >= $k;
+    $c[$i]++;
+    while ($i-- > 0) { $c[$i] = $c[$i+1] + 1; }
+  }
+}
+sub forperm {
+  my($sub, $n, $k) = @_;
+  _validate_positive_integer($n);
+  croak "Too many arguments for forperm" if defined $k;
+  $k = $n;
+  return if $k > $n || $n == 0 || $k == 0;
+  if ($n < 2) { $sub->(0) if $n == 1; return; }
+  my @c = reverse 0 .. $k-1;
+  my $inc = 0;
+  while (1) {
+    $sub->(reverse @c);
+    if (++$inc & 1) {
+      @c[0,1] = @c[1,0];
+      next;
+    }
+    my $j = 2;
+    $j++ while $j < $k && $c[$j] > $c[$j-1];
+    last if $j >= $k;
+    my $m = 0;
+    $m++ while $c[$j] > $c[$m];
+    @c[$j,$m] = @c[$m,$j];
+    @c[0..$j-1] = reverse @c[0..$j-1];
+  }
+}
 
 1;
 
@@ -3923,7 +3976,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.43
+Version 0.44_001
 
 
 =head1 SYNOPSIS

@@ -64,6 +64,16 @@ WriteMakefile1(
                     url  => 'https://github.com/danaj/Math-Prime-Util',
                   },
                },
+               #provides => {
+               #  'Math::Prime::Util' => {
+               #     file    => 'lib/Math/Prime/Util.pm',
+               #     version => '0.44',
+               #  },
+               #  'ntheory' => {
+               #     file    => 'lib/ntheory.pm',
+               #     version => '0.44',
+               #  },
+               #},
                prereqs => {
                  runtime => {
                    recommends => {

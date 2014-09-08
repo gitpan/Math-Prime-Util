@@ -523,6 +523,11 @@ gcd(...)
         lo += n;
       }
       if (status != 0 && hi == -1 && lo > IV_MAX)  XSRETURN_IV((IV)lo);
+      /* If status != 0 then the 128-bit result is:
+       *   result = ( hi << 64) + lo     if hi > 0
+       *   result = (-hi << 64) - lo     if hi < 0
+       * We have to somehow return this as a bigint, which we can't do here.
+       * Sad, because this will now be wasted work and slow. */
       if (hi != 0) status = 0;  /* Overflow */
       ret = lo;
     } else {
@@ -1026,48 +1031,45 @@ carmichael_lambda(IN SV* svn)
     liouville = 2
     chebyshev_theta = 3
     chebyshev_psi = 4
-    exp_mangoldt = 5
-    znprimroot = 6
+    factorial = 5
+    exp_mangoldt = 6
+    znprimroot = 7
   PREINIT:
     int status;
   PPCODE:
-    status = _validate_int(aTHX_ svn, (ix >= 5) ? 1 : 0);
+    status = _validate_int(aTHX_ svn, (ix >= 6) ? 1 : 0);
+    if (status != 0) {
+      UV r, n = my_svuv(svn);
+      switch (ix) {
+        case 0:  XSRETURN_UV(carmichael_lambda(n)); break;
+        case 1:  XSRETURN_IV(mertens(n)); break;
+        case 2:  { UV factors[MPU_MAX_FACTORS+1];
+                   int nfactors = factor(my_svuv(svn), factors);
+                   RETURN_NPARITY( (nfactors & 1) ? -1 : 1 ); }
+                 break;
+        case 3:  XSRETURN_NV(chebyshev_function(n, 0)); break;
+        case 4:  XSRETURN_NV(chebyshev_function(n, 1)); break;
+        case 5:  r = factorial(n);
+                 if (r != 0) XSRETURN_UV(r);
+                 status = 0; break;
+        case 6:  XSRETURN_UV( (status == -1) ? 1 : exp_mangoldt(n) ); break;
+        case 7:
+        default: if (status == -1) n = -(IV)n;
+                 r = znprimroot(n);
+                 if (r == 0 && n != 1)  XSRETURN_UNDEF;  /* No root */
+                 XSRETURN_UV(r);  break;
+      }
+    }
     switch (ix) {
-      case 0: if (status == 1) XSRETURN_UV(carmichael_lambda(my_svuv(svn)));
-              _vcallsub_with_gmp("carmichael_lambda");
-              break;
-      case 1: if (status == 1) XSRETURN_IV(mertens(my_svuv(svn)));
-              _vcallsub_with_pp("mertens");
-              break;
-      case 2: if (status == 1) {
-                UV factors[MPU_MAX_FACTORS+1];
-                int nfactors = factor(my_svuv(svn), factors);
-                RETURN_NPARITY( (nfactors & 1) ? -1 : 1 );
-              }
-              _vcallsub_with_gmp("liouville");
-              break;
-      case 3: if (status == 1) XSRETURN_NV(chebyshev_function(my_svuv(svn),0));
-              _vcallsub_with_pp("chebyshev_theta");
-              break;
-      case 4: if (status == 1) XSRETURN_NV(chebyshev_function(my_svuv(svn),1));
-              _vcallsub_with_pp("chebyshev_psi");
-              break;
-      case 5: if (status != 0)
-                XSRETURN_UV( (status == -1) ? 1 : exp_mangoldt(my_svuv(svn)) );
-              _vcallsub_with_gmp("exp_mangoldt");
-              break;
-      case 6:
-      default:if (status != 0) {
-                UV r, n = my_svuv(svn);
-                if (status == -1) n = -(IV)n;
-                r = znprimroot(n);
-                if (r == 0 && n != 1)
-                  XSRETURN_UNDEF;   /* No root, return undef */
-                else
-                  XSRETURN_UV(r);
-              }
-              _vcallsub_with_gmp("znprimroot");
-              break;
+      case 0:  _vcallsub_with_gmp("carmichael_lambda");  break;
+      case 1:  _vcallsub_with_pp("mertens"); break;
+      case 2:  _vcallsub_with_gmp("liouville"); break;
+      case 3:  _vcallsub_with_pp("chebyshev_theta"); break;
+      case 4:  _vcallsub_with_pp("chebyshev_psi"); break;
+      case 5:  _vcallsub_with_pp("factorial"); break;
+      case 6:  _vcallsub_with_gmp("exp_mangoldt"); break;
+      case 7:
+      default: _vcallsub_with_gmp("znprimroot");
     }
     return; /* skip implicit PUTBACK */
 
@@ -1437,5 +1439,70 @@ forpart (SV* block, IN SV* svn, IN SV* svh = 0)
       Safefree(x);
     }
     for (i = 0; i <= n; i++)
+      SvREFCNT_dec(svals[i]);
+    Safefree(svals);
+
+void
+forcomb (SV* block, IN SV* svn, IN SV* svk = 0)
+  ALIAS:
+    forperm = 1
+  PROTOTYPE: &$;$
+  PREINIT:
+    UV i, n, k, j, m;
+    GV *gv;
+    HV *stash;
+    CV *cv;
+    SV** svals;
+    UV*  cm;
+  PPCODE:
+    cv = sv_2cv(block, &stash, &gv, 0);
+    if (cv == Nullcv)
+      croak("Not a subroutine reference");
+    if (ix == 1 && svk != 0)
+      croak("Too many arguments for forperm");
+
+    if (!_validate_int(aTHX_ svn, 0) || (svk != 0 && !_validate_int(aTHX_ svk, 0))) {
+      _vcallsub_with_pp( (ix == 0) ? "forcomb" : "forperm" );
+      return;
+    }
+
+    n = my_svuv(svn);
+    k = (svk == 0) ? n : my_svuv(svk);
+    if (k > n || n == 0 || k == 0)
+      return;
+
+    New(0, cm, k, UV);
+    for (i = 0; i < k; i++)
+      cm[i] = k-i;
+
+    New(0, svals, n, SV*);
+    for (i = 0; i < n; i++) {
+      svals[i] = newSVuv(i);
+      SvREADONLY_on(svals[i]);
+    }
+
+    while (1) {
+      { dSP; ENTER; PUSHMARK(SP);                /* Send the values */
+        EXTEND(SP, k);
+        for (i = 0; i < k; i++) { PUSHs(svals[ cm[k-i-1]-1 ]); }
+        PUTBACK; call_sv((SV*)cv, G_VOID|G_DISCARD); LEAVE;
+      }
+      if (ix == 0) {
+        if (cm[0]++ < n)  continue;                /* Increment last value */
+        for (i = 1; i < k && cm[i] >= n-i; i++) ;  /* Find next index to incr */
+        if (i >= k)  break;                        /* Done! */
+        cm[i]++;                                   /* Increment this one */
+        while (i-- > 0)  cm[i] = cm[i+1] + 1;      /* Set the rest */
+      } else {
+        for (j = 1; j < k && cm[j] > cm[j-1]; j++) ;    /* Find last decrease */
+        if (j >= k) break;                              /* Done! */
+        for (m = 0; cm[j] > cm[m]; m++) ;               /* Find next greater */
+        { UV t = cm[j];  cm[j] = cm[m];  cm[m] = t; }   /* Swap */
+        for (i = j-1, m = 0;  m < i;  i--, m++)         /* Reverse the end */
+          { UV t = cm[i];  cm[i] = cm[m];  cm[m] = t; }
+      }
+    }
+    Safefree(cm);
+    for (i = 0; i < n; i++)
       SvREFCNT_dec(svals[i]);
     Safefree(svals);

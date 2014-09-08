@@ -24,6 +24,9 @@
 #elif defined(__MATH_DECLARE_LDOUBLE) || \
       defined(__LONG_DOUBLE_128__) || \
       defined(__LONGDOUBLE128)
+#if defined(__IBMC__) || defined(__IBMCPP__)
+  /* XLC is different  */
+#else
   /* GLIBC */
   extern long double powl(long double, long double);
   extern long double expl(long double);
@@ -31,6 +34,7 @@
   extern long double fabsl(long double);
   extern long double floorl(long double);
   extern long double ceill(long double);
+#endif
 #else
   #define powl(x, y)  (long double) pow( (double) (x), (double) (y) )
   #define expl(x)     (long double) exp( (double) (x) )
@@ -1345,8 +1349,15 @@ int kronecker_ss(IV a, IV b) {
   return kronecker_su(a, -b) * ((a < 0) ? -1 : 1);
 }
 
-/* Thanks to MJD and RosettaCode */
-UV binomial(UV n, UV k) {
+UV factorial(UV n) {
+  UV i, r = 1;
+  if ( (n > 12 && sizeof(UV) <= 4) || (n > 20 && sizeof(UV) <= 8) ) return 0;
+  for (i = 2; i <= n; i++)
+    r *= i;
+  return r;
+}
+
+UV binomial(UV n, UV k) {    /* Thanks to MJD and RosettaCode for ideas */
   UV d, g, r = 1;
   if (k == 0) return 1;
   if (k == 1) return n;
@@ -1478,25 +1489,24 @@ UV znorder(UV a, UV n) {
   UV fac[MPU_MAX_FACTORS+1];
   UV exp[MPU_MAX_FACTORS+1];
   int i, nfactors;
-  UV j, phi, k = 1;
+  UV j, k, phi;
 
   if (n <= 1) return n;   /* znorder(x,0) = 0, znorder(x,1) = 1          */
   if (a <= 1) return a;   /* znorder(0,x) = 0, znorder(1,x) = 1  (x > 1) */
   if (gcd_ui(a,n) > 1)  return 0;
 
-  /* Abhijit Das, algorithm 1.7, applied to Carmichael Lambda */
+  /* Cohen 1.4.3 using Carmichael Lambda */
   phi = carmichael_lambda(n);
   nfactors = factor_exp(phi, fac, exp);
+  k = phi;
   for (i = 0; i < nfactors; i++) {
-    UV b, ek, pi = fac[i], ei = exp[i];
-    UV phidiv = phi / pi;
-    for (j = 1; j < ei; j++)
-      phidiv /= pi;
-    b = powmod(a, phidiv, n);
-    for (ek = 0; b != 1; b = powmod(b, pi, n)) {
-      if (ek++ >= ei) return 0;
+    UV b, a1, ek, pi = fac[i], ei = exp[i];
+    b = pi; for (j = 1; j < ei; j++)  b *= pi;
+    k /= b;
+    a1 = powmod(a, k, n);
+    for (ek = 0; a1 != 1 && ek++ <= ei; a1 = powmod(a1, pi, n))
       k *= pi;
-    }
+    if (ek > ei) return 0;
   }
   return k;
 }
