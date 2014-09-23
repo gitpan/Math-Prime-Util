@@ -178,6 +178,19 @@ sub is_almost_extra_strong_lucas_pseudoprime {
   } else                  { $increment = 1; }
   return Math::Prime::Util::PP::is_almost_extra_strong_lucas_pseudoprime($n, $increment);
 }
+sub is_perrin_pseudoprime {
+  my($n) = @_;
+  return 0 if defined $n && int($n) < 0;
+  _validate_positive_integer($n);
+  return Math::Prime::Util::PP::is_perrin_pseudoprime($n);
+}
+sub is_frobenius_pseudoprime {
+  my($n, $P, $Q) = @_;
+  return 0 if defined $n && int($n) < 0;
+  _validate_positive_integer($n);
+  # TODO: validate P & Q
+  return Math::Prime::Util::PP::is_frobenius_pseudoprime($n, $P, $Q);
+}
 sub is_frobenius_underwood_pseudoprime {
   my($n) = @_;
   return 0 if defined $n && int($n) < 0;
@@ -344,6 +357,21 @@ sub vecsum {
   _validate_integer($_) for @v;
   return Math::Prime::Util::PP::vecsum(@v);
 }
+sub vecprod {
+  my(@v) = @_;
+  _validate_integer($_) for @v;
+  return Math::Prime::Util::PP::vecprod(@v);
+}
+sub vecmin {
+  my(@v) = @_;
+  _validate_integer($_) for @v;
+  return Math::Prime::Util::PP::vecmin(@v);
+}
+sub vecmax {
+  my(@v) = @_;
+  _validate_integer($_) for @v;
+  return Math::Prime::Util::PP::vecmax(@v);
+}
 sub invmod {
   my ($a, $n) = @_;
   _validate_integer($a);
@@ -383,6 +411,12 @@ sub valuation {
   _validate_positive_integer($n);
   _validate_positive_integer($k);
   return Math::Prime::Util::PP::valuation($n, $k);
+}
+
+sub Pi {
+  my($digits) = @_;
+  _validate_positive_integer($digits) if defined $digits;
+  return Math::Prime::Util::PP::Pi($digits);
 }
 
 #############################################################################

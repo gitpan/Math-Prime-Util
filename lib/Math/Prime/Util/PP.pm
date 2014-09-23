@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.44_001';
+  $Math::Prime::Util::PP::VERSION = '0.44_002';
 }
 
 BEGIN {
@@ -81,7 +81,7 @@ sub _bigint_to_int {
 sub _upgrade_to_float {
   do { require Math::BigFloat; Math::BigFloat->import(); }
     if !defined $Math::BigFloat::VERSION;
-  return Math::BigFloat->new($_[0]);
+  Math::BigFloat->new(@_);
 }
 
 # Get the accuracy of variable x, or the max default from BigInt/BigFloat
@@ -845,10 +845,13 @@ sub divisor_sum {
       if    ($e == 1) { $pk->binc(); $product->bmul($pk); }
       elsif ($e == 2) { $pk->badd($pk*$pk)->binc(); $product->bmul($pk); }
       else {
-        my $fmult = $pk;
-        foreach my $E (2 .. $e) { $fmult += $pk->copy->bpow($E) }
-        $fmult->binc();
-        $product *= $fmult;
+        my $fmult = $pk->copy->binc;
+        my $pke = $pk->copy;
+        for my $E (2 .. $e) {
+          $pke->bmul($pk);
+          $fmult->badd($pke);
+        }
+        $product->bmul($fmult);
       }
     }
   }
@@ -1275,7 +1278,8 @@ sub prime_count_lower {
     elsif ($x < 5433800000) { $a = 2.32; }
     elsif ($x <60000000000) { $a = 2.15; }
     else                    { $a = 2.00; } # Dusart 2010, page 2
-    $result = ($x/$flogx) * (1.0 + 1.0/$flogx + $a/($flogx*$flogx));
+    my $one = (ref($x) eq 'Math::BigFloat') ? $x->copy->bone : $x-$x+1.0;
+    $result = ($x/$flogx) * ($one + $one/$flogx + $a/($flogx*$flogx));
   }
 
   return Math::BigInt->new($result->bfloor->bstr()) if ref($result) eq 'Math::BigFloat';
@@ -1350,7 +1354,8 @@ sub prime_count_upper {
     #else                    { $a = 2.51;  } # Dusart 1999, page 14
 
     # Old versions of Math::BigFloat will do the Wrong Thing with this.
-    $result = ($x/$flogx) * (1.0 + 1.0/$flogx + $a/($flogx*$flogx)) + 1.0;
+    my $one = (ref($x) eq 'Math::BigFloat') ? $x->copy->bone : $x-$x+1.0;
+    $result = ($x/$flogx) * ($one + $one/$flogx + $a/($flogx*$flogx)) + $one;
   }
 
   return Math::BigInt->new($result->bfloor->bstr()) if ref($result) eq 'Math::BigFloat';
@@ -1623,6 +1628,28 @@ sub vecsum {
   }
   $sum;
 }
+
+sub vecprod {
+  my $prod = BONE->copy;
+  # A product tree might be nice, but there is so much other overhead...
+  $prod *= "$_" for @_;
+  $prod = _bigint_to_int($prod) if $prod->bacmp(''.~0) <= 0 && $prod > -(~0 >> 1) - 1;
+  $prod;
+}
+
+sub vecmin {
+  return unless @_;
+  my $min = shift;
+  for (@_) { $min = $_ if $_ < $min; }
+  $min;
+}
+sub vecmax {
+  return unless @_;
+  my $max = shift;
+  for (@_) { $max = $_ if $_ > $max; }
+  $max;
+}
+
 sub invmod {
   my($a,$n) = @_;
   return if $n == 0 || $a == 0;
@@ -1700,6 +1727,94 @@ sub valuation {
     $v++;
   }
   $v;
+}
+
+sub _bernden {
+  my $n = shift;
+  return BTWO if $n == 1;
+  return BONE if $n & 1 || $n <= 1;
+  my $p = BONE;
+  Math::Prime::Util::fordivisors(sub { $p *= $_+1 if is_prime($_+1) }, $n);
+  #$p = _bigint_to_int($p) if $p->bacmp(''.~0) <= 0;
+  $p;
+}
+sub _bernoulli_zeta {
+  my($n, $denominator) = @_;
+  # This works ok with MPFR, but horrible without.
+  $n = _upgrade_to_float($n);
+  my $xdigits = 2 * $n;  # This is *wrong*
+  $n->accuracy($xdigits);
+  my $pi = Math::Prime::Util::Pi($xdigits);
+  my $b = 2 * (-1)**(($n>>1)-1) * factorial($n) / (2*$pi)**$n * (1+RiemannZeta($n));
+  $b *= $denominator;
+  # Round to nearest int
+  my $x = $b->as_int;
+  if ($b-$x >= 0.5) { $x++ } elsif ($b-$x <= -0.5) { $x-- }
+  ($x, _bernden($n));
+}
+sub _bernoulli_at { # Simple Akiyama-Tanigawa algorithm
+  my $n = shift;
+  my(@anum,@aden);
+  for my $m (0..$n) {
+    $anum[$m] = Math::BigInt->new(1);
+    $aden[$m] = Math::BigInt->new($m)->binc();
+    for my $j (reverse 1..$m) {
+      my($anj1,$anj,$adj1,$adj) = ($anum[$j-1],$anum[$j],$aden[$j-1],$aden[$j]);
+      $anj1 = $j * ($adj * $anj1 - $adj1 * $anj);
+      $adj1 = $adj1 * $adj;
+      my $F = Math::BigInt::bgcd($anj1, $adj1);
+      do { $anj1 /= $F;  $adj1 /= $F } if $F != 1;
+      ($anum[$j-1],$aden[$j-1]) = ($anj1, $adj1);
+    }
+  }
+  ($anum[0],$aden[0]);
+}
+{ # Brent-Harvey (Luschny)
+  # See:  http://oeis.org/wiki/User:Peter_Luschny/ComputationAndAsymptoticsOfBernoulliNumbers#Brent-Harvey
+  my @_T = (BZERO, BONE);
+  my $fillsub = sub {
+    my($T, $n) = @_;
+    return if defined $T->[$n];
+    $T->[$_] = ($_-1) * $T->[$_-1]  for 2 .. $n;
+    for my $k (2 .. $n) {
+      for my $j ($k .. $n) {
+        $T->[$j] = ($j-$k) * $T->[$j-1] + ($j-$k+2) * $T->[$j];
+      }
+    }
+  };
+  sub _bernoulli_bh {
+    my($n) = @_;
+    $n >>= 1;
+    my $Tn = $_T[$n];
+
+    if (!defined $Tn) {
+      if ($n <= 100) {
+        $fillsub->(\@_T, $n < 70 ? $n+30 : $n+10);
+        $Tn = $_T[$n];
+      } else {
+        my @T = (BZERO, BONE);
+        $fillsub->(\@T, $n);
+        $Tn = $T[$n];
+      }
+    }
+
+    my $E = ($n & 1) ? BTWO : - BTWO;
+    my $num = $Tn  *  $n  *  $E;
+    my $U = BONE << (2*$n);
+    $num /= Math::BigInt::bgcd($num, $U * ($U - BONE));
+    # Denominator = U*(U-1) / gcd but faster to just get it from function
+    ($num, _bernden(2*$n));
+  }
+}
+
+sub bernfrac {
+  my $n = shift;
+  return (BONE,BONE) if $n == 0;
+  return (BONE,BTWO) if $n == 1;    # We're choosing 1/2 instead of -1/2
+  return (BZERO,BONE) if $n < 0 || $n & 1;
+
+  # With MPFR, using _bernnum_zeta is ok, but horrible without it.
+  _bernoulli_bh($n);
 }
 
 
@@ -1960,7 +2075,23 @@ sub binomial {
 
 sub factorial {
   my($n) = @_;
-  my $r = Math::BigInt->new(''.$n)->bfac();
+  return (1,1,2,6,24,120,720,5040,40320,362880,3628800,39916800,479001600)[$n] if $n <= 12;
+  return Math::GMP::bfac($n) if ref($n) eq 'Math::GMP';
+  do { my $r = Math::GMPz->new(); Math::GMPz::Rmpz_fac_ui($r,$n); return $r; }
+    if ref($n) eq 'Math::GMPz';
+  if (Math::BigInt->config()->{lib} !~ /GMP|Pari/) {
+    # It's not a GMP or GMPz object, and we have a slow bigint library.
+    my $r;
+    if (defined $Math::GMPz::VERSION) {
+      $r = Math::GMPz->new(); Math::GMPz::Rmpz_fac_ui($r,$n);
+    } elsif (defined $Math::GMP::VERSION) {
+      $r = Math::GMP::bfac($n);
+    } elsif (defined &Math::Prime::Util::GMP::factorial && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+      $r = Math::Prime::Util::GMP::factorial($n);
+    }
+    return Math::Prime::Util::_reftyped($_[0], $r)    if defined $r;
+  }
+  my $r = Math::BigInt->new($n)->bfac();
   $r = _bigint_to_int($r) if $r->bacmp(''.~0) <= 0;
   $r;
 }
@@ -2437,6 +2568,79 @@ sub is_frobenius_underwood_pseudoprime {
   $fa %= $n;
   $fb %= $n;
   return ($fa == 0 && $fb == (($TWO * $x + 5) % $n)) ? 1 : 0;
+}
+
+sub _mat_mulmod_3x3 {
+  my($aref, $bref, $n) = @_;
+  my @t;
+  for my $row (0..2) {
+    for my $col (0..2) {
+      my $i1 = $aref->[3*$row+0] * $bref->[0+$col];
+      my $i2 = $aref->[3*$row+1] * $bref->[3+$col];
+      my $i3 = $aref->[3*$row+2] * $bref->[6+$col];
+      push @t, ($i1 + $i2 + $i3) % $n;
+    }
+  }
+  @$aref = @t;
+}
+sub _mat_powmod_3x3 {
+  my($mref, $k, $n) = @_;
+  my $res = [1,0,0,  0,1,0,  0,0,1];
+  while ($k) {
+    _mat_mulmod_3x3($res, $mref, $n)  if $k & 1;
+    $k >>= 1;
+    _mat_mulmod_3x3($mref, $mref, $n) if $k;
+  }
+  @$mref = @$res;
+}
+
+sub is_perrin_pseudoprime {
+  my($n) = @_;
+  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt' || $n < (MPU_HALFWORD >> 1);
+  my @m = (0,1,0,  0,0,1,  1,1,0);
+  _mat_powmod_3x3(\@m, $n, $n);
+  my $trace = ($m[0] + $m[4] + $m[8]) % $n;
+  return ($trace == 0) ? 1 : 0;
+}
+
+sub is_frobenius_pseudoprime {
+  my($n, $P, $Q) = @_;
+  ($P,$Q) = (0,0) unless defined $P && defined $Q;
+  return 0+($n >= 2) if $n < 4;
+
+  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+  return 0 if $n->is_even || _is_perfect_square($n);
+
+  my($k, $Vcomp, $D, $Du) = (0, 4);
+  if ($P == 0 && $Q == 0) {
+    ($P,$Q) = (-1,2);
+    while ($k != -1) {
+      $P += 2;
+      $P = 5 if $P == 3;  # Skip 3
+      $D = $P*$P-4*$Q;
+      $Du = ($D >= 0) ? $D : -$D;
+      last if $P >= $n || $Du >= $n;
+      $k = kronecker($D, $n);
+      return 0 if $k == 0;
+    }
+  } else {
+    $D = $P*$P-4*$Q;
+    $Du = ($D >= 0) ? $D : -$D;
+    croak "Frobenius invalid P,Q: ($P,$Q)" if _is_perfect_square($Du);
+  }
+  return is_prime($n) if $n <= $Du || $n <= abs($Q) || $n <= abs($P);
+  return 0 if Math::Prime::Util::gcd(abs($P*$Q*$D), $n) > 1;
+
+  if ($k == 0) {
+    $k = kronecker($D, $n);
+    return 0 if $k == 0;
+    my $Q2 = 2*abs($Q);
+    $Vcomp = ($k == 1) ? 2 : ($Q >= 0) ? $Q2 : $n-$Q2;
+  }
+
+  my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $n-$k);
+  return 1 if $U == 0 && $V == $Vcomp;
+  0;
 }
 
 
@@ -3874,6 +4078,145 @@ sub RiemannR {
   return $sum;
 }
 
+sub LambertW {
+  my $k = shift;
+  croak "Invalid input to LambertW:  k must be >= -1/e" if $k < -0.36787944118;
+  $k = _upgrade_to_float($k) if ref($k) eq 'Math::BigInt';
+  my $kacc = ref($k) ? _find_big_acc($k) : 0;
+  my $x;
+  if ($k > 1) {
+    my $lk = log($k);
+    my $llk = log($lk);
+    $x = $lk - $llk - log(1-$llk/$lk)/2;   # Estimate
+  } else {
+    $x = 0.567 * $k;
+  }
+  my $lastx = $x;
+  for (1..100) {                           # TODO: adaptive
+   # Newton
+   # $x = $x*($lk - log($x) + 1) / ($x+1);
+   # Halley, converges much faster
+   my $ex = exp($x);
+   $x = $x - ( ($x*$ex-$k) / ($x*$ex+$ex-(($x+2)*($x*$ex-$k)/(2*$x+2))) );
+   $x->accuracy($kacc) if $kacc;
+   last if $x == $lastx;
+   $lastx = $x;
+  }
+  $x;
+}
+
+my $_Pi = "3.14159265358979323846264338328";
+sub Pi {
+  my $digits = shift;
+  return 0.0+$_Pi unless $digits;
+  return 0.0+sprintf("%.*lf", $digits-1, $_Pi) if $digits < 15;
+  return _upgrade_to_float($_Pi, $digits) if $digits < 30;
+
+  # Performance ranking:
+  #   MPFR             The first two are fastest by a wide margin
+  #   MPU::GMP         Both use AGM.  MPFR is very slightly faster.
+  #   Perl AGM w/GMP   also AGM, nice growth rate, but slower than above
+  #   C pidigits       much worse than above, but faster than the others
+  #   Perl AGM         without Math::BigInt::GMP, it's sluggish
+  #   Math::BigFloat   much slower than AGM
+  #
+  # With a few thousand digits, any of the top 4 are fine.
+  # At 10k digits, the first two are pulling away.
+  # At 50k digits, the first three are 5-20x faster than C pidigits, and
+  #   pray you're not having to the Perl BigFloat methods without GMP.
+  # At 100k digits, the first two are 15x faster than the third, C pidigits
+  #   is 200x slower, and the rest thousands of times slower.
+  # At 1M digits, the first two are under 2 seconds, the third is over a
+  #   minute, and C pixigits at 1.5 hours.
+  #
+  # Interestingly, Math::BigInt::Pari, while greatly faster than Calc, is
+  # *much* slower than GMP for these operations (both AGM and Machin).  While
+  # Perl AGM with the Math::BigInt::GMP backend will pull away from C pidigits,
+  # using it with the other backends doesn't do so.
+  #
+  # The GMP program at https://gmplib.org/download/misc/gmp-chudnovsky.c
+  # will run ~4x faster than the MPFR code.
+
+  my $have_bigint_gmp = Math::BigInt->config()->{lib} =~ /GMP/;
+  my $have_xdigits    = Math::Prime::Util::prime_get_config()->{'xs'};
+  my $_verbose = Math::Prime::Util::prime_get_config()->{'verbose'};
+
+  # Uses AGM to get performance almost as good as MPFR
+  if (defined &Math::Prime::Util::GMP::Pi && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+    print "  using MPUGMP for Pi($digits)\n" if $_verbose;
+    return _upgrade_to_float( Math::Prime::Util::GMP::Pi($digits) );
+  }
+
+  # MPFR is a bit faster than MPU-GMP's AGM.  Both are much faster than others.
+  if ( (!$have_xdigits || $digits > 60) && _MPFR_available()) {
+    print "  using MPFR for Pi($digits)\n" if $_verbose;
+    my $rnd = 0;  # MPFR_RNDN;
+    my $bit_precision = int($digits * 3.322) + 40;
+    my $pi = Math::MPFR->new();
+    Math::MPFR::Rmpfr_set_prec($pi, $bit_precision);
+    Math::MPFR::Rmpfr_const_pi($pi, $rnd);
+    my $strval = Math::MPFR::Rmpfr_get_str($pi, 10, $digits, $rnd);
+    Math::MPFR::Rmpfr_free_cache();
+    return _upgrade_to_float($strval);
+  }
+
+  # We could consider looking for Pari
+
+  # This has a *much* better growth rate than the later solutions.
+  if ( !$have_xdigits || ($have_bigint_gmp && $digits > 100) ) {
+    print "  using Perl AGM for Pi($digits)\n" if $_verbose;
+    # Brent-Salamin (aka AGM or Gauss-Legendre)
+    $digits += 8;
+    my $HALF = _upgrade_to_float(0.5);
+    my ($an, $bn, $tn, $pn) = ($HALF->copy->bone, $HALF->copy->bsqrt($digits),
+                               $HALF->copy->bmul($HALF), $HALF->copy->bone);
+    while ($pn < $digits) {
+      my $prev_an = $an->copy;
+      $an->badd($bn)->bmul($HALF, $digits);
+      $bn->bmul($prev_an)->bsqrt($digits);
+      $prev_an->bsub($an);
+      $tn->bsub($pn * $prev_an * $prev_an);
+      $pn->badd($pn);
+    }
+    $an->badd($bn);
+    $an->bmul($an,$digits)->bdiv(4*$tn, $digits-8);
+    return $an;
+  }
+
+  # Spigot method in C.  Low overhead but not good growth rate.
+  if ($have_xdigits) {
+    print "  using XS spigot for Pi($digits)\n" if $_verbose;
+    return _upgrade_to_float(Math::Prime::Util::_pidigits($digits));
+  }
+
+  # We're going to have to use the Math::BigFloat code.
+  # 1) it rounds incorrectly (e.g. 761, 1372, 1509,...).
+  #    Fix by adding some digits and rounding.
+  # 2) AGM is *much* faster once past ~2000 digits
+  # 3) It is very slow without the GMP backend.  The Pari backend helps
+  #    but it still pretty bad.  With Calc it's glacial for large inputs.
+
+  #           Math::BigFloat                AGM              spigot   AGM
+  # Size     GMP    Pari  Calc        GMP    Pari  Calc        C      C+GMP
+  #   500   0.04    0.60   0.30      0.08    0.10   0.47      0.09    0.06
+  #  1000   0.04    0.11   1.82      0.09    0.14   1.82      0.09    0.06
+  #  2000   0.07    0.37  13.5       0.09    0.34   9.16      0.10    0.06
+  #  4000   0.14    2.17 107.8       0.12    1.14  39.7       0.20    0.06
+  #  8000   0.52   15.7              0.22    4.63 186.2       0.56    0.08
+  # 16000   2.73  121.8              0.52   19.2              2.00    0.08
+  # 32000  15.4                      1.42                     7.78    0.12
+  #                                   ^                        ^       ^
+  #                                   |      use this THIRD ---+       |
+  #                use this SECOND ---+                                |
+  #                                                  use this FIRST ---+
+  # approx
+  # growth  5.6x    7.6x   8.0x      2.7x    4.1x   4.7x      3.9x    2.0x
+
+  print "  using BigFloat for Pi($digits)\n" if $_verbose;
+  _upgrade_to_float(0);
+  return Math::BigFloat::bpi($digits+10)->round($digits);
+}
+
 sub forpart {
   my($sub, $n, $rhash) = @_;
   _validate_positive_integer($n);
@@ -3919,17 +4262,17 @@ sub forcomb {
   } else {
     $k = $n;
   }
-  return if $k > $n || $n == 0 || $k == 0;
-  my @x = (0, 0 .. $n);
-  my @c = reverse 1 .. $k;
+  return $sub->() if $k == 0;
+  return if $k > $n || $n == 0;
+  my @c = 0 .. $k-1;
   while (1) {
-    $sub->(@x[reverse @c]);
-    next if $c[0]++ < $n;
-    my $i = 1;
-    $i++ while $i < $k && $c[$i] >= $n-$i;
-    last if $i >= $k;
+    $sub->(@c);
+    next if $c[-1]++ < $n-1;
+    my $i = $k-2;
+    $i-- while $i >= 0 && $c[$i] >= $n-($k-$i);
+    last if $i < 0;
     $c[$i]++;
-    while ($i-- > 0) { $c[$i] = $c[$i+1] + 1; }
+    while (++$i < $k) { $c[$i] = $c[$i-1] + 1; }
   }
 }
 sub forperm {
@@ -3937,8 +4280,8 @@ sub forperm {
   _validate_positive_integer($n);
   croak "Too many arguments for forperm" if defined $k;
   $k = $n;
-  return if $k > $n || $n == 0 || $k == 0;
-  if ($n < 2) { $sub->(0) if $n == 1; return; }
+  return $sub->() if $n == 0;
+  return $sub->(0) if $n == 1;
   my @c = reverse 0 .. $k-1;
   my $inc = 0;
   while (1) {
@@ -3976,7 +4319,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.44_001
+Version 0.44_002
 
 
 =head1 SYNOPSIS

@@ -502,12 +502,41 @@ gcd(...)
   PROTOTYPE: @
   ALIAS:
     lcm = 1
-    vecsum = 2
+    vecmin = 2
+    vecmax = 3
+    vecsum = 4
+    vecprod = 5
   PREINIT:
     int i, status = 1;
     UV ret, nullv, n;
   PPCODE:
-    if (ix == 2) {
+    if (ix == 2 || ix == 3) {
+      UV retindex = 0;
+      int sign, minmax = (ix == 2);
+      if (items == 0) XSRETURN_UNDEF;
+      if (items == 1) XSRETURN(1);
+      status = _validate_int(aTHX_ ST(0), 2);
+      if (status != 0 && items > 1) {
+        sign = status;
+        ret = my_svuv(ST(0));
+        for (i = 1; i < items; i++) {
+          status = _validate_int(aTHX_ ST(i), 2);
+          if (status == 0) break;
+          n = my_svuv(ST(i));
+          if (( (sign == -1 && status == 1) ||
+                (n >= ret && sign == status)
+              ) ? !minmax : minmax ) {
+            sign = status;
+            ret = n;
+            retindex = i;
+          }
+        }
+      }
+      if (status != 0) {
+        ST(0) = ST(retindex);
+        XSRETURN(1);
+      }
+    } else if (ix == 4) {
       UV lo = 0;
       IV hi = 0;
       for (ret = i = 0; i < items; i++) {
@@ -530,6 +559,21 @@ gcd(...)
        * Sad, because this will now be wasted work and slow. */
       if (hi != 0) status = 0;  /* Overflow */
       ret = lo;
+    } else if (ix == 5) {
+      int sign = 1;
+      ret = 1;
+      for (i = 0; i < items; i++) {
+        status = _validate_int(aTHX_ ST(i), 2);
+        if (status == 0) break;
+        n = (status == 1) ? my_svuv(ST(i)) : (UV)-my_sviv(ST(i));
+        if (ret > 0 && n > UV_MAX/ret) { status = 0; break; }
+        sign *= status;
+        ret *= n;
+      }
+      if (sign == -1 && status != 0) {
+        if (ret <= (UV)IV_MAX)  XSRETURN_IV(-(IV)ret);
+        else                    status = 0;
+      }
     } else {
       /* For each arg, while valid input, validate+gcd/lcm.  Shortcut stop. */
       if (ix == 0) { ret = 0; nullv = 1; }
@@ -556,10 +600,13 @@ gcd(...)
     if (status != 0)
       XSRETURN_UV(ret);
     switch (ix) {
-      case 0: _vcallsub_with_gmp("gcd");  break;
-      case 1: _vcallsub_with_gmp("lcm");  break;
-      case 2:
-      default:_vcallsub_with_pp("vecsum");  break;
+      case 0: _vcallsub_with_gmp("gcd");   break;
+      case 1: _vcallsub_with_gmp("lcm");   break;
+      case 2: _vcallsub_with_gmp("vecmin"); break;
+      case 3: _vcallsub_with_gmp("vecmax"); break;
+      case 4: _vcallsub_with_pp("vecsum");  break;
+      case 5:
+      default:_vcallsub_with_pp("vecprod");  break;
     }
     return; /* skip implicit PUTBACK */
 
@@ -613,14 +660,16 @@ is_prime(IN SV* svn, ...)
   ALIAS:
     is_prob_prime = 1
     is_bpsw_prime = 2
-    is_lucas_pseudoprime = 3
-    is_strong_lucas_pseudoprime = 4
-    is_extra_strong_lucas_pseudoprime = 5
-    is_frobenius_underwood_pseudoprime = 6
-    is_aks_prime = 7
-    is_power = 8
-    is_pseudoprime = 9
-    is_almost_extra_strong_lucas_pseudoprime = 10
+    is_aks_prime = 3
+    is_lucas_pseudoprime = 4
+    is_strong_lucas_pseudoprime = 5
+    is_extra_strong_lucas_pseudoprime = 6
+    is_frobenius_pseudoprime = 7
+    is_frobenius_underwood_pseudoprime = 8
+    is_perrin_pseudoprime = 9
+    is_power = 10
+    is_pseudoprime = 11
+    is_almost_extra_strong_lucas_pseudoprime = 12
   PREINIT:
     int status;
   PPCODE:
@@ -634,14 +683,22 @@ is_prime(IN SV* svn, ...)
           case 0:
           case 1:  ret = _XS_is_prime(n);  break;
           case 2:  ret = _XS_BPSW(n);      break;
-          case 3:  ret = _XS_is_lucas_pseudoprime(n, 0); break;
-          case 4:  ret = _XS_is_lucas_pseudoprime(n, 1); break;
-          case 5:  ret = _XS_is_lucas_pseudoprime(n, 2); break;
-          case 6:  ret = _XS_is_frobenius_underwood_pseudoprime(n); break;
-          case 7:  ret = _XS_is_aks_prime(n); break;
-          case 8:  ret = is_power(n, a); break;
-          case 9:  ret = _XS_is_pseudoprime(n, (items == 1) ? 2 : a); break;
-          case 10:
+          case 3:  ret = _XS_is_aks_prime(n); break;
+          case 4:  ret = _XS_is_lucas_pseudoprime(n, 0); break;
+          case 5:  ret = _XS_is_lucas_pseudoprime(n, 1); break;
+          case 6:  ret = _XS_is_lucas_pseudoprime(n, 2); break;
+          case 7:  {
+                     /* IV P = 1, Q = -1; */ /* Fibonacci polynomial */
+                     IV P = 0, Q = 0;        /* Q=2,P=least odd s.t. (D|n)=-1 */
+                     if (items == 3) { P = my_sviv(ST(1)); Q = my_sviv(ST(2)); }
+                     else if (items != 1) croak("is_frobenius_pseudoprime takes P,Q");
+                     ret = is_frobenius_pseudoprime(n, P, Q);
+                   } break;
+          case 8:  ret = _XS_is_frobenius_underwood_pseudoprime(n); break;
+          case 9:  ret = is_perrin_pseudoprime(n); break;
+          case 10: ret = is_power(n, a); break;
+          case 11: ret = _XS_is_pseudoprime(n, (items == 1) ? 2 : a); break;
+          case 12:
           default: ret = _XS_is_almost_extra_strong_lucas_pseudoprime
                          (n, (items == 1) ? 1 : a); break;
         }
@@ -652,14 +709,16 @@ is_prime(IN SV* svn, ...)
       case 0: _vcallsub_with_gmp("is_prime");       break;
       case 1: _vcallsub_with_gmp("is_prob_prime");  break;
       case 2: _vcallsub_with_gmp("is_bpsw_prime");  break;
-      case 3: _vcallsub_with_gmp("is_lucas_pseudoprime"); break;
-      case 4: _vcallsub_with_gmp("is_strong_lucas_pseudoprime"); break;
-      case 5: _vcallsub_with_gmp("is_extra_strong_lucas_pseudoprime"); break;
-      case 6: _vcallsub_with_gmp("is_frobenius_underwood_pseudoprime"); break;
-      case 7: _vcallsub_with_gmp("is_aks_prime"); break;
-      case 8: _vcallsub_with_gmp("is_power"); break;
-      case 9: _vcallsub_with_gmp("is_pseudoprime"); break;
-      case 10:
+      case 3: _vcallsub_with_gmp("is_aks_prime"); break;
+      case 4: _vcallsub_with_gmp("is_lucas_pseudoprime"); break;
+      case 5: _vcallsub_with_gmp("is_strong_lucas_pseudoprime"); break;
+      case 6: _vcallsub_with_gmp("is_extra_strong_lucas_pseudoprime"); break;
+      case 7: _vcallsub_with_gmp("is_frobenius_pseudoprime"); break;
+      case 8: _vcallsub_with_gmp("is_frobenius_underwood_pseudoprime"); break;
+      case 9: _vcallsub_with_gmp("is_perrin_pseudoprime"); break;
+      case 10:_vcallsub_with_gmp("is_power"); break;
+      case 11:_vcallsub_with_gmp("is_pseudoprime"); break;
+      case 12:
       default:_vcallsub_with_gmp("is_almost_extra_strong_lucas_pseudoprime"); break;
     }
     return; /* skip implicit PUTBACK */
@@ -725,6 +784,73 @@ next_prime(IN SV* svn)
       default: _vcallsub_with_pp("twin_prime_count_approx"); break;
     }
     return; /* skip implicit PUTBACK */
+
+void Pi(IN UV digits = 0)
+  PREINIT:
+    NV pival = 3.141592653589793238462643383279502884197169L;
+    UV mantsize = (DBL_MANT_DIG == 53) ? 15 : log( 1UL << DBL_MANT_DIG ) / log(10);
+  PPCODE:
+    if (digits == 0 || digits == mantsize) {
+      XSRETURN_NV( pival );
+    } else if (digits <= mantsize && digits <= 40) {
+      char t[40+2];
+      (void)sprintf(t, "%.*lf", (int)(digits-1), pival);
+      XSRETURN_NV( strtod(t, NULL) );
+    } else {
+      _vcallsub_with_pp("Pi");
+      return;
+    }
+
+void
+_pidigits(IN int digits)
+  PPCODE:
+    if (digits == 1) {
+      XSRETURN_UV(3);
+    } else {
+      char *out;
+      IV  *a;
+      IV b, c, d, e, f, g, i,  d4, d3, d2, d1;
+
+      digits++;   /* For rounding */
+      b = d = e = g = i = 0;  f = 10000;
+      c = 14*(digits/4 + 2);
+      New(0, a, c, IV);
+      New(0, out, digits+5+1, char);
+      *out++ = '3';  /* We'll turn "31415..." into "3.1415..." */
+      for (b = 0; b < c; b++)  a[b] = 20000000;
+      
+      while ((b = c -= 14) > 0 && i < digits) {
+        d = e = d % f;
+        while (--b > 0) {
+          d = d * b + a[b];
+          g = (b << 1) - 1;
+          a[b] = (d % g) * f;
+          d /= g;
+        }
+        /* sprintf(out+i, "%04d", e+d/f);   i += 4; */
+        d4 = e+d/f;
+        if (d4 > 9999) {
+          d4 -= 10000;
+          out[i-1]++;
+          for (b=i-1; out[b] == '0'+1; b--) { out[b]='0'; out[b-1]++; }
+        }
+        d3 = d4/10;  d2 = d3/10;  d1 = d2/10;
+        out[i++] = '0' + d1;
+        out[i++] = '0' + d2-d1*10;
+        out[i++] = '0' + d3-d2*10;
+        out[i++] = '0' + d4-d3*10;
+      }
+      Safefree(a);
+      if (out[digits-1] >= '5') out[digits-2]++;  /* Round */
+      for (i = digits-2; out[i] == '9'+1; i--)    /* Keep rounding */
+        { out[i] = '0';  out[i-1]++; }
+      digits--;  /* Undo the extra digit we used for rounding */
+      out[digits] = '\0';
+      *out-- = '.';
+      XPUSHs(sv_2mortal(newSVpvn(out, digits+1)));
+      Safefree(out);
+    }
+
 
 void
 factor(IN SV* svn)
@@ -959,6 +1085,7 @@ _XS_ExponentialIntegral(IN SV* x)
     _XS_LogarithmicIntegral = 1
     _XS_RiemannZeta = 2
     _XS_RiemannR = 3
+    _XS_LambertW = 4
   PREINIT:
     NV nv, ret;
   CODE:
@@ -967,8 +1094,9 @@ _XS_ExponentialIntegral(IN SV* x)
       case 0: ret = (NV) _XS_ExponentialIntegral(nv); break;
       case 1: ret = (NV) _XS_LogarithmicIntegral(nv); break;
       case 2: ret = (NV) ld_riemann_zeta(nv); break;
-      case 3:
-      default:ret = (NV) _XS_RiemannR(nv); break;
+      case 3: ret = (NV) _XS_RiemannR(nv); break;
+      case 4:
+      default:ret = (NV) lambertw(nv); break;
     }
     RETVAL = ret;
   OUTPUT:
@@ -1468,7 +1596,7 @@ forcomb (SV* block, IN SV* svn, IN SV* svk = 0)
 
     n = my_svuv(svn);
     k = (svk == 0) ? n : my_svuv(svk);
-    if (k > n || n == 0 || k == 0)
+    if (k > n)
       return;
 
     New(0, cm, k, UV);

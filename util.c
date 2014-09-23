@@ -1767,6 +1767,36 @@ long double _XS_LogarithmicIntegral(long double x) {
   if (x == 2) return li2;
   if (x < 0) croak("Invalid input to LogarithmicIntegral:  x must be >= 0");
   if (x >= LDBL_MAX) return INFINITY;
+
+#if 0
+  /* We could calculate this here directly using Ramaujan's series.
+   * I did not find this any faster or more accuracte than using Ei. */
+  if (x > 1) {
+    long double flogx, numer, denom, factn, inner_sum, power2, term;
+    unsigned int n, k;
+    KAHAN_INIT(sum);
+
+    flogx = logl(x);
+    numer = flogx;
+    inner_sum = 1.0L;
+    factn = 1.0L;
+    power2 = 2.0L;
+    KAHAN_SUM(sum, flogx);
+    for (n = 2, k = 1; n < 10000; n++) {
+      factn *= n;
+      numer *= -flogx;
+      denom = factn * power2;
+      power2 *= 2;
+      for (; k <= (n-1) >> 1; k++)
+        inner_sum += 1.0L / (2 * k + 1);
+      term = (numer / denom) * inner_sum;
+      KAHAN_SUM(sum, term);
+      if (fabsl(term) < LDBL_EPSILON*fabsl(sum)) break;
+    }
+    return euler_mascheroni + logl(flogx) + sqrtl(x) * sum;
+  }
+#endif
+
   return _XS_ExponentialIntegral(logl(x));
 }
 
@@ -2006,4 +2036,32 @@ long double _XS_RiemannR(long double x) {
   }
 
   return sum;
+}
+
+long double lambertw(long double k) {
+  long double x, lastx;
+  int i;
+
+  if (k < -0.36787944118L)
+    croak("Invalid input to LambertW:  k must be >= -1/e");
+  /* Make first estimate */
+  if (k > 1) {
+    long double lk = logl(k);
+    long double llk = logl(lk);
+    x = lk - llk - logl(1 - llk/lk)/2;
+  } else {
+    x = 0.567 * k;
+  }
+  lastx = x;
+  for (i = 0; i < 100; i++) {   /* Use Halley's method */
+    long double ex = expl(x);
+    long double xex = x * ex;
+    long double xexk = xex - k;
+    long double x1 = x + 1;
+    x = x - xexk / (ex * x1 - (x+2) * xexk/(2*x1));
+    /* x = x - ( (x*ex-k) / (x*ex+ex-((x+2)*(x*ex-k)/(2*x+2))) ); */
+    if (fabsl(lastx-x) < fabsl(LDBL_EPSILON)) break;
+    lastx = x;
+  }
+  return x;
 }

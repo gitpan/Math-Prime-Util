@@ -94,6 +94,8 @@ bin/primes.pl
 bin/factor.pl
 t/01-load.t
 t/02-can.t
+t/011-load-ntheory.t
+t/022-can-ntheory.t
 t/03-init.t
 t/04-inputvalidation.t
 t/10-isprime.t
@@ -115,6 +117,8 @@ t/23-random-certs.t
 t/24-partitions.t
 t/25-lucas_sequences.t
 t/26-combinatorial.t
+t/27-bernfrac.t
+t/28-pi.t
 t/30-relations.t
 t/31-threading.t
 t/32-iterators.t

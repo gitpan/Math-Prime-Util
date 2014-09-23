@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.44_001';
+  $Math::Prime::Util::VERSION = '0.44_002';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -21,8 +21,9 @@ our @EXPORT_OK =
       is_strong_lucas_pseudoprime
       is_extra_strong_lucas_pseudoprime
       is_almost_extra_strong_lucas_pseudoprime
-      is_frobenius_underwood_pseudoprime
-      is_aks_prime is_bpsw_prime
+      is_frobenius_pseudoprime
+      is_perrin_pseudoprime
+      is_frobenius_underwood_pseudoprime is_aks_prime is_bpsw_prime
       is_power
       miller_rabin_random
       lucas_sequence
@@ -41,13 +42,14 @@ our @EXPORT_OK =
       random_maurer_prime random_maurer_prime_with_cert
       random_shawe_taylor_prime random_shawe_taylor_prime_with_cert
       primorial pn_primorial consecutive_integer_lcm gcdext chinese
-      gcd lcm factor factor_exp divisors valuation invmod vecsum
+      gcd lcm factor factor_exp divisors valuation invmod
+      vecsum vecmin vecmax vecprod
       moebius mertens euler_phi jordan_totient exp_mangoldt liouville
-      partitions
+      partitions bernfrac bernreal
       chebyshev_theta chebyshev_psi
       divisor_sum carmichael_lambda
       kronecker binomial factorial znorder znprimroot znlog legendre_phi
-      ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR
+      ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR LambertW Pi
   );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
 
@@ -487,7 +489,6 @@ sub partitions {
   return Math::Prime::Util::PP::partitions($n);
 }
 
-
 #############################################################################
 # forprimes, forcomposites, fordivisors.
 # These are used when the XS code can't handle it.
@@ -869,6 +870,36 @@ sub LogarithmicIntegral {
   return Math::Prime::Util::PP::LogarithmicIntegral($n);
 }
 
+sub LambertW {
+  my($k) = @_;
+
+  return _XS_LambertW($k)
+  if !defined $bignum::VERSION && ref($k) ne 'Math::BigFloat' && $_Config{'xs'};
+
+  require Math::Prime::Util::PP;
+  return Math::Prime::Util::PP::LambertW($k);
+}
+
+sub bernfrac {
+  my($n) = @_;
+  return map { _to_bigint($_) } (0,1) if defined $n && $n < 0;
+  _validate_num($n) || _validate_positive_integer($n);
+
+  if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::bernfrac) {
+    return map { _to_bigint($_) } Math::Prime::Util::GMP::bernfrac($n);
+  }
+
+  require Math::Prime::Util::PP;
+  return Math::Prime::Util::PP::bernfrac($n);
+}
+sub bernreal {
+  my($n, $precision) = @_;
+  do { require Math::BigFloat; Math::BigFloat->import(); }
+    if !defined $Math::BigFloat::VERSION;
+  my ($num, $den) = map { Math::BigFloat->new($_) } bernfrac($n);
+  scalar $num->bdiv($den, $precision);
+}
+
 #############################################################################
 
 use Math::Prime::Util::MemFree;
@@ -884,7 +915,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum gcdext chinese
+=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum vecprod vecmin vecmax gcdext chinese LambertW bernfrac bernreal
 
 =for test_synopsis use v5.14;  my($k,$x);
 
@@ -896,7 +927,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.44_001
+Version 0.44_002
 
 
 =head1 SYNOPSIS
@@ -1648,13 +1679,61 @@ pseudoprimes than the extra-strong Lucas test.  However this is still only
 66% of the number produced by the strong Lucas-Selfridge test.  No BPSW
 counterexamples have been found with any of the Lucas tests described.
 
+=head2 is_perrin_pseudoprime
+
+Takes a positive number C<n> as input and returns 1 if C<n> divides C<P(n)>
+where C<P(n)> is the Perrin number of C<n>.  The Perrin sequence is defined by
+
+   C<P(0) = 3, P(1) = 0, P(2) = 2;  P(n) = P(n-2) + P(n-3)>
+
+While pseudoprimes are relatively rare (the first two are 271441 and 904631),
+infinitely many exist.
+The pseudoprime sequence is L<OEIS A013998|http://oeis.org/A013998>.
+
+The implementation uses modular 3x3 matrix exponentiation, which is efficient
+but still quite slow compared to the other probable prime tests.
+
+=head2 is_frobenius_pseudoprime
+
+Takes a positive number C<n> as input, and two optional parameters C<a> and
+C<b>, and returns 1 if the C<n> is a Frobenius probable prime with respect
+to the polynomial C<x^2 - ax + b>.  Without the parameters, C<b = 2> and
+C<a> is the least positive odd number such that C<(a^2-4b|n) = -1>.
+This selection has no pseudoprimes below C<2^64> and none known.  In any
+case, the discriminant C<a^2-4b> must not be a perfect square.
+
+Some authors use the Fibonacci polynomial C<x^2-x-1> corresponding to
+C<(1,-1)> as the default method for a Frobenius probable prime test.
+This creates a weaker test than most other parameter choices (e.g. over
+twenty times more pseudoprimes than C<(3,-5)>), so is not used as the
+default here.  With the C<(1,-1)> parameters the pseudoprime sequence
+is L<OEIS A212424|http://oeis.org/A212424>.
+
+The Frobenius test is a stronger test than the Lucas test.  Any Frobenius
+C<(a,b)> pseudoprime is also a Lucas C<(a,b)> pseudoprime but the converse
+is not true, as any Frobenius C<(a,b)> pseudoprime is also a Fermat pseudoprime
+to the base C<|b|>.  We can see that with the default parameters this is
+similar to, but somewhat weaker than, the BPSW test used by this module
+(which uses the strong and extra-strong versions of the probable prime and
+Lucas tests respectively).
+
+The performance cost is slightly more than 3 strong pseudoprime tests.  Also
+see L</is_frobenius_underwood_pseudoprime> which is an extremely efficient
+construction of a Frobenius test using good parameter selection, allowing it
+to run 1.5 to 2 times faster than the general Frobenius test.
+
 =head2 is_frobenius_underwood_pseudoprime
 
-Takes a positive number as input, and returns 1 if the input passes the minimal
-lambda+2 test (see Underwood 2012 "Quadratic Compositeness Tests"), where
-C<(L+2)^(n-1) = 5 + 2x mod (n, L^2 - Lx + 1)>.  The computational cost for this
-is between the cost of 2 and 3 strong pseudoprime tests.  There are no known
-counterexamples, but this is not a well studied test.
+Takes a positive number as input, and returns 1 if the input passes the
+efficient Frobenius test of Paul Underwood.  This selects a parameter C<a>
+as the least positive integer such that C<(a^2-4|n)=-1>, then verifies that
+C<(2+2)^(n+1) = 2a + 5 mod (x^2-ax+1,n)>.  This combines a Fermat and Lucas
+test with a cost of only slightly more than 2 strong pseudoprime tests.  This
+makes it similar to, but faster than, a Frobenius test.
+
+There are no known pseudoprimes to this test.  This test also has no overlap
+with the BPSW test, making it a very effective method for adding additional
+certainty.
 
 =head2 miller_rabin_random
 
@@ -2096,6 +2175,38 @@ a double, which will mean incorrect results with large integers.  C<vecsum>
 sums (signed) integers and returns the untruncated result.  Processing is
 done on native integers while possible.
 
+=head2 vecprod
+
+  say "Totient product 5,000: ", vecprod(euler_phi(1,5_000));
+
+Returns the product of all arguments, each of which must be an integer.  This
+is similar to List::Util's L<List::Util/product> function, but keeps all
+results as integers and automatically switches to bigints if needed.
+
+=head2 vecmin
+
+  say "Smallest Totient 100k-200k: ", vecmin(euler_phi(100_000,200_000));
+
+Returns the minimum of all arguments, each of which must be an integer.
+This is similar to List::Util's L<List::Util/min> function, but has a very
+important difference.  List::Util turns all inputs into doubles and returns
+a double, which gives incorrect results with large integers.  C<vecmin>
+validates and compares all results as integers.  The validation step will
+make it a little slower than L<List::Util/min> but this prevents accidental
+and unintentional use of floats.
+
+=head2 vecmax
+
+  say "Largest Totient 100k-200k: ", vecmax(euler_phi(100_000,200_000));
+
+Returns the maximum of all arguments, each of which must be an integer.
+This is similar to List::Util's L<List::Util/max> function, but has a very
+important difference.  List::Util turns all inputs into doubles and returns
+a double, which gives incorrect results with large integers.  C<vecmax>
+validates and compares all results as integers.  The validation step will
+make it a little slower than L<List::Util/max> but this prevents accidental
+and unintentional use of floats.
+
 
 =head2 invmod
 
@@ -2400,6 +2511,25 @@ the C<n E<lt> 0, k E<lt>= n> extension and instead returns C<0> for this
 case.  GMP's API does not allow negative C<k> but otherwise matches.
 L<Math::BigInt> does not implement any extensions and the results for
 C<n E<lt> 0, k > 0> are undefined.
+
+
+=head2 bernfrac
+
+Returns the Bernoulli number C<B_n> for an integer argument C<n>, as a
+rational number represented by two L<Math::BigInt> objects.  B_1 = 1/2.
+This corresponds to Pari's C<bernfrac(n)> and Mathematica's C<BernoulliB>
+functions.
+
+This currently uses the simple Brent-Harvey recurrence, so will not be
+nearly as fast as Pari or Mathematica which use high-precision values of
+Pi and Zeta.  With L<Math::Prime::Util::GMP> installed it is, however,
+faster than L<Math::Pari> which uses an older algorithm.
+
+=head2 bernreal
+
+Returns the Bernoulli number C<B_n> for an integer argument C<n>, as
+a L<Math::BigFloat> object using the default precision.  An optional
+second argument may be given specifying the precision to be used.
 
 
 =head2 znorder
@@ -3076,6 +3206,28 @@ C<accuracy()> value of the input (or the default BigFloat accuracy, which
 is 40 by default).  Accuracy without MPFR should be 35 digits.
 
 
+=head2 LambertW
+
+Returns the principal branch of the Lambert W function of a real value.
+Given a value C<k> this solves for C<W> in the equation C<k = We^W>.  The
+input must not be less than C<-1/e>.  This corresponds to Pari's C<lambertw>
+function and Mathematica's C<LambertW> function.
+
+=head2 Pi
+
+  my $tau = 2 * Pi;     # $tau = 6.28318530717959
+  my $tau = 2 * Pi(40); # $tau = 6.283185307179586476925286766559005768394
+
+With no arguments, returns the value of Pi as an NV.  With a positive
+integer argument, returns the value of Pi with the requested number of
+digits (including the leading 3).  The return value will be an NV if the
+number of digits fits in an NV (typically 15 or less), or a L<Math::BigFloat>
+object otherwise.
+
+For sizes over 10k digits, having one of L<Math::MPFR>,
+L<Math::Prime::Util::GMP>, or L<Math::BigInt::GMP> installed will help
+performance.  For sizes over 50k one of the first two are highly recommended.
+
 
 =head1 EXAMPLES
 
@@ -3230,7 +3382,7 @@ or its C<matches> function with the C<skip_multiples> option:
            1..(@d-1)>>1; }
   }
 
-Compute L<OEIS A054903|http://oeis.org/A054903> just like CRG4's Pari example:
+Compute L<OEIS A054903|http://oeis.org/A054903> just like CRG4s Pari example:
 
   use Math::Prime::Util qw/forcomposite divisor_sum/;
   forcomposites {
@@ -3249,6 +3401,21 @@ Construct the table shown in L<OEIS A046147|http://oeis.org/A046147>:
       say "$n ", join(" ", @r);
     }
   }
+
+Find the 7-digit palindromic primes in the first 20k digits of Pi:
+
+  use Math::Prime::Util qw/Pi is_prime/;
+  my $pi = "".Pi(20000);  # make sure we only stringify once
+  for my $pos (2 .. length($pi)-7) {
+    my $s = substr($pi, $pos, 7);
+    say "$s at $pos" if $s eq reverse($s) && is_prime($s);
+  }
+
+  # Or we could use the regex engine to find the palindromes:
+  while ($pi =~ /(([1379])(\d)(\d)\d\4\3\2)/g) {
+    say "$1 at ",pos($pi)-7 if is_prime($1)
+  }
+
 
 =head1 PRIMALITY TESTING NOTES
 
@@ -3961,7 +4128,7 @@ Marc Deléglise and Joöl Rivat, "Computing the summation of the Möbius functio
 
 =item *
 
-Pierre Dusart, "Autour de la fonction qui compte le nombre de nombres premiers", PhD thesis, 1998.  In French.  The mathematics is readable and highly recommended reading if you're interesting in prime number bounds.  L<http://www.unilim.fr/laco/theses/1998/T1998_01.html>
+Pierre Dusart, "Autour de la fonction qui compte le nombre de nombres premiers", PhD thesis, 1998.  In French.  The mathematics is readable and highly recommended reading if you're interested in prime number bounds.  L<http://www.unilim.fr/laco/theses/1998/T1998_01.html>
 
 =item *
 
