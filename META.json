@@ -64,27 +64,27 @@
    "provides" : {
       "Math::Prime::Util" : {
          "file" : "lib/Math/Prime/Util.pm",
-         "version" : "0.44_002"
+         "version" : "0.44_003"
       },
       "Math::Prime::Util::MemFree" : {
          "file" : "lib/Math/Prime/Util/MemFree.pm",
-         "version" : "0.44_002"
+         "version" : "0.44_003"
       },
       "Math::Prime::Util::PP" : {
          "file" : "lib/Math/Prime/Util/PP.pm",
-         "version" : "0.44_002"
+         "version" : "0.44_003"
       },
       "Math::Prime::Util::PrimeArray" : {
          "file" : "lib/Math/Prime/Util/PrimeArray.pm",
-         "version" : "0.44_002"
+         "version" : "0.44_003"
       },
       "Math::Prime::Util::PrimeIterator" : {
          "file" : "lib/Math/Prime/Util/PrimeIterator.pm",
-         "version" : "0.44_002"
+         "version" : "0.44_003"
       },
       "ntheory" : {
          "file" : "lib/ntheory.pm",
-         "version" : "0.44_002"
+         "version" : "0.44_003"
       }
    },
    "release_status" : "testing",
@@ -97,5 +97,5 @@
          "url" : "https://github.com/danaj/Math-Prime-Util"
       }
    },
-   "version" : "0.44_002"
+   "version" : "0.44_003"
 }
