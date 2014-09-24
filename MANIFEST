@@ -165,5 +165,6 @@ xt/test-ispower.pl
 xt/twin_prime_count.t
 xt/nth_twin_prime.t
 .travis.yml
+inc/Devel/CheckLib.pm
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)

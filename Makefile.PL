@@ -1,4 +1,16 @@
 use ExtUtils::MakeMaker;
+use lib 'inc'; # load our bundled version of Devel::CheckLib
+use Devel::CheckLib;
+
+my %require_mpugmp;
+my $have_gmp = check_lib(lib => 'gmp', header => 'gmp.h');
+if ($have_gmp) {
+  warn "\n   It looks like you have the GMP C library.\n";
+  warn "   Adding Math::Prime::Util::GMP to dep list.\n\n";
+  $require_mpugmp{'Math::Prime::Util::GMP'} = 0;
+} else {
+  warn "\n  It looks like you don't have the GMP library.  Sad face.\n";
+}
 
 my $broken64 = (18446744073709550592 == ~0);
 if ($broken64) {
@@ -51,6 +63,8 @@ WriteMakefile1(
                       'Math::BigInt'     => '1.88',
                       'Math::BigFloat'   => '1.59',
                       'Bytes::Random::Secure' => '0.23',
+                      # Add in MPU::GMP if we can
+                      %require_mpugmp,
                     },
     META_MERGE   => {
                'meta-spec'  => {
@@ -66,22 +80,22 @@ WriteMakefile1(
                },
                provides => {
                  'ntheory' => {
-                    version => '0.44_003', file => 'lib/ntheory.pm',
+                    version => '0.44_004', file => 'lib/ntheory.pm',
                  },
                  'Math::Prime::Util' => {
-                    version => '0.44_003', file => 'lib/Math/Prime/Util.pm',
+                    version => '0.44_004', file => 'lib/Math/Prime/Util.pm',
                  },
                  'Math::Prime::Util::MemFree' => {
-                    version => '0.44_003', file => 'lib/Math/Prime/Util/MemFree.pm',
+                    version => '0.44_004', file => 'lib/Math/Prime/Util/MemFree.pm',
                  },
                  'Math::Prime::Util::PP' => {
-                    version => '0.44_003', file => 'lib/Math/Prime/Util/PP.pm',
+                    version => '0.44_004', file => 'lib/Math/Prime/Util/PP.pm',
                  },
                  'Math::Prime::Util::PrimeArray' => {
-                    version => '0.44_003', file => 'lib/Math/Prime/Util/PrimeArray.pm',
+                    version => '0.44_004', file => 'lib/Math/Prime/Util/PrimeArray.pm',
                  },
                  'Math::Prime::Util::PrimeIterator' => {
-                    version => '0.44_003', file => 'lib/Math/Prime/Util/PrimeIterator.pm',
+                    version => '0.44_004', file => 'lib/Math/Prime/Util/PrimeIterator.pm',
                  },
                  # Skip: PPFE, PrimalityProving, RandomPrimes, ZetaBigFloat,
                  #       ECAffinePoint, ECProjectivePoint
