@@ -4,7 +4,7 @@
       "Dana A Jacobsen <dana@acm.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.62, CPAN::Meta::Converter version 2.112150",
+   "generated_by" : "ExtUtils::MakeMaker version 6.98, CPAN::Meta::Converter version 2.141520",
    "license" : [
       "perl_5"
    ],
@@ -20,47 +20,75 @@
       ]
    },
    "prereqs" : {
+      "build" : {
+         "requires" : {
+            "ExtUtils::MakeMaker" : "0"
+         }
+      },
+      "configure" : {
+         "requires" : {
+            "ExtUtils::MakeMaker" : "0"
+         }
+      },
       "runtime" : {
          "recommends" : {
             "Digest::SHA" : "5.87",
-            "Math::BigInt::GMP" : 0,
+            "Math::BigInt::GMP" : "0",
             "Math::MPFR" : "2.03",
-            "Math::Prime::Util::GMP" : "0.2"
+            "Math::Prime::Util::GMP" : "0.26"
+         },
+         "requires" : {
+            "Bytes::Random::Secure" : "0.23",
+            "Carp" : "0",
+            "Config" : "0",
+            "Exporter" : "5.562",
+            "Math::BigFloat" : "1.59",
+            "Math::BigInt" : "1.88",
+            "Math::Prime::Util::GMP" : "0",
+            "Tie::Array" : "0",
+            "XSLoader" : "0.01",
+            "base" : "0",
+            "constant" : "0",
+            "perl" : "5.006002"
          }
       },
       "test" : {
+         "requires" : {
+            "Test::More" : "0.45",
+            "bignum" : "0.22"
+         },
          "suggests" : {
-            "Test::Warn" : 0
+            "Test::Warn" : "0"
          }
       }
    },
    "provides" : {
       "Math::Prime::Util" : {
          "file" : "lib/Math/Prime/Util.pm",
-         "version" : "0.44_004"
+         "version" : "0.45"
       },
       "Math::Prime::Util::MemFree" : {
          "file" : "lib/Math/Prime/Util/MemFree.pm",
-         "version" : "0.44_004"
+         "version" : "0.45"
       },
       "Math::Prime::Util::PP" : {
          "file" : "lib/Math/Prime/Util/PP.pm",
-         "version" : "0.44_004"
+         "version" : "0.45"
       },
       "Math::Prime::Util::PrimeArray" : {
          "file" : "lib/Math/Prime/Util/PrimeArray.pm",
-         "version" : "0.44_004"
+         "version" : "0.45"
       },
       "Math::Prime::Util::PrimeIterator" : {
          "file" : "lib/Math/Prime/Util/PrimeIterator.pm",
-         "version" : "0.44_004"
+         "version" : "0.45"
       },
       "ntheory" : {
          "file" : "lib/ntheory.pm",
-         "version" : "0.44_004"
+         "version" : "0.45"
       }
    },
-   "release_status" : "testing",
+   "release_status" : "stable",
    "resources" : {
       "homepage" : "https://github.com/danaj/Math-Prime-Util",
       "license" : [
@@ -70,5 +98,5 @@
          "url" : "https://github.com/danaj/Math-Prime-Util"
       }
    },
-   "version" : "0.44_004"
+   "version" : "0.45"
 }

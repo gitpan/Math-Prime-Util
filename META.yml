@@ -2,13 +2,18 @@
 abstract: 'Utilities related to prime numbers, including fast sieves and factoring'
 author:
   - 'Dana A Jacobsen <dana@acm.org>'
-build_requires: {}
+build_requires:
+  ExtUtils::MakeMaker: '0'
+  Test::More: '0.45'
+  bignum: '0.22'
+configure_requires:
+  ExtUtils::MakeMaker: '0'
 dynamic_config: 1
-generated_by: 'ExtUtils::MakeMaker version 6.62, CPAN::Meta::Converter version 2.112150'
+generated_by: 'ExtUtils::MakeMaker version 6.98, CPAN::Meta::Converter version 2.141520'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
-  version: 1.4
+  version: '1.4'
 name: Math-Prime-Util
 no_index:
   directory:
@@ -17,29 +22,42 @@ no_index:
 provides:
   Math::Prime::Util:
     file: lib/Math/Prime/Util.pm
-    version: 0.44_004
+    version: '0.45'
   Math::Prime::Util::MemFree:
     file: lib/Math/Prime/Util/MemFree.pm
-    version: 0.44_004
+    version: '0.45'
   Math::Prime::Util::PP:
     file: lib/Math/Prime/Util/PP.pm
-    version: 0.44_004
+    version: '0.45'
   Math::Prime::Util::PrimeArray:
     file: lib/Math/Prime/Util/PrimeArray.pm
-    version: 0.44_004
+    version: '0.45'
   Math::Prime::Util::PrimeIterator:
     file: lib/Math/Prime/Util/PrimeIterator.pm
-    version: 0.44_004
+    version: '0.45'
   ntheory:
     file: lib/ntheory.pm
-    version: 0.44_004
+    version: '0.45'
 recommends:
-  Digest::SHA: 5.87
-  Math::BigInt::GMP: 0
-  Math::MPFR: 2.03
-  Math::Prime::Util::GMP: 0.2
+  Digest::SHA: '5.87'
+  Math::BigInt::GMP: '0'
+  Math::MPFR: '2.03'
+  Math::Prime::Util::GMP: '0.26'
+requires:
+  Bytes::Random::Secure: '0.23'
+  Carp: '0'
+  Config: '0'
+  Exporter: '5.562'
+  Math::BigFloat: '1.59'
+  Math::BigInt: '1.88'
+  Math::Prime::Util::GMP: '0'
+  Tie::Array: '0'
+  XSLoader: '0.01'
+  base: '0'
+  constant: '0'
+  perl: '5.006002'
 resources:
   homepage: https://github.com/danaj/Math-Prime-Util
   license: http://dev.perl.org/licenses/
   repository: https://github.com/danaj/Math-Prime-Util
-version: 0.44_004
+version: '0.45'

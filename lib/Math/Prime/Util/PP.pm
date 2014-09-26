@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.44_004';
+  $Math::Prime::Util::PP::VERSION = '0.45';
 }
 
 BEGIN {
@@ -1630,9 +1630,14 @@ sub vecsum {
 }
 
 sub vecprod {
-  my $prod = BONE->copy;
-  # A product tree might be nice, but there is so much other overhead...
-  $prod *= "$_" for @_;
+  return 1 unless @_;
+  if (defined &Math::Prime::Util::GMP::vecprod && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+    return Math::Prime::Util::_reftyped($_[0], Math::Prime::Util::GMP::vecprod(@_));
+  }
+  # Product tree:
+  my $prod = _product(0, $#_, [map { Math::BigInt->new("$_") } @_]);
+  # Linear:
+  # my $prod = BONE->copy;  $prod *= "$_" for @_;
   $prod = _bigint_to_int($prod) if $prod->bacmp(''.~0) <= 0 && $prod > -(~0 >> 1) - 1;
   $prod;
 }
@@ -1817,6 +1822,38 @@ sub bernfrac {
   _bernoulli_bh($n);
 }
 
+sub stirling {
+  my($n, $m, $type) = @_;
+  return 1 if $m == $n;
+  return 0 if $n == 0 || $m == 0 || $m > $n;
+  $type = 1 unless defined $type;
+  croak "stirling type must be 1 or 2" unless $type == 1 || $type == 2;
+  if ($m == 1) {
+    return ($type == 2)  ?  1  :  factorial($n-1) * (($n&1) ? 1 : -1);
+  }
+  if (defined &Math::Prime::Util::GMP::stirling && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+    return Math::Prime::Util::_reftyped($_[0], Math::Prime::Util::GMP::stirling($n,$m,$type));
+  }
+  my $s = BZERO->copy;
+  if ($type == 2) {
+    for my $j (1 .. $m) {
+      # Another *stupid* workaround for RT 71548.
+      my $t = (Math::BigInt->new($j) ** $n) * Math::BigInt->new("".binomial($m,$j));
+      $s = (($m-$j) & 1)  ?  $s - $t  :  $s + $t;
+    }
+    $s /= factorial($m);
+  } else {
+    for my $k (1 .. $n-$m) {
+      my $t = BONE->copy;
+      $t *= -1 if $k & 1;
+      $t *= Math::BigInt->new("".binomial($k + $n - 1, $k + $n - $m));
+      $t *= Math::BigInt->new("".binomial(2 * $n - $m, $n - $k - $m));
+      $t *= Math::BigInt->new("".stirling($k - $m + $n, $k, 2));
+      $s += $t;
+    }
+  }
+  $s;
+}
 
 sub is_pseudoprime {
   my($n, $base) = @_;
@@ -2071,6 +2108,22 @@ sub binomial {
     }
   }
   $r;
+}
+
+sub _product {
+  my($a, $b, $r) = @_;
+  if ($b <= $a) {
+    $r->[$a];
+  } elsif ($b == $a+1) {
+    $r->[$a] -> bmul( $r->[$b] );
+  } elsif ($b == $a+2) {
+    $r->[$a] -> bmul( $r->[$a+1] ) -> bmul( $r->[$a+2] );
+  } else {
+    my $c = $a + (($b-$a+1)>>1);
+    _product($a, $c-1, $r);
+    _product($c, $b, $r);
+    $r->[$a] -> bmul( $r->[$c] );
+  }
 }
 
 sub factorial {
@@ -4319,7 +4372,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.44_004
+Version 0.45
 
 
 =head1 SYNOPSIS

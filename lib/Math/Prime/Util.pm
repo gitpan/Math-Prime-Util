@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.44_004';
+  $Math::Prime::Util::VERSION = '0.45';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -47,8 +47,8 @@ our @EXPORT_OK =
       moebius mertens euler_phi jordan_totient exp_mangoldt liouville
       partitions bernfrac bernreal
       chebyshev_theta chebyshev_psi
-      divisor_sum carmichael_lambda
-      kronecker binomial factorial znorder znprimroot znlog legendre_phi
+      divisor_sum carmichael_lambda kronecker
+      binomial factorial stirling znorder znprimroot znlog legendre_phi
       ExponentialIntegral LogarithmicIntegral RiemannZeta RiemannR LambertW Pi
   );
 our %EXPORT_TAGS = (all => [ @EXPORT_OK ]);
@@ -894,10 +894,10 @@ sub bernfrac {
 }
 sub bernreal {
   my($n, $precision) = @_;
-  do { require Math::BigFloat; Math::BigFloat->import(); }
-    if !defined $Math::BigFloat::VERSION;
-  my ($num, $den) = map { Math::BigFloat->new($_) } bernfrac($n);
-  scalar $num->bdiv($den, $precision);
+  my($num,$den) = bernfrac($n);
+  do { require Math::BigFloat; Math::BigFloat->import(); } unless defined $Math::BigFloat::VERSION;
+  return Math::BigFloat->bzero if $num->is_zero;
+  scalar Math::BigFloat->new($num)->bdiv($den, $precision);
 }
 
 #############################################################################
@@ -915,7 +915,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum vecprod vecmin vecmax gcdext chinese LambertW bernfrac bernreal
+=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum vecprod vecmin vecmax gcdext chinese LambertW bernfrac bernreal stirling
 
 =for test_synopsis use v5.14;  my($k,$x);
 
@@ -927,7 +927,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.44_004
+Version 0.45
 
 
 =head1 SYNOPSIS
@@ -2531,6 +2531,21 @@ Returns the Bernoulli number C<B_n> for an integer argument C<n>, as
 a L<Math::BigFloat> object using the default precision.  An optional
 second argument may be given specifying the precision to be used.
 
+=head2 stirling
+
+  say "s(14,2) = ", stirling(14, 2);
+  say "S(14,2) = ", stirling(14, 2, 2);
+
+Returns the Stirling numbers of either the first kind (default) or
+second kind (with a third argument of 2).  It takes two non-negative integer
+arguments C<n< and C<k>.  This corresponds to Pari's C<stirling(n,k,{type})>
+function and Mathematica's C<StirlingS1> / C<StirlingS2> functions.
+
+Stirling numbers of the first kind are C<-1^(n-k)> times the number of
+permutations of C<n> symbols with exactly C<k> cycles.  Stirling numbers
+of the second kind are the number of ways to partition a set of C<n>
+elements into C<k> non-empty subsets.
+
 
 =head2 znorder
 
@@ -3415,6 +3430,11 @@ Find the 7-digit palindromic primes in the first 20k digits of Pi:
   while ($pi =~ /(([1379])(\d)(\d)\d\4\3\2)/g) {
     say "$1 at ",pos($pi)-7 if is_prime($1)
   }
+
+The L<Bell numbers|https://en.wikipedia.org/wiki/Bell_number> B_n:
+
+  sub B { my $n = shift; vecsum(map { stirling($n,$_,2) } 0..$n) }
+  say "$_  ",B($_) for 1..50;
 
 
 =head1 PRIMALITY TESTING NOTES
