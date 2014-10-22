@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::ECProjectivePoint::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::ECProjectivePoint::VERSION = '0.45';
+  $Math::Prime::Util::ECProjectivePoint::VERSION = '0.46';
 }
 
 BEGIN {
@@ -142,18 +142,18 @@ sub double {
   return $self;
 }
 
-sub _extended_gcd {
-  my ($a, $b) = @_;
-  my $zero = $a-$a;
-  my ($x, $lastx, $y, $lasty) = ($zero, $zero+1, $zero+1, $zero);
-  while ($b != 0) {
-    my $q = int($a/$b);
-    ($a, $b) = ($b, $a % $b);
-    ($x, $lastx) = ($lastx - $q*$x, $x);
-    ($y, $lasty) = ($lasty - $q*$y, $y);
-  }
-  return ($a, $lastx, $lasty);
-}
+#sub _extended_gcd {
+#  my ($a, $b) = @_;
+#  my $zero = $a-$a;
+#  my ($x, $lastx, $y, $lasty) = ($zero, $zero+1, $zero+1, $zero);
+#  while ($b != 0) {
+#    my $q = int($a/$b);
+#    ($a, $b) = ($b, $a % $b);
+#    ($x, $lastx) = ($lastx - $q*$x, $x);
+#    ($y, $lasty) = ($lasty - $q*$y, $y);
+#  }
+#  return ($a, $lastx, $lasty);
+#}
 
 sub normalize {
   my ($self) = @_;
@@ -209,7 +209,7 @@ Math::Prime::Util::ECProjectivePoint - Elliptic curve operations for projective 
 
 =head1 VERSION
 
-Version 0.45
+Version 0.46
 
 
 =head1 SYNOPSIS

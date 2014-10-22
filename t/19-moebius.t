@@ -8,6 +8,7 @@ use Math::Prime::Util
       chebyshev_theta chebyshev_psi carmichael_lambda znorder liouville
       znprimroot znlog kronecker legendre_phi gcd lcm is_power valuation
       invmod vecsum vecprod binomial gcdext chinese vecmin vecmax factorial
+      hammingweight vecreduce
      /;
 
 my $extra = defined $ENV{EXTENDED_TESTING} && $ENV{EXTENDED_TESTING};
@@ -117,7 +118,8 @@ my %sigmak = (
   3 => [1, 9, 28, 73, 126, 252, 344, 585, 757, 1134, 1332, 2044, 2198, 3096, 3528, 4681, 4914, 6813, 6860, 9198, 9632, 11988, 12168, 16380, 15751, 19782, 20440, 25112, 24390, 31752, 29792, 37449, 37296, 44226, 43344, 55261, 50654, 61740, 61544],
 );
 
-my @tau4 = (1,4,4,10,4,16,4,20,10,16,4,40,4,16,16,35,4,40,4,40,16,16,4,80,10,16,20,40,4,64,4,56,16,16,16,100,4,16,16,80,4,64,4,40,40,16,4,140,10,40,16,40,4,80,16,80,16,16,4,160,4,16,40,84,16,64,4,40,16,64,4,200,4,16,40,40,16);
+my @tau4 = (1,4,4,10,4,16,4,20,10,16,4,40,4,16,16,35,4,40,4,40,16,16,4,80,10,16,20,40,4,64,4,56,16,16,16,100);
+push @tau4, (4,16,16,80,4,64,4,40,40,16,4,140,10,40,16,40,4,80,16,80,16,16,4,160,4,16,40,84,16,64,4,40,16,64,4,200,4,16,40,40,16) if $extra;
 
 my %mangoldt = (
 -13 => 1,
@@ -272,6 +274,17 @@ my @valuations = (
   [1,0, 0],
   [96552,6, 3],
   [1879048192,2, 28],
+);
+
+my @popcounts = (
+  [0, 0],
+  [1, 1],
+  [2, 1],
+  [3, 2],
+  [452398, 12],
+  [-452398, 12],
+  [4294967295, 32],
+  ["777777777777777714523989234823498234098249108234236", 83],
 );
 
 my @legendre_sums = (
@@ -489,6 +502,7 @@ my @vecmins = (
   [ 1, 2, 1 ],
   [ -6, 0, 4, -5, 6, -6, 0 ],
   [ -6, 0, 4, -5, 7, -6, 0 ],
+  [ "27944220269257565027", "81033966278481626507", "27944220269257565027" ],
 );
 if ($use64) {
   # List::Util::min gets these wrong
@@ -506,6 +520,7 @@ my @vecmaxs = (
   [ 2, 2, 1 ],
   [  6, 0, 4, -5, 6, -6, 0 ],
   [  7, 0, 4, -5, 7, -8, 0 ],
+  [ "81033966278481626507" , "27944220269257565027", "81033966278481626507" ],
 );
 if ($use64) {
   # List::Util::max gets these wrong
@@ -564,7 +579,7 @@ plan tests => 0 + 1
                 + 3*scalar(keys %mertens)
                 + 1*scalar(keys %big_mertens)
                 + 2 # Small Phi
-                + 8 + scalar(keys %totients)
+                + 9 + scalar(keys %totients)
                 + 1 # Small Carmichael Lambda
                 + scalar(@kroneckers)
                 + scalar(@gcds)
@@ -575,11 +590,13 @@ plan tests => 0 + 1
                 + scalar(@znlogs)
                 + scalar(@legendre_sums)
                 + scalar(@valuations)
+                + scalar(@popcounts)
                 + 3 + scalar(@invmods)
                 + scalar(@vecsums)
                 + 1 + scalar(@vecprods)
                 + scalar(@vecmins)
                 + scalar(@vecmaxs)
+                + 4  # vecreduce
                 + 2 + scalar(@binomials)
                 + scalar(keys %powers)
                 + scalar(keys %primroots) + 1
@@ -622,6 +639,11 @@ while (my($n, $mertens) = each (%big_mertens)) {
 {
   my @phi = euler_phi(0, $#A000010);
   is_deeply( \@phi, \@A000010, "euler_phi with range: 0, $#A000010" );
+}
+{
+  my $s = 0;
+  $s += $_ for euler_phi(1, 240);
+  is($s, 17544, "sum of totients to 240");
 }
 while (my($n, $phi) = each (%totients)) {
   is( euler_phi($n), $phi, "euler_phi($n) == $phi" );
@@ -806,6 +828,11 @@ foreach my $r (@valuations) {
   my($n, $k, $exp) = @$r;
   is( valuation($n, $k), $exp, "valuation($n,$k) = $exp" );
 }
+###### hammingweight
+foreach my $r (@popcounts) {
+  my($n, $exp) = @$r;
+  is( hammingweight($n), $exp, "hammingweight($n) = $exp" );
+}
 ###### invmod
 ok(!eval { invmod(undef,11); }, "invmod(undef,11)");
 ok(!eval { invmod(11,undef); }, "invmod(11,undef)");
@@ -850,6 +877,14 @@ foreach my $r (@vecmaxs) {
     my($exp, @vals) = @$r;
     is( vecmax(@vals), $exp, "vecmax(@vals) = $exp" );
   }
+}
+###### vecreduce
+{
+  my $fail = 0;
+  is(vecreduce(sub{ $a + $b },()), undef, "vecreduce with empty list is undef");
+  is(vecreduce(sub{ $fail = 1; 0; },(15)), 15+$fail, "vecreduce with (a) is a and does not call the sub");
+  is(vecreduce(sub{ $a ^ $b },(4,2)), 6, "vecreduce [xor] (4,2) => 6");
+  is(vecreduce(sub{ $a * $b**2 },(1, 17, 18, 19)), 17**2 * 18**2 * 19**2, "vecreduce product of squares");
 }
 ###### binomial
 foreach my $r (@binomials) {

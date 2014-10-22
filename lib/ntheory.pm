@@ -4,11 +4,11 @@ use warnings;
 
 BEGIN {
   $ntheory::AUTHORITY = 'cpan:DANAJ';
-  $ntheory::VERSION = '0.45';
+  $ntheory::VERSION = '0.46';
 }
 
 BEGIN {
-  require Math::Prime::Util; 
+  require Math::Prime::Util;
   *ntheory:: = *Math::Prime::Util::;
 }
 
@@ -123,6 +123,7 @@ See L<Math::Prime::Util> for complete documentation.
   vecprod(@list)                      integer product of list
   vecmin(@list)                       minimum of list of integers
   vecmax(@list)                       maximum of list of integers
+  vecreduce { ... } @list             reduce / left fold applied to list
   is_power(n)                         return k if n = p^k for integer p
   gcd(@list)                          greatest common divisor
   lcm(@list)                          least common multiple
@@ -134,6 +135,7 @@ See L<Math::Prime::Util> for complete documentation.
   binomial(n,k)                       binomial coefficient
   partitions(n)                       number of integer partitions
   valuation(n,k)                      number of times n is divisible by k
+  hammingweight(n)                    population count (# of binary 1s)
   kronecker(a,b)                      Kronecker (Jacobi) symbol
   invmod(a,n)                         inverse of a modulo n
   moebius(n)                          Moebius function of n
@@ -153,16 +155,17 @@ See L<Math::Prime::Util> for complete documentation.
   lucas_sequence(n, P, Q, k)          (U_k,V_k,Q_k) for Lucas(P,Q) mod n
   bernfrac(n)                         Bernoulli number as (num,den)
   bernreal(n)                         Bernoulli number as BigFloat
-  
+  stirling(n,m,[type])                Stirling numbers of 1st or 2nd type
+
 =head2 NON-INTEGER MATH
 
   ExponentialIntegral(x)              Ei(x)
   LogarithmicIntegral(x)              li(x)
   RiemannZeta(x)                      ζ(s)-1, real-valued Riemann Zeta
   RiemannR(x)                         Riemann's R function
-  LambertW(k)                         Lambert W: W for C<k = W exp(W)>
+  LambertW(k)                         Lambert W: solve for W in k = W exp(W)
   Pi([n])                             The constant π (NV or n digits)
-  
+
 =head2 SUPPORT
 
   prime_get_config                    gets hash ref of current settings

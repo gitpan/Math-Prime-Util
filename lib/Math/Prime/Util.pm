@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.45';
+  $Math::Prime::Util::VERSION = '0.46';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -42,8 +42,8 @@ our @EXPORT_OK =
       random_maurer_prime random_maurer_prime_with_cert
       random_shawe_taylor_prime random_shawe_taylor_prime_with_cert
       primorial pn_primorial consecutive_integer_lcm gcdext chinese
-      gcd lcm factor factor_exp divisors valuation invmod
-      vecsum vecmin vecmax vecprod
+      gcd lcm factor factor_exp divisors valuation invmod hammingweight
+      vecsum vecmin vecmax vecprod vecreduce
       moebius mertens euler_phi jordan_totient exp_mangoldt liouville
       partitions bernfrac bernreal
       chebyshev_theta chebyshev_psi
@@ -60,6 +60,12 @@ my %_Config;
 
 # Similar to how boolean handles its option
 sub import {
+    if ($] < 5.020) {   # Prevent "used only once" warnings
+      my $pkg = caller;
+      no strict 'refs';  ## no critic(strict)
+      ${"${pkg}::a"} = ${"${pkg}::a"};
+      ${"${pkg}::b"} = ${"${pkg}::b"};
+    }
     my @options = grep $_ ne '-nobigint', @_;
     $_[0]->_import_nobigint if @options != @_;
     @_ = @options;
@@ -417,7 +423,7 @@ sub miller_rabin_random {
   _validate_num($k) || _validate_positive_integer($k);
 
   return 1 if $k <= 0;
-  return (is_prob_prime($n) > 0) if $n < 100;
+  return (is_prob_prime($n) ? 1 : 0) if $n < 100;
   return 0 unless $n & 1;
 
   return Math::Prime::Util::GMP::miller_rabin_random($n, $k)
@@ -915,7 +921,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum vecprod vecmin vecmax gcdext chinese LambertW bernfrac bernreal stirling
+=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum vecprod vecmin vecmax vecreduce gcdext chinese LambertW bernfrac bernreal stirling hammingweight
 
 =for test_synopsis use v5.14;  my($k,$x);
 
@@ -927,7 +933,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.45
+Version 0.46
 
 
 =head1 SYNOPSIS
@@ -1594,23 +1600,25 @@ on the approximate twin prime count.
 
 =head2 is_pseudoprime
 
-Takes a positive number C<n> and a base C<a> as input, and returns 1 if
-C<n> is a probable prime to base C<a>.  This is the simple Fermat primality
-test.  Removing primes, given base 2 this produces the sequence
-L<OEIS A001567|http://oeis.org/A001567>.
+Takes a positive number C<n> and one or more non-zero positive bases as input.
+Returns C<1> if the input is a probable prime to each base, C<0> if not.
+This is the simple Fermat primality test.
+Removing primes, given base 2 this produces the sequence L<OEIS A001567|http://oeis.org/A001567>.
+
+For practical use, L</is_strong_pseudoprime> is a much stronger test with
+similar or better performance.
 
 =head2 is_strong_pseudoprime
 
   my $maybe_prime = is_strong_pseudoprime($n, 2);
   my $probably_prime = is_strong_pseudoprime($n, 2, 3, 5, 7, 11, 13, 17);
 
-Takes a positive number as input and one or more bases.  The bases must be
-greater than C<1>.  Returns 1 if the input is a strong probable prime
-to all of the bases, and 0 if not.
+Takes a positive number C<n> and one or more non-zero positive bases as input.
+Returns C<1> if the input is a strong probable prime to each base, C<0> if not.
 
 If 0 is returned, then the number really is a composite.  If 1 is returned,
 then it is either a prime or a strong pseudoprime to all the given bases.
-Given enough distinct bases, the chances become very, very strong that the
+Given enough distinct bases, the chances become very, very high that the
 number is actually prime.
 
 This is usually used in combination with other tests to make either stronger
@@ -2207,6 +2215,27 @@ validates and compares all results as integers.  The validation step will
 make it a little slower than L<List::Util/max> but this prevents accidental
 and unintentional use of floats.
 
+=head2 vecreduce
+
+  say "Count of non-zero elements: ", vecreduce { $a + !!$b } (0,@v);
+  my $checksum = vecreduce { $a ^ $b } @{twin_primes(1000000)};
+
+Does a reduce operation via left fold.  Takes a block and a list as arguments.
+The block uses the special local variables C<a> and C<b> representing the
+accumulation and next element respectively, with the result of the block being
+used for the new accumulation.  No initial element is used, so C<undef>
+will be returned with an empty list.
+
+The interface is exactly the same as L<List::Util/reduce>.  This was done to
+increase portability and minimize confusion.  See chapter 7 of Higher Order
+Perl (or many other references) for a discussion of reduce with empty or
+singular-element lists.  It is often a good idea to give an identity element
+as the first list argument.
+
+While operations like L<vecmin>, L<vecmax>, L<vecsum>, L<vecprod>, etc. can
+be fairly easily done with this function, it will not be as efficient.  There
+are a wide variety of other functions that can be easily made with reduce,
+making it a useful tool.
 
 =head2 invmod
 
@@ -2230,6 +2259,13 @@ by C<k>.  This is a very limited version of the algebraic valuation meaning,
 just applied to integers.
 This corresponds to Pari's C<valuation> function.
 C<0> is returned if C<n> or C<k> is one of the values C<-1>, C<0>, or C<1>.
+
+=head2 hammingweight
+
+Given an integer C<n>, returns the binary Hamming weight of C<abs(n)>.  This
+is also called the population count, and is the number of 1s in the binary
+representation.  This corresponds to Pari's C<hammingweight> function for
+C<t_INT> arguments.
 
 =head2 moebius
 
@@ -2538,7 +2574,7 @@ second argument may be given specifying the precision to be used.
 
 Returns the Stirling numbers of either the first kind (default) or
 second kind (with a third argument of 2).  It takes two non-negative integer
-arguments C<n< and C<k>.  This corresponds to Pari's C<stirling(n,k,{type})>
+arguments C<n> and C<k>.  This corresponds to Pari's C<stirling(n,k,{type})>
 function and Mathematica's C<StirlingS1> / C<StirlingS2> functions.
 
 Stirling numbers of the first kind are C<-1^(n-k)> times the number of
@@ -3791,8 +3827,11 @@ good compared to older Pari/GP, but much worse than 2.6's new methods.
 
 =item C<sigma>
 
-Similar to MPU's L</divisor_sum>.  MPU is ~10x faster for native integers
-and about 2x slower for bigints.
+Similar to MPU's L</divisor_sum>.  MPU is ~10x faster when the result
+fits in a native integer.  Once things overflow it is fairly similar in
+performance.  However, using L<Math::BigInt> can slow things down quite
+a bit, so for best performance in these cases using a L<Math::GMP> object
+is best.
 
 =item C<numbpart>, C<forpart>
 

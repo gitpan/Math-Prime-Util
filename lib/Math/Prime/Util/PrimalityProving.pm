@@ -11,7 +11,7 @@ use Math::Prime::Util qw/is_prob_prime is_strong_pseudoprime
 
 BEGIN {
   $Math::Prime::Util::PrimalityProving::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PrimalityProving::VERSION = '0.45';
+  $Math::Prime::Util::PrimalityProving::VERSION = '0.46';
 }
 
 BEGIN {
@@ -20,6 +20,7 @@ BEGIN {
 }
 
 my $_smallval = Math::BigInt->new("18446744073709551615");
+my $_maxint = Math::BigInt->new( (~0 > 4294967296 && $] < 5.008) ? "562949953421312" : ''.~0 );
 
 
 ###############################################################################
@@ -27,15 +28,13 @@ my $_smallval = Math::BigInt->new("18446744073709551615");
 ###############################################################################
 
 my @_fsublist = (
-  sub { Math::Prime::Util::PP::prho_factor   (shift,    8*1024, 3) },
-  sub { Math::Prime::Util::PP::pminus1_factor(shift,    10_000) },
   sub { Math::Prime::Util::PP::pbrent_factor (shift,   32*1024, 1) },
   sub { Math::Prime::Util::PP::pminus1_factor(shift, 1_000_000) },
+  sub { Math::Prime::Util::PP::ecm_factor    (shift,     1_000,   5_000, 15) },
   sub { Math::Prime::Util::PP::pbrent_factor (shift,  512*1024, 7) },
-  sub { Math::Prime::Util::PP::ecm_factor    (shift,     1_000,   5_000, 10) },
   sub { Math::Prime::Util::PP::pminus1_factor(shift, 4_000_000) },
-  sub { Math::Prime::Util::PP::pbrent_factor (shift,  512*1024, 11) },
   sub { Math::Prime::Util::PP::ecm_factor    (shift,    10_000,  50_000, 10) },
+  sub { Math::Prime::Util::PP::pbrent_factor (shift,  512*1024, 11) },
   sub { Math::Prime::Util::PP::pminus1_factor(shift,20_000_000) },
   sub { Math::Prime::Util::PP::ecm_factor    (shift,   100_000, 800_000, 10) },
   sub { Math::Prime::Util::PP::pbrent_factor (shift, 2048*1024, 13) },
@@ -137,12 +136,12 @@ sub primality_proof_bls75 {
   {
     while ($B->is_even) { $B->bdiv($TWO); $A->bmul($TWO); }
     my @tf;
-    if ($B <= ''.~0 && prime_get_config->{'xs'}) {
-      @tf = Math::Prime::Util::trial_factor($B, 20000);
+    if ($B <= $_maxint && prime_get_config->{'xs'}) {
+      @tf = Math::Prime::Util::trial_factor("$B", 20000);
       pop @tf if $tf[-1] > 20000;
     } else {
-      @tf = Math::Prime::Util::PP::trial_factor($B, 500);
-      pop @tf if $tf[-1] > 500;
+      @tf = Math::Prime::Util::PP::trial_factor($B, 5000);
+      pop @tf if $tf[-1] > 5000;
     }
     foreach my $f (@tf) {
       next if $f == $factors[-1];
@@ -167,11 +166,7 @@ sub primality_proof_bls75 {
 
     my $m = pop @nstack;
     # Don't use bignum if it has gotten small enough.
-    if ($] < 5.008) {
-      $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= 562949953421312;
-    } else {
-      $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= ''.~0;
-    }
+    $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= $_maxint;
     # Try to find factors of m, using the default set of factor subs.
     my @ftry;
     foreach my $sub (@_fsublist) {
@@ -466,8 +461,8 @@ sub _jacobi {
     ($n, $m) = ($m, $n);
     $j = -$j if ($n % 4) == 3 && ($m % 4) == 3;
     $n = $n % $m;
-    $n = int($n->bstr) if ref($n) eq 'Math::BigInt' && $n <= ''.~0;
-    $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= ''.~0;
+    $n = int($n->bstr) if ref($n) eq 'Math::BigInt' && $n <= $_maxint;
+    $m = int($m->bstr) if ref($m) eq 'Math::BigInt' && $m <= $_maxint;
   }
   while ($n != 0) {
     while (($n % 2) == 0) {
@@ -868,7 +863,7 @@ Math::Prime::Util::PrimalityProving - Primality proofs and certificates
 
 =head1 VERSION
 
-Version 0.45
+Version 0.46
 
 
 =head1 SYNOPSIS

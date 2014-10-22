@@ -1,6 +1,44 @@
 Revision history for Perl module Math::Prime::Util
 
 
+0.46  2014-10-21
+
+    [API Changes]
+
+    - is_pseudoprime has the same signature as is_strong_pseudoprime now.
+      This means it requires one or more bases and has no default base.
+      The documentation had never mentioned the default, so this should
+      have little impact, and the common signature makes more sense.
+
+    [ADDED]
+
+    - hammingweight(n)          Population count (count binary 1s)
+    - vecreduce {...} @v        Reduce/fold, exactly like List::Util::reduce
+
+    [Misc]
+
+    - Syntax fix from Salvatore.
+
+    - vecmin / vecmax in XS, if overflows UV do via strings to avoid PP.
+
+    - Add example for verifying prime gaps, similar to Nicely's cglp4.
+
+    - divisor_sum wasn't running XS code for k=0.  Refactor PP code,
+      includes speedup when input is a non-Math::BigInt (e.g. Math::GMP).
+
+    - Improve test coverage.
+
+    [PP Updates]
+
+    - Large speedup for divisors with bigints in 64-100 bit range.
+
+    - Revamp RiemannZeta.  Fixes some bignum output, but requires RT fixes.
+
+    - Optimization for PP comparison to ~0.
+
+    - PP factoring is faster, especially for small inputs.
+
+
 0.45  2014-09-26
 
     [ADDED]

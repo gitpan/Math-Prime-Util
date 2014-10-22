@@ -73,7 +73,7 @@
   to speed it up using some ideas from the Ohana 2011 SAGE branch.  For example
   (10**13,10**5) takes 2.5x longer, albeit with 6x less memory.
 
-- More Pari:  parforprime, vecmin, vecmax
+- More Pari:  parforprime
 
 - is_power should take a third argument that gets set to the root
 
@@ -90,3 +90,13 @@
 
 - xt/pari-compare:  add chinese, factorial, vecmin, vecmax,
                         bernfrac, bernreal, LambertW.
+
+- In vecsum, we could create the string and call vecsum with 1 argument.  The
+  trick is telling vecsum we only want one thing.  Idea:
+
+      if (status != 0) {
+        dSP; ENTER; PUSHMARK(SP);
+        XPUSHs(sv_2mortal(newSVpvn("123456789012345678901234567890", 30)));
+        PUTBACK; _vcallsubn(aTHX_ G_SCALAR, VCALL_PP, "vecsum", 1); LEAVE;
+        return;
+      }

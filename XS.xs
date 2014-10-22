@@ -9,6 +9,7 @@
 #define NEED_newCONSTSUB
 #define NEED_newRV_noinc
 #define NEED_sv_2pv_flags
+#define NEED_HvNAME_get
 #include "ppport.h"
 
 #include "ptypes.h"
@@ -124,10 +125,13 @@ static int _validate_int(pTHX_ SV* n, int negok)
     if (negok)  return -1;
     else croak("Parameter '%" SVf "' must be a positive integer", n);
   }
-  if (SvROK(n)) {
-    if (sv_isa(n, "Math::BigInt") || sv_isa(n, "Math::BigFloat") ||
-        sv_isa(n, "Math::Pari") || sv_isa(n, "Math::GMP") ||
-        sv_isa(n, "Math::GMPz") )
+  if (sv_isobject(n)) {
+    const char *hvname = HvNAME_get(SvSTASH(SvRV(n)));
+    if (hvname == 0)
+      return 0;
+    if (strEQ(hvname, "Math::BigInt") || strEQ(hvname, "Math::BigFloat") ||
+        strEQ(hvname, "Math::GMPz")   || strEQ(hvname, "Math::GMP") ||
+        strEQ(hvname, "Math::Pari") )
       isbignum = 1;
     else
       return 0;
@@ -474,6 +478,8 @@ trial_factor(IN UV n, ...)
 
 void
 is_strong_pseudoprime(IN SV* svn, ...)
+  ALIAS:
+    is_pseudoprime = 1
   PREINIT:
     int c, status = 1;
   PPCODE:
@@ -486,9 +492,14 @@ is_strong_pseudoprime(IN SV* svn, ...)
     if (status == 1) {
       UV n = my_svuv(svn);
       int b, ret = 1;
-      if      (n < 4)        { ret = (n >= 2); } /* 0,1 composite; 2,3 prime */
-      else if ((n % 2) == 0) { ret = 0; }        /* evens composite */
-      else {
+      if        (n < 4) {                        /* 0,1 composite; 2,3 prime */
+        ret = (n >= 2);
+      } else if (ix == 1) {                      /* Fermat test */
+        for (c = 1; c < items && ret == 1; c++)
+          ret = _XS_is_pseudoprime(n, my_svuv(ST(c)));
+      } else if ((n % 2) == 0) {                 /* evens composite */
+         ret = 0;
+      } else {
         UV bases[32];
         for (c = 1; c < items && ret == 1; ) {
           for (b = 0; b < 32 && c < items; c++)
@@ -498,7 +509,11 @@ is_strong_pseudoprime(IN SV* svn, ...)
       }
       RETURN_NPARITY(ret);
     }
-    _vcallsub_with_gmp("is_strong_pseudoprime");
+    switch (ix) {
+      case 0: _vcallsub_with_gmp("is_strong_pseudoprime"); break;
+      case 1:
+      default:_vcallsub_with_gmp("is_pseudoprime");  break;
+    }
     return; /* skip implicit PUTBACK */
 
 void
@@ -603,6 +618,25 @@ gcd(...)
     }
     if (status != 0)
       XSRETURN_UV(ret);
+    /* For min/max, use string compare if not an object */
+    if ((ix == 2 || ix == 3) && !sv_isobject(ST(0))) {
+      int i, retindex = 0;
+      int minmax = (ix == 2);
+      STRLEN alen, blen;
+      char *aptr, *bptr;
+      aptr = SvPV_nomg(ST(0), alen);
+      (void) strnum_minmax(minmax, 0, 0, aptr, alen);
+      for (i = 1; i < items; i++) {
+        bptr = SvPV_nomg(ST(i), blen);
+        if (strnum_minmax(minmax, aptr, alen, bptr, blen)) {
+          aptr = bptr;
+          alen = blen;
+          retindex = i;
+        }
+      }
+      ST(0) = ST(retindex);
+      XSRETURN(1);
+    }
     switch (ix) {
       case 0: _vcallsub_with_gmp("gcd");   break;
       case 1: _vcallsub_with_gmp("lcm");   break;
@@ -672,8 +706,7 @@ is_prime(IN SV* svn, ...)
     is_frobenius_underwood_pseudoprime = 8
     is_perrin_pseudoprime = 9
     is_power = 10
-    is_pseudoprime = 11
-    is_almost_extra_strong_lucas_pseudoprime = 12
+    is_almost_extra_strong_lucas_pseudoprime = 11
   PREINIT:
     int status;
   PPCODE:
@@ -701,8 +734,7 @@ is_prime(IN SV* svn, ...)
           case 8:  ret = _XS_is_frobenius_underwood_pseudoprime(n); break;
           case 9:  ret = is_perrin_pseudoprime(n); break;
           case 10: ret = is_power(n, a); break;
-          case 11: ret = _XS_is_pseudoprime(n, (items == 1) ? 2 : a); break;
-          case 12:
+          case 11:
           default: ret = _XS_is_almost_extra_strong_lucas_pseudoprime
                          (n, (items == 1) ? 1 : a); break;
         }
@@ -721,8 +753,7 @@ is_prime(IN SV* svn, ...)
       case 8: _vcallsub_with_gmp("is_frobenius_underwood_pseudoprime"); break;
       case 9: _vcallsub_with_gmp("is_perrin_pseudoprime"); break;
       case 10:_vcallsub_with_gmp("is_power"); break;
-      case 11:_vcallsub_with_gmp("is_pseudoprime"); break;
-      case 12:
+      case 11:
       default:_vcallsub_with_gmp("is_almost_extra_strong_lucas_pseudoprime"); break;
     }
     return; /* skip implicit PUTBACK */
@@ -828,7 +859,7 @@ _pidigits(IN int digits)
       New(0, out, digits+5+1, char);
       *out++ = '3';  /* We'll turn "31415..." into "3.1415..." */
       for (b = 0; b < c; b++)  a[b] = 20000000;
-      
+
       while ((b = c -= 14) > 0 && i < digits) {
         d = e = d % f;
         while (--b > 0) {
@@ -929,7 +960,10 @@ divisor_sum(IN SV* svn, ...)
   PPCODE:
     svk = (items > 1) ? ST(1) : 0;
     nstatus = _validate_int(aTHX_ svn, 0);
-    kstatus = (items == 1 || (SvIOK(svk) && SvIV(svk)))  ?  1  :  0;
+    kstatus = (items == 1 || (SvIOK(svk) && SvIV(svk) >= 0))  ?  1  :  0;
+    /* The above doesn't understand small bigints */
+    if (nstatus == 1 && kstatus == 0 && SvROK(svk) && (sv_isa(svk, "Math::BigInt") || sv_isa(svk, "Math::GMP")))
+      kstatus = _validate_int(aTHX_ svk, 0);
     if (nstatus == 1 && kstatus == 1) {
       UV n = my_svuv(svn);
       UV k = (items > 1) ? my_svuv(svk) : 1;
@@ -1196,6 +1230,7 @@ carmichael_lambda(IN SV* svn)
     factorial = 5
     exp_mangoldt = 6
     znprimroot = 7
+    hammingweight = 8
   PREINIT:
     int status;
   PPCODE:
@@ -1215,11 +1250,13 @@ carmichael_lambda(IN SV* svn)
                  if (r != 0) XSRETURN_UV(r);
                  status = 0; break;
         case 6:  XSRETURN_UV( (status == -1) ? 1 : exp_mangoldt(n) ); break;
-        case 7:
-        default: if (status == -1) n = -(IV)n;
+        case 7:  if (status == -1) n = -(IV)n;
                  r = znprimroot(n);
                  if (r == 0 && n != 1)  XSRETURN_UNDEF;  /* No root */
                  XSRETURN_UV(r);  break;
+        case 8:
+        default: if (status == -1) n = -(IV)n;
+                 XSRETURN_UV(popcount(n));  break;
       }
     }
     switch (ix) {
@@ -1230,8 +1267,11 @@ carmichael_lambda(IN SV* svn)
       case 4:  _vcallsub_with_pp("chebyshev_psi"); break;
       case 5:  _vcallsub_with_pp("factorial"); break;
       case 6:  _vcallsub_with_gmp("exp_mangoldt"); break;
-      case 7:
-      default: _vcallsub_with_gmp("znprimroot");
+      case 7:  _vcallsub_with_gmp("znprimroot"); break;
+      case 8:
+      default: { char* ptr;  STRLEN len;  ptr = SvPV_nomg(svn, len);
+                 XSRETURN_UV(popcount_string(ptr, len)); }
+               break;
     }
     return; /* skip implicit PUTBACK */
 
@@ -1565,9 +1605,18 @@ forpart (SV* block, IN SV* svn, IN SV* svh = 0)
       m = (n > 0) ? 1 : 0;   /* n=0 => one call with empty list */
       h = 1;
 
+      if (nmin > 1) {
+        UV max = n - nmin + 1;
+        UV t = n - max;
+        x[h=1] = max;
+        while (t >= max) {  x[++h] = max;  t -= max;  }
+        m = h + (t > 0);
+        if (t > 1)  x[++h] = t;
+      }
+
       if (x[1] > amax) { /* x[1] is always decreasing, so handle it here */
         UV t = n - amax;
-        x[h] = amax;
+        x[h=1] = amax;
         while (t >= amax) {  x[++h] = amax;  t -= amax;  }
         m = h + (t > 0);
         if (t > 1)  x[++h] = t;
@@ -1669,3 +1718,52 @@ forcomb (SV* block, IN SV* svn, IN SV* svk = 0)
     for (i = 0; i < n; i++)
       SvREFCNT_dec(svals[i]);
     Safefree(svals);
+
+void
+vecreduce(SV* block, ...)
+PROTOTYPE: &@
+CODE:
+{   /* This is basically reduce from List::Util.  Try to maintain compat. */
+    SV *ret = sv_newmortal();
+    int i;
+    GV *agv,*bgv,*gv;
+    HV *stash;
+    SV **args = &PL_stack_base[ax];
+    CV *cv = sv_2cv(block, &stash, &gv, 0);
+
+    if (cv == Nullcv) croak("Not a subroutine reference");
+    if (items <= 1) XSRETURN_UNDEF;
+
+    agv = gv_fetchpv("a", GV_ADD, SVt_PV);
+    bgv = gv_fetchpv("b", GV_ADD, SVt_PV);
+    SAVESPTR(GvSV(agv));
+    SAVESPTR(GvSV(bgv));
+    GvSV(agv) = ret;
+    SvSetMagicSV(ret, args[1]);
+#ifdef dMULTICALL
+    if (!CvISXSUB(cv)) {
+      dMULTICALL;
+      I32 gimme = G_SCALAR;
+      PUSH_MULTICALL(cv);
+      for (i = 2; i < items; i++) {
+        GvSV(bgv) = args[i];
+        MULTICALL;
+        SvSetMagicSV(ret, *PL_stack_sp);
+      }
+      FIX_MULTICALL_REFCOUNT;
+      POP_MULTICALL;
+    }
+    else
+#endif
+    {
+      for (i = 2; i < items; i++) {
+        dSP;
+        GvSV(bgv) = args[i];
+        PUSHMARK(SP);
+        call_sv((SV*)cv, G_SCALAR);
+        SvSetMagicSV(ret, *PL_stack_sp);
+      }
+    }
+    ST(0) = ret;
+    XSRETURN(1);
+}

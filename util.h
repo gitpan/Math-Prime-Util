@@ -28,6 +28,8 @@ extern UV  nth_twin_prime_approx(UV n);
 extern int powerof(UV n);
 extern int is_power(UV n, UV a);
 extern UV valuation(UV n, UV k);
+extern UV popcount(UV n);
+extern UV popcount_string(const char* ptr, int len);
 
 extern signed char* _moebius_range(UV low, UV high);
 extern UV*    _totient_range(UV low, UV high);
@@ -63,6 +65,8 @@ extern UV znlog(UV a, UV g, UV p);
 
 extern IV stirling2(UV n, UV m);
 extern IV stirling1(UV n, UV m);
+
+extern int strnum_minmax(int min, char* a, STRLEN alen, char* b, STRLEN blen);
 
 #if defined(FUNC_isqrt) || defined(FUNC_is_perfect_square)
 static UV isqrt(UV n) {

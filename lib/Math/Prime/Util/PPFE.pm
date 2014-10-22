@@ -2,12 +2,12 @@ package Math::Prime::Util::PPFE;
 use strict;
 use warnings;
 use Math::Prime::Util::PP;
-use Carp qw/carp croak confess/;
 
 # The PP front end, only loaded if XS is not used.
 # It is intended to load directly into the MPU namespace.
 
 package Math::Prime::Util;
+use Carp qw/carp croak confess/;
 
 *_validate_num = \&Math::Prime::Util::PP::_validate_num;
 *_validate_integer = \&Math::Prime::Util::PP::_validate_integer;
@@ -420,6 +420,12 @@ sub valuation {
   _validate_positive_integer($k);
   return Math::Prime::Util::PP::valuation($n, $k);
 }
+sub hammingweight {
+  my($n) = @_;
+  $n = -$n if defined $n && $n < 0;
+  _validate_positive_integer($n);
+  return Math::Prime::Util::PP::hammingweight($n);
+}
 
 sub Pi {
   my($digits) = @_;
@@ -506,6 +512,17 @@ sub forcomb (&$;$) {    ## no critic qw(ProhibitSubroutinePrototypes)
 }
 sub forperm (&$;$) {    ## no critic qw(ProhibitSubroutinePrototypes)
   Math::Prime::Util::PP::forperm(@_);
+}
+
+sub vecreduce (&@) {    ## no critic qw(ProhibitSubroutinePrototypes)
+  my($sub, @v) = @_;
+  my $count = shift @v;
+  for my $v (@v) {
+    no strict 'refs'; ## no critic(strict)
+    local( ${caller() . '::a'}, ${caller() . '::b'} ) = ($count, $v);
+    $count = $sub->();
+  }
+  $count;
 }
 
 1;

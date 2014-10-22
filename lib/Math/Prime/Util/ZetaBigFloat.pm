@@ -4,7 +4,7 @@ use warnings;
 
 BEGIN {
   $Math::Prime::Util::ZetaBigFloat::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::ZetaBigFloat::VERSION = '0.45';
+  $Math::Prime::Util::ZetaBigFloat::VERSION = '0.46';
 }
 
 BEGIN {
@@ -202,7 +202,7 @@ my @_Riemann_Zeta_Table = (
 # for k = 1 .. n :  (1 / (zeta(k+1) * k + k)
 # Makes RiemannR run about twice as fast.
 my @_Riemann_Zeta_Premult;
-my $_Riemann_Zeta_Premult_accuracy;
+my $_Riemann_Zeta_premult_accuracy = 0;
 
 # Select n = 55, good for 46ish digits of accuracy.
 my $_Borwein_n = 55;
@@ -270,34 +270,28 @@ sub _Recompute_Dk {
   my $nterms = shift;
   $_Borwein_n = $nterms;
   @_Borwein_dk = ();
+  my $orig_acc = Math::BigFloat->accuracy();
+  Math::BigFloat->accuracy($nterms);
   foreach my $k (0 .. $nterms) {
-    my $n = Math::BigInt->new($nterms-1)->bfac;
-    my $d = Math::BigInt->new($nterms)->bfac;
-    my ($sum_n, $sum_d) = (Math::BigInt->bone, Math::BigInt->bone);
-    my $gcd;
+    my $sum = Math::BigInt->bzero;
+    my $num = Math::BigInt->new($nterms-1)->bfac();
     foreach my $i (0 .. $k) {
-      # ad + cb  /  bd
-      $sum_n->bmul($d)->badd( $sum_d->copy->bmul($n) );
-      $sum_d->bmul($d);
-      $gcd = Math::BigInt::bgcd($sum_n, $sum_d);
-      do {
-        $sum_n = int($sum_n / $gcd);
-        $sum_d = int($sum_d / $gcd);
-      } unless $gcd->is_one;
-      my $dmul = (2*$i+1) * (2*$i+2);
-      $n->bmul($nterms+$i)->blsft(2);
-      $d->bdiv($nterms-$i)->bmul($dmul);
+      my $den = Math::BigInt->new($nterms - $i)->bfac * Math::BigInt->new(2*$i)->bfac;
+      $sum += $num->copy->bdiv($den);
+      $num->bmul(4 * ($nterms+$i));
     }
-    $_Borwein_dk[$k] = $sum_n->bmul($nterms)->bdiv($sum_d);
+    $sum->bmul($nterms);
+    $_Borwein_dk[$k] = $sum;
   }
+  Math::BigFloat->accuracy($orig_acc);
 }
 
 sub RiemannZeta {
   my($ix) = @_;
 
-  my $x = (ref($ix) eq 'Math::BigFloat') ? $ix->copy
-                                         : Math::BigFloat->new("$ix");
-  my $xdigits = $x->accuracy || Math::BigFloat->accuracy() || Math::BigFloat->div_scale();
+  my $x = (ref($ix) eq 'Math::BigFloat') ? $ix->copy : Math::BigFloat->new("$ix");
+  $x->accuracy($ix->accuracy) if $ix->accuracy;
+  my $xdigits = $ix->accuracy() || Math::BigFloat->accuracy() || Math::BigFloat->div_scale();
 
   if ($x == int($x) && $xdigits <= 44 && (int($x)-2) <= $#_Riemann_Zeta_Table) {
     my $izeta = $_Riemann_Zeta_Table[int($x)-2]->copy;
@@ -305,66 +299,87 @@ sub RiemannZeta {
     return $izeta;
   }
 
-  my $extra_acc = 7;
-  if    ($x > 50) { $extra_acc = 10; }
-  elsif ($x > 30) { $extra_acc = 28; }
-  elsif ($x > 15) { $extra_acc = 15; }
+  # Note, this code likely will not work correctly without fixes for RTs:
+  #
+  #   43692 : blog and others broken
+  #   43460 : exp and powers broken
+  #
+  # E.g:
+  #   my $n = Math::BigFloat->new(11); $n->accuracy(64); say $n**1.1;  # 13.98
+  #   my $n = Math::BigFloat->new(11); $n->accuracy(67); say $n**1.1;  # 29.98
+  #
+  # There is a hack that tries to work around some of the problem, but it
+  # can't cover everything and it slows things down a lot.  There just isn't
+  # any way to do this if the basic math operations don't work right.
+
+  my $orig_acc = Math::BigFloat->accuracy();
+  my $extra_acc = 5;
+  if ($x > 15 && $x <= 50) { $extra_acc = 15; }
+
   $xdigits += $extra_acc;
+  Math::BigFloat->accuracy($xdigits);
   $x->accuracy($xdigits);
   my $zero= $x->copy->bzero;
-  my $one = $x->copy->bone;
+  my $one = $zero->copy->binc;
   my $two = $one->copy->binc;
 
-  my $tol = $one->copy->brsft($xdigits-1, 10);
+  my $tol = ref($x)->new('0.' . '0' x ($xdigits-1) . '1');
 
   # Note: with bignum on, $d1->bpow($one-$x) doesn't change d1 !
 
-  # Trying to work around Math::BigFloat bugs RT 43692 and RT 77105 which make
-  # a right mess of things.  Watch this:
-  #   my $n = Math::BigFloat->new(11); $n->accuracy(64); say $n**1.1;  # 13.98
-  #   my $n = Math::BigFloat->new(11); $n->accuracy(67); say $n**1.1;  # 29.98
-  # We can fix some issues with large exponents (e.g. 6^-40.5) by turning it
-  # into (6^-(40.5/4))^4  (assuming the base is positive).  Without that hack,
-  # none of this would work at all.
-  # There is a fix for the defect in the RT.
+  # This is a hack to turn 6^-40.5 into (6^-(40.5/4))^4.  It helps work around
+  # the two RTs listed earlier, though does not completely fix their bugs.
+  # It has the downside of making integer arguments very slow.
 
   my $superx = Math::BigInt->bone;
   my $subx = $x->copy;
-  while ($subx > 1) {
-    $superx->blsft(1);
-    $subx /= $two;
+  my $intx = int("$x");
+  if ($Math::BigFloat::VERSION < 1.9996 || $x != $intx) {
+    while ($subx > 1) {
+      $superx->blsft(1);
+      $subx /= $two;
+    }
   }
 
-  # Go with the basic formula for large x, as it best works around the mess,
-  # though is unfortunately much slower.
-  if ($x > 50) {
+  if (1 && $x == $intx && $x >= 2 && !($intx & 1) && $intx < 100) {
+    # Mathworld equation 63.  How fast this is relative to the others is
+    # dependent on the backend library and if we have MPUGMP.
+    $x = int("$x");
+    my $den = Math::Prime::Util::factorial($x);
+    $xdigits -= $extra_acc;
+    $extra_acc += length($den);
+    $xdigits += $extra_acc;
+    $one->accuracy($xdigits); $two->accuracy($xdigits);
+    Math::BigFloat->accuracy($xdigits);
+    $subx->accuracy($xdigits);  $superx->accuracy($xdigits);
+    my $Pix = Math::Prime::Util::Pi($xdigits)->bpow($subx)->bpow($superx);
+    my $Bn = Math::Prime::Util::bernreal($x);  $Bn = -$Bn if $Bn < 0;
+    my $twox1 = $two->copy->bpow($x-1);
+    #my $num = $Pix  *  $Bn  *  $twox1;
+    #my $res = $num->bdiv($den)->bdec->bround($xdigits - $extra_acc);
+    my $res = $Bn->bdiv($den)->bmul($Pix)->bmul($twox1)->bdec
+              ->bround($xdigits-$extra_acc);
+    Math::BigFloat->accuracy($orig_acc);
+    return $res;
+  }
+
+  # Go with the basic formula for large x.
+  if (1 && $x >= 50) {
     my $negsubx = $subx->copy->bneg;
     my $sum = $zero->copy;
     my $k = $two->copy->binc;
     while ($k->binc <= 1000) {
       my $term = $k->copy->bpow($negsubx)->bpow($superx);
-      $sum->badd($term);
+      $sum += $term;
       last if $term < ($sum*$tol);
     }
-    $sum->badd( $two->copy->binc->bpow($negsubx)->bpow($superx) );
-    $sum->badd( $two->copy      ->bpow($negsubx)->bpow($superx) );
+    $k = $two+$two;
+    $k->bdec(); $sum += $k->copy->bpow($negsubx)->bpow($superx);
+    $k->bdec(); $sum += $k->copy->bpow($negsubx)->bpow($superx);
     $sum->bround($xdigits-$extra_acc);
+    Math::BigFloat->accuracy($orig_acc);
     return $sum;
   }
-  #if ($x > 25) {
-  #  my $sum = 0.0;
-  #  my $divisor = 1.0 - ((2 ** -$subx) ** $superx);
-  #  for my $k (2 .. 1000) {
-  #    my $term = ( (2*$k+1) ** -$subx )  ** $superx;
-  #    $sum += $term;
-  #    last if $term < ($tol*$divisor);
-  #  }
-  #  $sum += (3 ** -$subx) ** $superx;
-  #  my $t = 1.0 / $divisor;
-  #  $sum *= $t;
-  #  $sum += ($t - 1.0);
-  #  return $sum;
-  #}
 
   {
     my $dig = int($_Borwein_n / 1.3)+1;
@@ -378,22 +393,24 @@ sub RiemannZeta {
   my $n = $_Borwein_n;
 
   my $d1 = $two ** ($one - $x);
-  my $divisor = $one->copy->bsub($d1)->bmul(-$_Borwein_dk[$n]);
-  $tol = $divisor->copy->bmul($tol)->babs();
+  my $divisor = ($one - $d1) * $_Borwein_dk[$n];
+  $divisor->bneg;
+  $tol = ($divisor * $tol)->babs();
 
   my ($sum, $bigk) = ($zero->copy, $one->copy);
+  my $negsubx = $subx->copy->bneg;
   foreach my $k (1 .. $n-1) {
-    my $den = $bigk->binc()->copy->bpow($subx,$xdigits)->bpow($superx,$xdigits);
-    my $term = ($k % 2)
-             ? $zero->copy->badd($_Borwein_dk[$n])->bsub($_Borwein_dk[$k])
-             : $zero->copy->badd($_Borwein_dk[$k])->bsub($_Borwein_dk[$n]);
-    $term->bdiv($den);
-    $sum->badd($term);
+    my $den = $bigk->binc()->copy->bpow($negsubx)->bpow($superx);
+    my $term = ($k % 2) ? ($_Borwein_dk[$n] - $_Borwein_dk[$k])
+                        : ($_Borwein_dk[$k] - $_Borwein_dk[$n]);
+    $term = Math::BigFloat->new($term) unless ref($term) eq 'Math::BigFloat';
+    $sum += $term * $den;
     last if $term->copy->babs() < $tol;
   }
-  $sum->badd($one->copy->bsub($_Borwein_dk[$n]));  # term k=0
-  $sum->bdiv($divisor,$xdigits)->bdec;
-  $sum->bround($xdigits-$extra_acc);
+  $sum += $_Borwein_dk[0] - $_Borwein_dk[$n];
+  $sum = $sum->bdiv($divisor);
+  $sum->bdec->bround($xdigits-$extra_acc);
+  Math::BigFloat->accuracy($orig_acc);
   return $sum;
 }
 
@@ -410,6 +427,8 @@ sub RiemannR {
   my $xdigits = $x->accuracy || Math::BigFloat->accuracy() || Math::BigFloat->div_scale();
   my $extra_acc = 1;
   $xdigits += $extra_acc;
+  my $orig_acc = Math::BigFloat->accuracy();
+  Math::BigFloat->accuracy($xdigits);
   $x->accuracy($xdigits);
   my $tol = $x->copy->bone->brsft($xdigits-1, 10);
   my $sum = $x->copy->bone;
@@ -419,7 +438,7 @@ sub RiemannR {
     for my $k (1 .. 1000) {
       my $mob = Math::Prime::Util::moebius($k);
       next if $mob == 0;
-      $mob = Math::BigFloat->new($mob);  $mob->accuracy($xdigits);
+      $mob = Math::BigFloat->new($mob);
       my $term = $mob->bdiv($k) *
                  Math::Prime::Util::LogarithmicIntegral($x->copy->broot($k));
       $sum += $term;
@@ -429,26 +448,21 @@ sub RiemannR {
 
   } else {
 
-    # TODO: The default table is only 44 digits.
-    if ( (scalar @_Riemann_Zeta_Premult == 0) || ($_Riemann_Zeta_Premult_accuracy < $xdigits) ) {
-      $_Riemann_Zeta_Premult_accuracy = $xdigits;
-      @_Riemann_Zeta_Premult = map { my $v = Math::BigFloat->bone;
-                                     $v->accuracy($xdigits);
-                                     $v / ($_Riemann_Zeta_Table[$_-1]*$_ + $_) }
-                               (1 .. @_Riemann_Zeta_Table);
-    }
+    my ($flogx, $part_term, $fone, $bigk)
+    = (log($x), Math::BigFloat->bone, Math::BigFloat->bone, Math::BigInt->bone);
 
-    my $flogx = log($x);
-    my $part_term = Math::BigFloat->bone;
+    if ($_Riemann_Zeta_premult_accuracy < $xdigits) {
+      @_Riemann_Zeta_Premult = ();
+      $_Riemann_Zeta_premult_accuracy = $xdigits;
+    }
 
     for my $k (1 .. 10000) {
       my $zeta_term = $_Riemann_Zeta_Premult[$k-1];
       if (!defined $zeta_term) {
-        my $zeta = $_Riemann_Zeta_Table[$k-1];
+        my $zeta = ($xdigits > 44) ? undef : $_Riemann_Zeta_Table[$k-1];
         if (!defined $zeta) {
-          my $kz = Math::BigFloat->new($k+1);
-          $kz->accuracy($xdigits);
-          if ($kz >= 100 && $xdigits <= 40) {
+          my $kz = $fone->copy->badd($bigk);  # kz is k+1
+          if (($k+1) >= 100 && $xdigits <= 40) {
             # For this accuracy level, two terms are more than enough.  Also,
             # we should be able to miss the Math::BigFloat accuracy bug.  If we
             # try to do this for higher accuracy, things will go very bad.
@@ -458,17 +472,20 @@ sub RiemannR {
             $zeta = Math::Prime::Util::ZetaBigFloat::RiemannZeta( $kz );
           }
         }
-        $zeta_term = Math::BigFloat->bone / ($zeta * $k + $k);
+        $zeta_term = $fone / ($zeta * $bigk + $bigk);
+        $_Riemann_Zeta_Premult[$k-1] = $zeta_term if defined $_Riemann_Zeta_Table[$k-1];
       }
-      $part_term *= $flogx / $k;
+      $part_term *= $flogx / $bigk;
       my $term = $part_term * $zeta_term;
       $sum += $term;
       #warn "k = $k  term = $term  sum = $sum\n";
       last if $term < ($tol*$sum);
+      $bigk->binc;
     }
 
   }
   $sum->bround($xdigits-$extra_acc);
+  Math::BigFloat->accuracy($orig_acc);
   return $sum;
 }
 
@@ -491,7 +508,7 @@ Math::Prime::Util::ZetaBigFloat - Perl Big Float versions of Riemann Zeta and R 
 
 =head1 VERSION
 
-Version 0.45
+Version 0.46
 
 
 =head1 SYNOPSIS

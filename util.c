@@ -113,6 +113,13 @@ int  _XS_get_callgmp(void) { return _call_gmp; }
      return (b * 0x0101010101010101) >> 56;
    }
  #endif
+#else
+ static UV popcnt(UV b) {
+   b -= (b >> 1) & 0x55555555;
+   b = (b & 0x33333333) + ((b >> 2) & 0x33333333);
+   b = (b + (b >> 4)) & 0x0f0f0f0f;
+   return (b * 0x01010101) >> 24;
+ }
 #endif
 
 #if defined(__GNUC__)
@@ -1295,6 +1302,38 @@ UV valuation(UV n, UV k)
   return v;
 }
 
+UV popcount(UV n) {  return popcnt(n);  }
+
+UV popcount_string(const char* ptr, int len)
+{
+  int i, *s, *sptr;
+  UV count = 0;
+
+  while (len > 0 && (*ptr == '0' || *ptr == '+' || *ptr == '-'))
+    {  ptr++;  len--;  }
+
+  New(0, s, len, int);
+  for (i = 0; i < len; i++)
+    s[i] = ptr[i] - '0';
+
+  while (len > 0) {
+    if (s[len-1] & 1)  count++;
+    /* divide by 2 */
+    sptr = s;
+    if (s[0] == 1) {
+      if (--len == 0) break;
+      *++sptr += 10;
+    }
+    for (i = 0; i < len; i++) {
+      if ( (i+1) < len  &&  sptr[i] & 1 ) sptr[i+1] += 10;
+      s[i] = sptr[i] / 2;
+    }
+  }
+  Safefree(s);
+  return count;
+}
+
+
 /* How many times does 2 divide n? */
 #define padic2(n)  ctz(n)
 #define IS_MOD8_3OR5(x)  (((x)&7)==3 || ((x)&7)==5)
@@ -1383,7 +1422,7 @@ UV binomial(UV n, UV k) {    /* Thanks to MJD and RosettaCode for ideas */
 IV stirling2(UV n, UV m) {
   UV f;
   IV j, k, t, s = 0;
-  
+
   if (m == n) return 1;
   if (n == 0 || m == 0 || m > n) return 0;
   if (m == 1) return 1;
@@ -1990,20 +2029,25 @@ long double ld_riemann_zeta(long double x) {
 
   /* The 2n!/B_2k series used by the Cephes library. */
   {
-    /* gp/pari: factorial(2n)/bernfrac(2n) */
+    /* gp/pari:
+     *   for(i=1,13,printf("%.38g\n",(2*i)!/bernreal(2*i)))
+     * MPU:
+     *   use bignum;
+     *   say +(factorial(2*$_)/bernreal(2*$_))->bround(38) for 1..13;
+     */
     static const long double A[] = {
       12.0L,
      -720.0L,
       30240.0L,
      -1209600.0L,
       47900160.0L,
-     -1892437580.3183791606367583212735166426L,
+     -1892437580.3183791606367583212735166425L,
       74724249600.0L,
      -2950130727918.1642244954382084600497650L,
-      116467828143500.67248729113000661089202L,
-     -4597978722407472.6105457273596737891657L,
+      116467828143500.67248729113000661089201L,
+     -4597978722407472.6105457273596737891656L,
       181521054019435467.73425331153534235290L,
-     -7166165256175667011.3346447367083352776L,
+     -7166165256175667011.3346447367083352775L,
       282908877253042996618.18640556532523927L,
     };
     long double a, b, s, t;
@@ -2099,4 +2143,39 @@ long double lambertw(long double k) {
     lastx = x;
   }
   return x;
+}
+
+/* 1. Perform signed integer validation on b/blen.
+ * 2. Compare to a/alen using min or max based on first arg.
+ * 3. Return 0 to select a, 1 to select b.
+ */
+int strnum_minmax(int min, char* a, STRLEN alen, char* b, STRLEN blen)
+{
+  int aneg, bneg;
+  STRLEN i;
+  /* a is checked, process b */
+  if (b == 0 || blen == 0) croak("Parameter must be a positive integer");
+  bneg = (b[0] == '-');
+  if (b[0] == '-' || b[0] == '+') { b++; blen--; }
+  while (blen > 0 && *b == '0') { b++; blen--; }
+  for (i = 0; i < blen; i++)
+    if (!isDIGIT(b[i]))
+      break;
+  if (blen == 0 || i < blen)
+    croak("Parameter must be a positive integer");
+
+  if (a == 0) return 1;
+
+  aneg = (a[0] == '-');
+  if (a[0] == '-' || a[0] == '+') { a++; alen--; }
+  while (alen > 0 && *a == '0') { a++; alen--; }
+
+  if (aneg != bneg)  return  min  ?  (bneg == 1)  :  (aneg == 1);
+  if (aneg == 1)  min = !min;
+  if (alen != blen)  return  min  ?  (alen > blen) :  (blen > alen);
+
+  for (i = 0; i < blen; i++)
+    if (a[i] != b[i])
+      return  min  ?  (a[i] > b[i])  :  (b[i] > a[i]);
+  return 0; /* equal */
 }

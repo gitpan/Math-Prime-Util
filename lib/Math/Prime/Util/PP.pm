@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.45';
+  $Math::Prime::Util::PP::VERSION = '0.46';
 }
 
 BEGIN {
@@ -38,7 +38,9 @@ BEGIN {
   use constant BZERO           => Math::BigInt->bzero;
   use constant BONE            => Math::BigInt->bone;
   use constant BTWO            => Math::BigInt->new(2);
-  use constant B_PRIM759       => Math::BigInt->new("64092011671807087969");
+  use constant INTMAX          => (!OLD_PERL_VERSION || MPU_32BIT) ? ~0 : 562949953421312;
+  use constant BMAX            => Math::BigInt->new('' . INTMAX);
+  use constant B_PRIM767       => Math::BigInt->new("261944051702675568529303");
   use constant B_PRIM235       => Math::BigInt->new("30");
   use constant PI_TIMES_8      => 25.13274122871834590770114707;
 }
@@ -73,9 +75,11 @@ sub _is_positive_int {
 }
 
 sub _bigint_to_int {
-  # Note that this still has issues with 5.6.2: e.g. 11923179284862717872
-  return (OLD_PERL_VERSION) ? unpack(UVPACKLET,pack(UVPACKLET,"$_[0]"))
-                            : int("$_[0]");
+  #if (OLD_PERL_VERSION) {
+  #  my $pack = ($_[0] < 0) ? lc(UVPACKLET) : UVPACKLET;
+  #  return unpack($pack,pack($pack,"$_[0]"));
+  #}
+  int("$_[0]");
 }
 
 sub _upgrade_to_float {
@@ -131,13 +135,12 @@ sub _validate_positive_integer {
   if (ref($n) eq 'Math::BigInt') {
     croak "Parameter '$n' must be a positive integer"
       if $n->sign() ne '+' || !$n->is_int();
-    $_[0] = _bigint_to_int($_[0])
-      if $n <= (OLD_PERL_VERSION ? 562949953421312 : ''.~0);
+    $_[0] = _bigint_to_int($_[0]) if $n <= BMAX;
   } else {
     my $strn = "$n";
     croak "Parameter '$strn' must be a positive integer"
       if $strn =~ tr/0123456789//c && $strn !~ /^\+?\d+$/;
-    if ($n <= (OLD_PERL_VERSION ? 562949953421312 : ''.~0)) {
+    if ($n <= (OLD_PERL_VERSION ? 562949953421312 : ~0)) {
       $_[0] = $strn if ref($n);
     } else {
       $_[0] = Math::BigInt->new($strn)
@@ -178,7 +181,7 @@ sub _validate_integer {
 
 my @_primes_small = (0,2,3,5);
 {
-  my($n, $s, $sieveref) = (7-2, 3, _sieve_erat_string(5000));
+  my($n, $s, $sieveref) = (7-2, 3, _sieve_erat_string(5003));
   while ( (my $nexts = 1 + index($$sieveref, "0", $s)) > 0 ) {
     $n += 2 * ($nexts - $s);
     $s = $nexts;
@@ -213,8 +216,9 @@ sub _tiny_prime_count {
 sub _is_prime7 {  # n must not be divisible by 2, 3, or 5
   my($n) = @_;
 
+  $n = _bigint_to_int($n) if ref($n) eq 'Math::BigInt' && $n <= BMAX;
   if (ref($n) eq 'Math::BigInt') {
-    return 0 unless Math::BigInt::bgcd($n, B_PRIM759)->is_one;
+    return 0 unless Math::BigInt::bgcd($n, B_PRIM767)->is_one;
     return 0 unless _miller_rabin_2($n);
     my $is_esl_prime = is_extra_strong_lucas_pseudoprime($n);
     return ($is_esl_prime)  ?  (($n <= "18446744073709551615") ? 2 : 1)  :  0;
@@ -532,28 +536,24 @@ sub partitions {
 sub primorial {
   my $n = shift;
 
+  my @plist = @{primes($n)};
   my $max = (MPU_32BIT) ? 29 : (OLD_PERL_VERSION) ? 43 : 53;
-  my $pn = (ref($_[0]) eq 'Math::BigInt') ? $_[0]->copy->bone()
-         : ($n >= $max) ? Math::BigInt->bone()
-         : 1;
-  if (ref($pn) eq 'Math::BigInt') {
-    my $start = 2;
-    if ($n >= 97) {
-      $start = 101;
-      $pn->bdec->badd(Math::BigInt->new("2305567963945518424753102147331756070"));
-    }
-    my @plist = @{primes($start,$n)};
-    while (@plist > 2 && $plist[2] < 1625) {
-      $pn->bmul( Math::BigInt->new(shift(@plist)*shift(@plist)*shift(@plist)) );
-    }
-    while (@plist > 1 && $plist[1] < 65536) {
-      $pn->bmul( Math::BigInt->new(shift(@plist)*shift(@plist)) );
-    }
-    $pn->bmul($_) for @plist;
-  } else {
-    foreach my $p (@{primes($n)}) {  $pn *= $p;  }
+
+  # If small enough, multiply the small primes.
+  if ($n < $max) {
+    my $pn = 1;
+    $pn *= $_ for @plist;
+    return $pn;
   }
-  return $pn;
+
+  # Otherwise, combine them as UVs, then combine using product tree.
+  my $i = 0;
+  while ($i < $#plist) {
+    my $m = $plist[$i] * $plist[$i+1];
+    if ($m <= INTMAX) { splice(@plist, $i, 2, $m); }
+    else              { $i++;                      }
+  }
+  vecprod(@plist);
 }
 
 sub consecutive_integer_lcm {
@@ -566,7 +566,7 @@ sub consecutive_integer_lcm {
     $p_power *= $p while $p_power <= $pmin;
     $pn *= $p_power;
   }
-  $pn = _bigint_to_int($pn) if $pn <= ''.~0;
+  $pn = _bigint_to_int($pn) if $pn <= BMAX;
   return $pn;
 }
 
@@ -590,7 +590,7 @@ sub jordan_totient {
     $totient->bmul($p->copy->bdec());
     $totient->bmul($p) for 2 .. $e;
   }
-  $totient = _bigint_to_int($totient) if $totient->bacmp(''.~0) <= 0;
+  $totient = _bigint_to_int($totient) if $totient->bacmp(BMAX) <= 0;
   return $totient;
 }
 
@@ -610,10 +610,6 @@ sub euler_phi {
 
   # Fast reduction of multiples of 2, may also reduce n for factoring
   if (ref($n) eq 'Math::BigInt') {
-    #while ($n->is_even) {
-    #  $n->brsft(BONE);
-    #  $totient->blsft(BONE) if $n->is_even;
-    #}
     my $s = 0;
     if ($n->is_even) {
       do { $n->brsft(BONE); $s++; } while $n->is_even;
@@ -642,7 +638,7 @@ sub euler_phi {
     }
   }
   $totient = _bigint_to_int($totient) if ref($totient) eq 'Math::BigInt'
-                                      && $totient->bacmp(''.~0) <= 0;
+                                      && $totient->bacmp(BMAX) <= 0;
   return $totient;
 }
 
@@ -767,7 +763,7 @@ sub exp_mangoldt {
   if ($k >= 2) {
     my $root = Math::BigInt->new("$n")->broot($k);
     if (Math::Prime::Util::is_prob_prime($root)) {
-      $root = _bigint_to_int($root) if $root->bacmp(''.~0) <= 0;
+      $root = _bigint_to_int($root) if $root->bacmp(BMAX) <= 0;
       return $root;
     }
   }
@@ -787,7 +783,7 @@ sub carmichael_lambda {
     map { [ map { Math::BigInt->new("$_") } @$_ ] }
     @pe
   );
-  $lcm = _bigint_to_int($lcm) if $lcm->bacmp(''.~0) <= 0;
+  $lcm = _bigint_to_int($lcm) if $lcm->bacmp(BMAX) <= 0;
   return $lcm;
 }
 
@@ -823,23 +819,36 @@ sub divisor_sum {
   #    my $pk = $f ** $k;  $product *= $pk**E for E in 0 .. e
   # Also separate BigInt and do fiddly bits for better performance.
 
-  my $product = 1;
-  if (!$will_overflow) {
-    foreach my $f (Math::Prime::Util::factor_exp($n)) {
+  my @factors = Math::Prime::Util::factor_exp($n);
+  my $product = (!$will_overflow) ? 1 : BONE->copy;
+  if ($k == 0) {
+    foreach my $f (@factors) {
+      $product *= ($f->[1] + 1);
+    }
+  } elsif (!$will_overflow) {
+    foreach my $f (@factors) {
       my ($p, $e) = @$f;
-      if ($k == 0) {
-        $product *= ($e+1);
-      } else {
-        my $pk = $p ** $k;
-        my $fmult = $pk + 1;
-        foreach my $E (2 .. $e) { $fmult += $pk**$E }
-        $product *= $fmult;
+      my $pk = $p ** $k;
+      my $fmult = $pk + 1;
+      foreach my $E (2 .. $e) { $fmult += $pk**$E }
+      $product *= $fmult;
+    }
+  } elsif (ref($n) && ref($n) ne 'Math::BigInt') {
+    # This can help a lot for Math::GMP, etc.
+    $product = ref($n)->new(1);
+    foreach my $f (@factors) {
+      my ($p, $e) = @$f;
+      my $pk = ref($n)->new($p) ** $k;
+      my $fmult = $pk;  $fmult++;
+      if ($e >= 2) {
+        my $pke = $pk;
+        for (2 .. $e) { $pke *= $pk; $fmult += $pke; }
       }
+      $product *= $fmult;
     }
   } else {
-    $product = Math::BigInt->bone;
     my $bik = Math::BigInt->new("$k");
-    foreach my $f (Math::Prime::Util::factor_exp($n)) {
+    foreach my $f (@factors) {
       my ($p, $e) = @$f;
       my $pk = Math::BigInt->new("$p")->bpow($bik);
       if    ($e == 1) { $pk->binc(); $product->bmul($pk); }
@@ -855,7 +864,7 @@ sub divisor_sum {
       }
     }
   }
-  return $product;
+  $product;
 }
 
 #############################################################################
@@ -1512,7 +1521,7 @@ sub gcd {
     my $v = ($_ < 2147483647 || ref($_) eq 'Math::BigInt') ? $_ : "$_";
     $v;
   } @_ );
-  $gcd = _bigint_to_int($gcd) if $gcd->bacmp(''.~0) <= 0;
+  $gcd = _bigint_to_int($gcd) if $gcd->bacmp(BMAX) <= 0;
   return $gcd;
 }
 sub lcm {
@@ -1522,7 +1531,7 @@ sub lcm {
     $v = -$v if $v < 0;
     $v;
   } @_ );
-  $lcm = _bigint_to_int($lcm) if $lcm->bacmp(''.~0) <= 0;
+  $lcm = _bigint_to_int($lcm) if $lcm->bacmp(BMAX) <= 0;
   return $lcm;
 }
 sub gcdext {
@@ -1557,9 +1566,9 @@ sub gcdext {
       my $q = $g->copy->bsub($r)->bdiv($w);
       ($a,$b,$g,$u,$v,$w) = ($u,$v,$w,$a-$q*$u,$b-$q*$v,$r);
     }
-    $a = _bigint_to_int($a) if $a->bacmp(''.~0) <= 0;
-    $b = _bigint_to_int($b) if $b->bacmp(''.~0) <= 0;
-    $g = _bigint_to_int($g) if $g->bacmp(''.~0) <= 0;
+    $a = _bigint_to_int($a) if $a->bacmp(BMAX) <= 0;
+    $b = _bigint_to_int($b) if $b->bacmp(BMAX) <= 0;
+    $g = _bigint_to_int($g) if $g->bacmp(BMAX) <= 0;
   }
   if ($g < 0) { ($a,$b,$g) = (-$a,-$b,-$g); }
   return ($a,$b,$g);
@@ -1608,11 +1617,13 @@ sub chinese {
       $sum = _addmod($m1, $m2, $lcm);
     }
   }
-  $sum = _bigint_to_int($sum) if ref($sum) && $sum->bacmp(''.~0) <= 0;
+  $sum = _bigint_to_int($sum) if ref($sum) && $sum->bacmp(BMAX) <= 0;
   $sum;
 }
 
 sub vecsum {
+  return Math::Prime::Util::_reftyped($_[0], @_ ? $_[0] : 0)  if @_ <= 1;
+
   if (defined &Math::Prime::Util::GMP::vecsum && Math::Prime::Util::prime_get_config()->{'gmp'}) {
     return Math::Prime::Util::_reftyped($_[0], Math::Prime::Util::GMP::vecsum(@_));
   }
@@ -1638,7 +1649,7 @@ sub vecprod {
   my $prod = _product(0, $#_, [map { Math::BigInt->new("$_") } @_]);
   # Linear:
   # my $prod = BONE->copy;  $prod *= "$_" for @_;
-  $prod = _bigint_to_int($prod) if $prod->bacmp(''.~0) <= 0 && $prod > -(~0 >> 1) - 1;
+  $prod = _bigint_to_int($prod) if $prod->bacmp(BMAX) <= 0 && $prod->bcmp(- BMAX) > 0;
   $prod;
 }
 
@@ -1663,7 +1674,7 @@ sub invmod {
   if ($n > ~0) {
     my $invmod = Math::BigInt->new("$a")->bmodinv("$n");
     return if !defined $invmod || $invmod->is_nan;
-    $invmod = _bigint_to_int($invmod) if $invmod->bacmp(''.~0) <= 0;
+    $invmod = _bigint_to_int($invmod) if $invmod->bacmp(BMAX) <= 0;
     return $invmod;
   }
   my($t,$nt,$r,$nr) = (0, 1, $n, $a % $n);
@@ -1684,10 +1695,7 @@ sub _gcd_ui {
   if ($y < $x) { ($x, $y) = ($y, $x); }
   elsif ($x < 0) { $x = -$x; }
   while ($y > 0) {
-    # y1 <- x0 % y0 ; x1 <- y0
-    my $t = $y;
-    $y = $x % $y;
-    $x = $t;
+    ($x, $y) = ($y, $x % $y);
   }
   $x;
 }
@@ -1734,6 +1742,11 @@ sub valuation {
   $v;
 }
 
+sub hammingweight {
+  my $n = shift;
+  return 0 + (Math::BigInt->new("$n")->as_bin() =~ tr/1//);
+}
+
 sub _bernden {
   my $n = shift;
   return BTWO if $n == 1;
@@ -1742,37 +1755,6 @@ sub _bernden {
   Math::Prime::Util::fordivisors(sub { $p *= $_+1 if is_prime($_+1) }, $n);
   #$p = _bigint_to_int($p) if $p->bacmp(''.~0) <= 0;
   $p;
-}
-sub _bernoulli_zeta {
-  my($n, $denominator) = @_;
-  # This works ok with MPFR, but horrible without.
-  $n = _upgrade_to_float($n);
-  my $xdigits = 2 * $n;  # This is *wrong*
-  $n->accuracy($xdigits);
-  my $pi = Math::Prime::Util::Pi($xdigits);
-  my $b = 2 * (-1)**(($n>>1)-1) * factorial($n) / (2*$pi)**$n * (1+RiemannZeta($n));
-  $b *= $denominator;
-  # Round to nearest int
-  my $x = $b->as_int;
-  if ($b-$x >= 0.5) { $x++ } elsif ($b-$x <= -0.5) { $x-- }
-  ($x, _bernden($n));
-}
-sub _bernoulli_at { # Simple Akiyama-Tanigawa algorithm
-  my $n = shift;
-  my(@anum,@aden);
-  for my $m (0..$n) {
-    $anum[$m] = Math::BigInt->new(1);
-    $aden[$m] = Math::BigInt->new($m)->binc();
-    for my $j (reverse 1..$m) {
-      my($anj1,$anj,$adj1,$adj) = ($anum[$j-1],$anum[$j],$aden[$j-1],$aden[$j]);
-      $anj1 = $j * ($adj * $anj1 - $adj1 * $anj);
-      $adj1 = $adj1 * $adj;
-      my $F = Math::BigInt::bgcd($anj1, $adj1);
-      do { $anj1 /= $F;  $adj1 /= $F } if $F != 1;
-      ($anum[$j-1],$aden[$j-1]) = ($anj1, $adj1);
-    }
-  }
-  ($anum[0],$aden[0]);
 }
 { # Brent-Harvey (Luschny)
   # See:  http://oeis.org/wiki/User:Peter_Luschny/ComputationAndAsymptoticsOfBernoulliNumbers#Brent-Harvey
@@ -1856,21 +1838,23 @@ sub stirling {
 }
 
 sub is_pseudoprime {
-  my($n, $base) = @_;
+  my($n, @bases) = @_;
   return 0 if int($n) < 0;
   _validate_positive_integer($n);
+  croak("No bases given to is_pseudoprime") unless scalar(@bases) > 0;
+  return 0+($n >= 2) if $n < 4;
 
-  if ($n < 5) { return ($n == 2) || ($n == 3) ? 1 : 0; }
-  $base = 2 if !defined $base;
-  croak "Base $base is invalid" if $base < 2;
-  if ($base >= $n) {
-    $base = $base % $n;
-    return 1 if $base <= 1 || $base == $n-1;
-  }
-  my $x = (ref($n) eq 'Math::BigInt')
-        ? $n->copy->bzero->badd($base)->bmodpow($n-1,$n)
+  foreach my $base (@bases) {
+    croak "Base $base is invalid" if $base < 2;
+    $base = $base % $n if $base >= $n;
+    if ($base > 1 && $base != $n-1) {
+      my $x = (ref($n) eq 'Math::BigInt')
+        ? $n->copy->bzero->badd($base)->bmodpow($n-1,$n)->is_one
         : _powmod($base, $n-1, $n);
-  return ($x == 1) ? 1 : 0;
+      return 0 unless $x == 1;
+    }
+  }
+  1;
 }
 
 sub _miller_rabin_2 {
@@ -1932,6 +1916,7 @@ sub is_strong_pseudoprime {
   my($n, @bases) = @_;
   return 0 if int($n) < 0;
   _validate_positive_integer($n);
+  croak("No bases given to is_strong_pseudoprime") unless scalar(@bases) > 0;
 
   return 0+($n >= 2) if $n < 4;
   return 0 if ($n % 2) == 0;
@@ -2029,6 +2014,8 @@ sub kronecker {
     $k = -$k if $a < 0;
   }
   if ($a < 0) { $a = -$a; $k = -$k if $b % 4 == 3; }
+  $b = _bigint_to_int($b) if ref($b) eq 'Math::BigInt' && $b <= BMAX;
+  $a = _bigint_to_int($a) if ref($a) eq 'Math::BigInt' && $a <= BMAX;
   # Now:  b > 0, b odd, a >= 0
   while ($a != 0) {
     if ($a % 2 == 0) {
@@ -2039,8 +2026,8 @@ sub kronecker {
     $k = -$k if $a % 4 == 3 && $b % 4 == 3;
     ($a, $b) = ($b % $a, $a);
     # If a,b are bigints and now small enough, finish as native.
-    if (   ref($a) eq 'Math::BigInt' && $a <= ''.~0
-        && ref($b) eq 'Math::BigInt' && $b <= ''.~0) {
+    if (   ref($a) eq 'Math::BigInt' && $a <= BMAX
+        && ref($b) eq 'Math::BigInt' && $b <= BMAX) {
       return $k * kronecker(_bigint_to_int($a),_bigint_to_int($b));
     }
   }
@@ -2097,14 +2084,14 @@ sub binomial {
   return $n if $k == $n-1;    # Math::BigInt (fixed in 1.90)
   if ($n >= 0) {
     $r = Math::BigInt->new(''.$n)->bnok($k);
-    $r = _bigint_to_int($r) if $r->bacmp(''.~0) <= 0;
+    $r = _bigint_to_int($r) if $r->bacmp(BMAX) <= 0;
   } else { # Math::BigInt is incorrect for negative n
     $r = Math::BigInt->new(''.(-$n+$k-1))->bnok($k);
     if ($k & 1) {
       $r->bneg;
       $r = _bigint_to_int($r) if $r->bacmp(''.(~0>>1)) <= 0;
     } else {
-      $r = _bigint_to_int($r) if $r->bacmp(''.~0) <= 0;
+      $r = _bigint_to_int($r) if $r->bacmp(BMAX) <= 0;
     }
   }
   $r;
@@ -2145,7 +2132,7 @@ sub factorial {
     return Math::Prime::Util::_reftyped($_[0], $r)    if defined $r;
   }
   my $r = Math::BigInt->new($n)->bfac();
-  $r = _bigint_to_int($r) if $r->bacmp(''.~0) <= 0;
+  $r = _bigint_to_int($r) if $r->bacmp(BMAX) <= 0;
   $r;
 }
 
@@ -2209,7 +2196,7 @@ sub znorder {
       $k *= $pi;
     }
   }
-  $k = _bigint_to_int($k) if $k->bacmp(''.~0) <= 0;
+  $k = _bigint_to_int($k) if $k->bacmp(BMAX) <= 0;
   return $k;
 }
 
@@ -2219,7 +2206,7 @@ sub _dlp_trial {
   my $t = $g->copy;
   for (my $k = BONE->copy; $k < $limit; $k->binc) {
     if ($t == $a) {
-      $k = _bigint_to_int($k) if $k->bacmp(''.~0) <= 0;
+      $k = _bigint_to_int($k) if $k->bacmp(BMAX) <= 0;
       return $k;
     }
     $t->bmul($g)->bmod($p);
@@ -2287,14 +2274,14 @@ sub znlog {
     if (defined $n && $n > 1000) {
       $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
       $x = _dlp_bsgs($a, $g, $p, $n, $_verbose);
-      $x = _bigint_to_int($x) if ref($x) && $x->bacmp(''.~0) <= 0;
+      $x = _bigint_to_int($x) if ref($x) && $x->bacmp(BMAX) <= 0;
       return $x if $x > 0 && $g->copy->bmodpow($x, $p) == $a;
       print "  BSGS giving up\n" if $x == 0 && $_verbose;
       print "  BSGS incorrect answer $x\n" if $x > 0 && $_verbose > 1;
     }
     $x = _dlp_trial($a,$g,$p);
   }
-  $x = _bigint_to_int($x) if ref($x) && $x->bacmp(''.~0) <= 0;
+  $x = _bigint_to_int($x) if ref($x) && $x->bacmp(BMAX) <= 0;
   return ($x == 0) ? undef : $x;
 }
 
@@ -2584,43 +2571,50 @@ sub is_almost_extra_strong_lucas_pseudoprime {
 sub is_frobenius_underwood_pseudoprime {
   my($n) = @_;
   return 0+($n >= 2) if $n < 4;
+  return 0 unless $n % 2;
+
+  my($a, $temp1, $temp2);
+  if ($n % 4 == 3) {
+    $a = 0;
+  } else {
+    for ($a = 1; $a < 1000000; $a++) {
+      next if $a==2 || $a==4 || $a==7 || $a==8 || $a==10 || $a==14 || $a==16 || $a==18;
+      my $j = kronecker($a*$a - 4, $n);
+      last if $j == -1;
+      return 0 if $j == 0 || ($a == 20 && _is_perfect_square($n));
+    }
+  }
+  $temp1 = Math::Prime::Util::gcd(($a+4)*(2*$a+5), $n);
+  return 0 if $temp1 != 1 && $temp1 != $n;
 
   $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
-  return 0 if $n->is_even || _is_perfect_square($n);
-
   my $ZERO = $n->copy->bzero;
   my $ONE = $ZERO->copy->binc;
   my $TWO = $ONE->copy->binc;
-  my $fa = $ZERO + 1;
-  my $fb = $ZERO + 2;
-  my $x;
+  my($s, $t) = ($ONE->copy, $TWO->copy);
 
-  if ($n % 4 == 3) {
-    $x = 0;
-  } elsif ($n % 6 == 5) {
-    $x = 1;
-  } else {
-    $x = 3;
-    $x++ while kronecker($x*$x-4, $n) == 1;
-    return 0 if kronecker($x*$x-4, $n) == 0; # gcd(x*x-4,n) is a factor
-  }
+  my $ap2 = $TWO + $a;
   my $np1string = substr( $n->copy->binc->as_bin, 2);
   my $np1len = length($np1string);
-  my $multiplier = $x+2;
-  $multiplier %= $n if $multiplier > $n;
+
   foreach my $bit (1 .. $np1len-1) {
-    my $t = ( $fa * ( $fa * $x + $TWO * $fb ) ) % $n;
-    $fb   = ( ( $fb - $fa ) * ( $fb + $fa ) ) % $n;
-    $fa   = $t;
+    $temp2 = $t+$t;
+    $temp2 += ($s * $a)  if $a != 0;
+    $temp1 = $temp2 * $s;
+    $temp2 = $t - $s;
+    $s += $t;
+    $t = ($s * $temp2) % $n;
+    $s = $temp1 % $n;
     if ( substr( $np1string, $bit, 1 ) ) {
-      $t  = $fa * $multiplier + $fb;
-      $fb = $fb * $TWO - $fa;
-      $fa = $t;
+      if ($a == 0)  { $temp1 = $s + $s; }
+      else          { $temp1 = $s * $ap2; }
+      $temp1 += $t;
+      $t->badd($t)->bsub($s);   # $t = ($t+$t) - $s;
+      $s = $temp1;
     }
   }
-  $fa %= $n;
-  $fb %= $n;
-  return ($fa == 0 && $fb == (($TWO * $x + 5) % $n)) ? 1 : 0;
+  $temp1 = (2*$a+5) % $n;
+  return ($s == 0 && $t == $temp1) ? 1 : 0;
 }
 
 sub _mat_mulmod_3x3 {
@@ -2640,6 +2634,8 @@ sub _mat_powmod_3x3 {
   my($mref, $k, $n) = @_;
   my $res = [1,0,0,  0,1,0,  0,0,1];
   while ($k) {
+    # The next line prevents Perl 5.6.2 from segfaulting
+    $k = _bigint_to_int($k) if ref($k) && $k <= BMAX;
     _mat_mulmod_3x3($res, $mref, $n)  if $k & 1;
     $k >>= 1;
     _mat_mulmod_3x3($mref, $mref, $n) if $k;
@@ -2858,7 +2854,7 @@ sub _basic_factor {
         }
       }
     }
-    $_[0] = _bigint_to_int($_[0]) if $] >= 5.008 && $_[0] <= ''.~0;
+    $_[0] = _bigint_to_int($_[0]) if $] >= 5.008 && $_[0] <= BMAX;
   }
 
   if ( ($_[0] > 1) && _is_prime7($_[0]) ) {
@@ -2869,8 +2865,7 @@ sub _basic_factor {
 }
 
 sub trial_factor {
-  my($n, $maxlim) = @_;
-  $maxlim = $n unless defined $maxlim;
+  my($n, $limit) = @_;
 
   # Don't use _basic_factor here -- they want a trial forced.
   my @factors;
@@ -2878,59 +2873,86 @@ sub trial_factor {
     @factors = ($n == 1) ? () : ($n);
     return @factors;
   }
-  if (ref($n) ne 'Math::BigInt') {
-    while ( !($n % 2) ) { push @factors, 2;  $n = int($n / 2); }
-    while ( !($n % 3) ) { push @factors, 3;  $n = int($n / 3); }
-    while ( !($n % 5) ) { push @factors, 5;  $n = int($n / 5); }
-    while ( !($n % 7) ) { push @factors, 7;  $n = int($n / 7); }
-    while ( !($n %11) ) { push @factors,11;  $n = int($n /11); }
-    while ( !($n %13) ) { push @factors,13;  $n = int($n /13); }
-  } else {
-    foreach my $div (2, 3, 5, 7, 11, 13) {
-      my($q,$r);
-      do {
-        ($q, $r) = $n->copy->bdiv($div);
-        if ($r->is_zero) {
-          push @factors, $div;
-          $n = $q;
-        }
-      } while $r->is_zero;
-    }
-  }
-  $n = _bigint_to_int($n) if ref($n) eq 'Math::BigInt' && $n <= ''.~0;
-  return @factors if $n < 4;
 
-  my $limit = int(sqrt($n) + 0.001);
-  $limit = $maxlim if $limit > $maxlim;
+  my $start_idx = 1;
+  # Expand small primes if it would help.
+  push @_primes_small, @{primes($_primes_small[-1]+1, 100_003)}
+    if $n > 400_000_000
+    && $_primes_small[-1] < 99_000
+    && (!defined $limit || $limit > $_primes_small[-1]);
 
+  # Do initial bigint reduction.  Hopefully reducing it to native int.
   if (ref($n) eq 'Math::BigInt') {
-    my $f = Math::BigInt->new(17);
-    $limit = Math::BigInt->new("$limit");
-    my @incs = map { Math::BigInt->new($_) } (2, 4, 6, 2, 6, 4, 2, 4);
+    $n = $n->copy;  # Don't modify their original input!
+    my $newlim = $n->copy->bsqrt;
+    $limit = $newlim if !defined $limit || $limit > $newlim;
+    while ($start_idx <= $#_primes_small) {
+      my $f = $_primes_small[$start_idx++];
+      last if $f > $limit;
+      if ($n->copy->bmod($f)->is_zero) {
+        do {
+          push @factors, $f;
+          $n->bdiv($f)->bfloor();
+        } while $n->copy->bmod($f)->is_zero;
+        last if $n < BMAX;
+        my $newlim = $n->copy->bsqrt;
+        $limit = $newlim if $limit > $newlim;
+      }
+    }
+    return @factors if $n->is_one;
+    $n = _bigint_to_int($n) if $n <= BMAX;
+    return (@factors,$n) if $start_idx <= $#_primes_small && $_primes_small[$start_idx] > $limit;
+  }
+
+  {
+    my $newlim = (ref($n) eq 'Math::BigInt') ? $n->copy->bsqrt : int(sqrt($n) + 0.001);
+    $limit = $newlim if !defined $limit || $limit > $newlim;
+  }
+
+  if (ref($n) ne 'Math::BigInt') {
+    for my $i ($start_idx .. $#_primes_small) {
+      my $p = $_primes_small[$i];
+      last if $p > $limit;
+      if (($n % $p) == 0) {
+        do { push @factors, $p;  $n = int($n/$p); } while ($n % $p) == 0;
+        last if $n == 1;
+        my $newlim = int( sqrt($n) + 0.001);
+        $limit = $newlim if $newlim < $limit;
+      }
+    }
+    if ($_primes_small[-1] < $limit) {
+      my $inc = (($_primes_small[-1] % 6) == 1) ? 4 : 2;
+      my $p = $_primes_small[-1] + $inc;
+      while ($p <= $limit) {
+        if (($n % $p) == 0) {
+          do { push @factors, $p;  $n = int($n/$p); } while ($n % $p) == 0;
+          last if $n == 1;
+          my $newlim = int( sqrt($n) + 0.001);
+          $limit = $newlim if $newlim < $limit;
+        }
+        $p += ($inc ^= 6);
+      }
+    }
+  } else {   # n is a bigint.  Use mod-210 wheel trial division.
+    # Generating a wheel mod $w starting at $s:
+    # mpu 'my($s,$w,$t)=(11,2*3*5); say join ",",map { ($t,$s)=($_-$s,$_); $t; } grep { gcd($_,$w)==1 } $s+1..$s+$w;'
+    # Should start at $_primes_small[$start_idx], do 11 + next multiple of 210.
+    my @incs = map { Math::BigInt->new($_) } (2,4,2,4,6,2,6,4,2,4,6,6,2,6,4,2,6,4,6,8,4,2,4,2,4,8,6,4,6,2,4,6,2,6,6,4,2,4,6,2,6,4,2,4,2,10,2,10);
+    my $f = 11; while ($f <= $_primes_small[$start_idx-1]-210) { $f += 210; }
+    ($f, $limit) = map { Math::BigInt->new("$_") } ($f, $limit);
     SEARCH: while ($f <= $limit) {
       foreach my $finc (@incs) {
         if ($n->copy->bmod($f)->is_zero && $f->bacmp($limit) <= 0) {
-          my $sf = ($f <= ''.~0) ? _bigint_to_int($f) : $f;
-          do { push @factors, $sf; $n = ($n/$f)->bfloor(); } while (($n % $f) == 0);
+          my $sf = ($f <= BMAX) ? _bigint_to_int($f) : $f->copy;
+          do {
+            push @factors, $sf;
+            $n->bdiv($f)->bfloor();
+          } while $n->copy->bmod($f)->is_zero;
           last SEARCH if $n->is_one;
-          $limit = int( sqrt($n) + 0.001);
-          $limit = $maxlim if $limit > $maxlim;
-          $limit = Math::BigInt->new("$limit");
+          my $newlim = $n->copy->bsqrt;
+          $limit = $newlim if $limit > $newlim;
         }
         $f->badd($finc);
-      }
-    }
-  } else {
-    my $f = 17;
-    SEARCH: while ($f <= $limit) {
-      foreach my $finc (2, 4, 6, 2, 6, 4, 2, 4) {
-        if ( (($n % $f) == 0) && ($f <= $limit) ) {
-          do { push @factors, $f; $n = int($n/$f); } while (($n % $f) == 0);
-          last SEARCH if $n == 1;
-          $limit = int( sqrt($n) + 0.001);
-          $limit = $maxlim if $limit > $maxlim;
-        }
-        $f += $finc;
       }
     }
   }
@@ -2940,81 +2962,60 @@ sub trial_factor {
 
 my $_holf_r;
 my @_fsublist = (
-  sub { prho_factor   (shift,    8*1024, 3, 1) },
-  sub { pminus1_factor(shift,    10_000, undef, 1); },
-  sub { pbrent_factor (shift,   32*1024, 1, 1) },
-  sub { pminus1_factor(shift, 1_000_000, undef, 1); },
-  sub { pbrent_factor (shift,  512*1024, 7, 1) },
-  sub { ecm_factor    (shift,     1_000,   5_000, 10) },
-  sub { pminus1_factor(shift, 4_000_000, undef, 1); },
-  sub { pbrent_factor (shift,  512*1024, 11, 1) },
-  sub { ecm_factor    (shift,    10_000,  50_000, 10) },
-  sub { holf_factor   (shift, 256*1024, $_holf_r); $_holf_r += 256*1024; },
-  sub { pminus1_factor(shift,20_000_000); },
-  sub { ecm_factor    (shift,   100_000, 800_000, 10) },
-  sub { holf_factor   (shift, 512*1024, $_holf_r); $_holf_r += 512*1024; },
-  sub { pbrent_factor (shift, 2048*1024, 13) },
-  sub { holf_factor   (shift, 2048*1024, $_holf_r); $_holf_r += 2048*1024; },
-  sub { ecm_factor    (shift, 1_000_000, 1_000_000, 10) },
-  sub { pminus1_factor(shift, 100_000_000, 500_000_000); },
+  [ "pbrent 32k", sub { pbrent_factor (shift,   32*1024, 1, 1) } ],
+  [ "p-1 1M",     sub { pminus1_factor(shift, 1_000_000, undef, 1); } ],
+  [ "ECM 1k",     sub { ecm_factor    (shift,     1_000,   5_000, 15) } ],
+  [ "pbrent 512k",sub { pbrent_factor (shift,  512*1024, 7, 1) } ],
+  [ "p-1 4M",     sub { pminus1_factor(shift, 4_000_000, undef, 1); } ],
+  [ "ECM 10k",    sub { ecm_factor    (shift,    10_000,  50_000, 10) } ],
+  [ "pbrent 512k",sub { pbrent_factor (shift,  512*1024, 11, 1) } ],
+  [ "HOLF 256k",  sub { holf_factor   (shift, 256*1024, $_holf_r); $_holf_r += 256*1024; } ],
+  [ "p-1 20M",    sub { pminus1_factor(shift,20_000_000); } ],
+  [ "ECM 100k",   sub { ecm_factor    (shift,   100_000, 800_000, 10) } ],
+  [ "HOLF 512k",  sub { holf_factor   (shift, 512*1024, $_holf_r); $_holf_r += 512*1024; } ],
+  [ "pbrent 2M",  sub { pbrent_factor (shift, 2048*1024, 13) } ],
+  [ "HOLF 2M",    sub { holf_factor   (shift, 2048*1024, $_holf_r); $_holf_r += 2048*1024; } ],
+  [ "ECM 1M",     sub { ecm_factor    (shift, 1_000_000, 1_000_000, 10) } ],
+  [ "p-1 100M",   sub { pminus1_factor(shift, 100_000_000, 500_000_000); } ],
 );
 
 sub factor {
   my($n) = @_;
   _validate_positive_integer($n);
-
-  return trial_factor($n) if $n < 1_000_000;
-
-  $n = $n->copy if ref($n) eq 'Math::BigInt';
-
   my @factors;
-  # Use 'n=int($n/7)' instead of 'n/=7' to not "upgrade" n to a Math::BigFloat.
-  if (ref($n) eq 'Math::BigInt') {
-    while ($n->is_even) { push @factors,  2;  $n->brsft(BONE); }
-    if (!Math::BigInt::bgcd($n, "3234846615")->is_one) {
-      foreach my $div (3, 5, 7, 11, 13, 17, 19, 23, 29) {
-        my ($q, $r) = $n->copy->bdiv($div);
-        while ($r->is_zero) {
-          push @factors, $div;
-          $n = $q;
-          ($q, $r) = $n->copy->bdiv($div);
-        }
-      }
-    }
-  } else {
-    while (($n %  2) == 0) { push @factors,  2;  $n = int($n /  2); }
-    while (($n %  3) == 0) { push @factors,  3;  $n = int($n /  3); }
-    while (($n %  5) == 0) { push @factors,  5;  $n = int($n /  5); }
-    while (($n %  7) == 0) { push @factors,  7;  $n = int($n /  7); }
-    while (($n % 11) == 0) { push @factors, 11;  $n = int($n / 11); }
-    while (($n % 13) == 0) { push @factors, 13;  $n = int($n / 13); }
-    while (($n % 17) == 0) { push @factors, 17;  $n = int($n / 17); }
-    while (($n % 19) == 0) { push @factors, 19;  $n = int($n / 19); }
-    while (($n % 23) == 0) { push @factors, 23;  $n = int($n / 23); }
-    while (($n % 29) == 0) { push @factors, 29;  $n = int($n / 29); }
-  }
-  if ($n < (31*31)) {
-    push @factors, $n  if $n != 1;
+
+  if ($n < 4) {
+    @factors = ($n == 1) ? () : ($n);
     return @factors;
   }
+  $n = $n->copy if ref($n) eq 'Math::BigInt';
+  my $lim = 4999;  # How much trial factoring to do
+
+  # For native integers, we could save a little time by doing hardcoded trials
+  # by 2-29 here.  Skipping it.
+
+  push @factors, trial_factor($n, $lim);
+  return @factors if $factors[-1] < $lim*$lim;
+  $n = pop(@factors);
 
   my @nstack = ($n);
   while (@nstack) {
     $n = pop @nstack;
     # Don't use bignum on $n if it has gotten small enough.
-    $n = _bigint_to_int($n) if ref($n) eq 'Math::BigInt' && $n <= ''.~0;
+    $n = _bigint_to_int($n) if ref($n) eq 'Math::BigInt' && $n <= BMAX;
     #print "Looking at $n with stack ", join(",",@nstack), "\n";
-    while ( ($n >= (31*31)) && !_is_prime7($n) ) {
+    while ( ($n >= ($lim*$lim)) && !_is_prime7($n) ) {
       my @ftry;
       $_holf_r = 1;
       foreach my $sub (@_fsublist) {
         last if scalar @ftry >= 2;
-        @ftry = $sub->($n);
+        print "  starting $sub->[0]\n" if Math::Prime::Util::prime_get_config()->{'verbose'} > 1;
+        @ftry = $sub->[1]->($n);
       }
       if (scalar @ftry > 1) {
         #print "  split into ", join(",",@ftry), "\n";
         $n = shift @ftry;
-        $n = _bigint_to_int($n) if ref($n) eq 'Math::BigInt' && $n <= ''.~0;
+        $n = _bigint_to_int($n) if ref($n) eq 'Math::BigInt' && $n <= BMAX;
         push @nstack, @ftry;
       } else {
         #warn "trial factor $n\n";
@@ -3086,16 +3087,32 @@ sub prho_factor {
 
   } elsif ($n < MPU_HALFWORD) {
 
-    for my $i (1 .. $rounds) {
-      $U = ($U * $U + $pa) % $n;
-      $V = ($V * $V + $pa) % $n;
-      $V = ($V * $V + $pa) % $n;
-      my $f = _gcd_ui( $U-$V,  $n );
-      if ($f == $n) {
-        last if $inloop++;  # We've been here before
-      } elsif ($f != 1) {
-        return _found_factor($f, $n, "prho", @factors);
+    my $inner = 32;
+    $rounds = int( ($rounds + $inner-1) / $inner );
+    while ($rounds-- > 0) {
+      my($m, $oldU, $oldV, $f) = (1, $U, $V);
+      for my $i (1 .. $inner) {
+        $U = ($U * $U + $pa) % $n;
+        $V = ($V * $V + $pa) % $n;
+        $V = ($V * $V + $pa) % $n;
+        $f = ($U > $V) ? $U-$V : $V-$U;
+        $m = ($m * $f) % $n;
       }
+      $f = _gcd_ui( $m, $n );
+      next if $f == 1;
+      if ($f == $n) {
+        ($U, $V) = ($oldU, $oldV);
+        for my $i (1 .. $inner) {
+          $U = ($U * $U + $pa) % $n;
+          $V = ($V * $V + $pa) % $n;
+          $V = ($V * $V + $pa) % $n;
+          $f = ($U > $V) ? $U-$V : $V-$U;
+          $f = _gcd_ui( $f, $n);
+          last if $f != 1;
+        }
+        last if $f == 1 || $f == $n;
+      }
+      return _found_factor($f, $n, "prho", @factors);
     }
 
   } else {
@@ -3145,7 +3162,7 @@ sub pbrent_factor {
     # Same code as the GMP version, but runs *much* slower.  Even with
     # Math::BigInt::GMP it's >200x slower.  With the default Calc backend
     # it's thousands of times slower.
-    my $inner = 256;
+    my $inner = 32;
     my $zero = $n->copy->bzero;
     my $saveXi;
     my $f;
@@ -3161,15 +3178,15 @@ sub pbrent_factor {
         $saveXi = $Xi->copy;
         foreach my $i (1 .. $dorounds) {
           $Xi->bmul($Xi)->badd($pa)->bmod($n);
-          $m->bmul($Xi - $Xm);
+          $m->bmul($Xi->copy->bsub($Xm));
         }
         $rleft -= $dorounds;
         $rounds -= $dorounds;
         $m->bmod($n);
-        $f = Math::BigInt::bgcd( $m,  $n);
-        last if $f != 1;
+        $f = Math::BigInt::bgcd($m,  $n);
+        last unless $f->is_one;
       }
-      if ($f == 1) {
+      if ($f->is_one) {
         $r *= 2;
         $Xm = $Xi->copy;
         next;
@@ -3187,9 +3204,11 @@ sub pbrent_factor {
 
   } elsif ($n < MPU_HALFWORD) {
 
+    # Doing the gcd batching as above works pretty well here, but it's a lot
+    # of code for not much gain for general users.
     for my $i (1 .. $rounds) {
       $Xi = ($Xi * $Xi + $pa) % $n;
-      my $f = _gcd_ui($Xm-$Xi, $n);
+      my $f = _gcd_ui( ($Xi>$Xm) ? $Xi-$Xm : $Xm-$Xi, $n);
       return _found_factor($f, $n, "pbrent", @factors) if $f != 1 && $f != $n;
       $Xm = $Xi if ($i & ($i-1)) == 0;  # i is a power of 2
     }
@@ -3197,11 +3216,8 @@ sub pbrent_factor {
   } else {
 
     for my $i (1 .. $rounds) {
-      # Xi^2+a % n
-      $Xi = _mulmod($Xi, $Xi, $n);
-      #$Xi = (($n-$Xi) > $pa)  ?  $Xi+$pa  :  $Xi+$pa-$n;
-      $Xi = _addmod($Xi, $pa, $n);
-      my $f = _gcd_ui($Xm-$Xi, $n);
+      $Xi = _addmod( _mulmod($Xi, $Xi, $n), $pa, $n);
+      my $f = _gcd_ui( ($Xi>$Xm) ? $Xi-$Xm : $Xm-$Xi, $n);
       return _found_factor($f, $n, "pbrent", @factors) if $f != 1 && $f != $n;
       $Xm = $Xi if ($i & ($i-1)) == 0;  # i is a power of 2
     }
@@ -3644,32 +3660,24 @@ sub divisors {
   return Math::Prime::Util::divisor_sum($n,0) unless wantarray;
   return ($n == 0) ? (0,1) : (1)  if $n <= 1;
 
-  my %all_factors;
-  my @factors = Math::Prime::Util::factor($n);
+  my(@factors, @d, @t);
+  @factors = Math::Prime::Util::factor($n);
   return (1,$n) if scalar @factors == 1;
 
-  if (ref($n) eq 'Math::BigInt') {
-    foreach my $f1 (@factors) {
-      my $big_f1 = Math::BigInt->new("$f1");
-      my @to_add = map { ($_ <= ''.~0) ? _bigint_to_int($_) : $_ }
-                   grep { $_ < $n }
-                   map { $big_f1 * $_ }
-                   keys %all_factors;
-      undef @all_factors{ $f1, @to_add };
-    }
-  } else {
-    foreach my $f1 (@factors) {
-      my @to_add = grep { $_ < $n }
-                   map { $f1 * $_ }
-                   keys %all_factors;
-      undef @all_factors{ $f1, @to_add };
-    }
+  my $bigint = ref($n) eq 'Math::BigInt';
+  @factors = map { Math::BigInt->new("$_") } @factors  if $bigint;
+  @d = $bigint ? (BONE->copy()) : (1);
+
+  while (my $p = shift @factors) {
+    my $e = 1;
+    while (@factors && $p == $factors[0]) { $e++; shift(@factors); }
+    push @d,  @t = map { $_ * $p } @d;               # multiply through once
+    push @d,  @t = map { $_ * $p } @t   for 2 .. $e; # repeat
   }
-  # Add 1 and n
-  undef $all_factors{1};
-  undef $all_factors{$n};
-  my @divisors = sort {$a<=>$b} keys %all_factors;
-  return @divisors;
+
+  @d = map { $_->bacmp(BMAX) <= 0 ? _bigint_to_int($_) : $_ } @d   if $bigint;
+  @d = sort { $a <=> $b } @d;
+  @d;
 }
 
 
@@ -4372,7 +4380,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.45
+Version 0.46
 
 
 =head1 SYNOPSIS
