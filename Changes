@@ -1,6 +1,42 @@
 Revision history for Perl module Math::Prime::Util
 
 
+0.47  2014-11-18
+
+    [ADDED]
+
+    - is_mersenne_prime(p)      returns 1 iff 2^p-1 is prime
+
+    [FUNCTIONALITY AND PERFORMANCE]
+
+    - Standalone compilation (e.g. factoring without Perl installed) is easier.
+
+    - For next_prime and prev_prime with bigints, stay in XS as long as
+      possible to cut overhead.  Up to 1.5x faster.
+
+    - Factoring on 64-bit platforms is faster for 32-bit inputs.
+
+    - AKS is faster for larger than half-word inputs, especially on 64-bit
+      machines with gcc's 128-bit types.
+
+    - is_provable_prime goes through XS first, so can run *much* faster for
+      small inputs.
+
+    [OTHER]
+
+    - NetBSD improperly exports symbols in string.h, including popcount.
+      Rename our internal function to work around it.
+
+    - is_power now takes an optional scalar reference third argument which
+      will be set to the root if found.  It also works for negative n.
+
+    - Changes to trim a little memory use.  lucas_sequence goes from
+      PP->[XS,GMP,PP] to XS[->PP[->GMP]].  ecm_factor is moved out of root.
+      Moved some primality proving logic out of root.
+
+    - primes.pl when given one argument will show primes up to that number.
+
+
 0.46  2014-10-21
 
     [API Changes]

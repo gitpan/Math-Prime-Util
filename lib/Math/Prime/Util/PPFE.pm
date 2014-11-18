@@ -71,6 +71,16 @@ sub exp_mangoldt {
 }
 
 
+sub next_prime {
+  my($n) = @_;
+  _validate_positive_integer($n);
+  return Math::Prime::Util::PP::next_prime($n);
+}
+sub prev_prime {
+  my($n) = @_;
+  _validate_positive_integer($n);
+  return Math::Prime::Util::PP::prev_prime($n);
+}
 sub nth_prime {
   my($n) = @_;
   _validate_positive_integer($n);
@@ -134,9 +144,10 @@ sub nth_twin_prime_approx {
 }
 
 
-*is_prime       = \&Math::Prime::Util::PP::is_prime;
-*is_prob_prime  = \&Math::Prime::Util::PP::is_prob_prime;
-*is_bpsw_prime  = \&Math::Prime::Util::PP::is_bpsw_prime;
+*is_prime          = \&Math::Prime::Util::PP::is_prime;
+*is_prob_prime     = \&Math::Prime::Util::PP::is_prob_prime;
+*is_provable_prime = \&Math::Prime::Util::PP::is_provable_prime;
+*is_bpsw_prime     = \&Math::Prime::Util::PP::is_bpsw_prime;
 
 sub is_pseudoprime {
   my($n, $base) = @_;
@@ -203,7 +214,24 @@ sub is_aks_prime {
   _validate_positive_integer($n);
   return Math::Prime::Util::PP::is_aks_prime($n);
 }
+sub is_mersenne_prime {
+  my($p) = @_;
+  _validate_positive_integer($p);
+  return Math::Prime::Util::PP::is_mersenne_prime($p);
+}
 
+
+sub lucas_sequence {
+  my($n, $P, $Q, $k) = @_;
+  my ($vp, $vq) = ($P, $Q);
+  $vp = -$vp if defined $vp && $vp < 0;
+  $vq = -$vq if defined $vq && $vq < 0;
+  _validate_positive_integer($n);
+  _validate_positive_integer($vp);
+  _validate_positive_integer($vq);
+  _validate_positive_integer($k);
+  return Math::Prime::Util::PP::lucas_sequence(@_);
+}
 
 sub kronecker {
   my($a, $b) = @_;
@@ -406,11 +434,12 @@ sub chebyshev_psi {
 }
 
 sub is_power {
-  my($n, $a) = @_;
-  return 0 if defined $n && $n < 0;
-  _validate_positive_integer($n);
+  my($n, $a, $refp) = @_;
+  my $vn = (defined $n && $n < 0) ? -$n : $n;
+  _validate_positive_integer($vn);
   _validate_positive_integer($a) if defined $a;
-  return Math::Prime::Util::PP::is_power($n, $a);
+  $vn = -$vn if $n < 0;
+  return Math::Prime::Util::PP::is_power($vn, $a, $refp);
 }
 sub valuation {
   my($n, $k) = @_;

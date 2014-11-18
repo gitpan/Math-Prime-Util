@@ -5,7 +5,7 @@ use Carp qw/carp croak confess/;
 
 BEGIN {
   $Math::Prime::Util::PP::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PP::VERSION = '0.46';
+  $Math::Prime::Util::PP::VERSION = '0.47';
 }
 
 BEGIN {
@@ -115,9 +115,8 @@ sub _validate_num {
   my($n, $min, $max) = @_;
   croak "Parameter must be defined" if !defined $n;
   return 0 if ref($n);
-  croak "Parameter must be a positive integer" if $n eq '';
   croak "Parameter '$n' must be a positive integer"
-          if $n =~ tr/0123456789//c && $n !~ /^\+\d+$/;
+          if $n eq '' || ($n =~ tr/0123456789//c && $n !~ /^\+\d+$/);
   croak "Parameter '$n' must be >= $min" if defined $min && $n < $min;
   croak "Parameter '$n' must be <= $max" if defined $max && $n > $max;
   substr($_[0],0,1,'') if substr($n,0,1) eq '+';
@@ -139,7 +138,7 @@ sub _validate_positive_integer {
   } else {
     my $strn = "$n";
     croak "Parameter '$strn' must be a positive integer"
-      if $strn =~ tr/0123456789//c && $strn !~ /^\+?\d+$/;
+      if $strn eq '' || ($strn =~ tr/0123456789//c && $strn !~ /^\+?\d+$/);
     if ($n <= (OLD_PERL_VERSION ? 562949953421312 : ~0)) {
       $_[0] = $strn if ref($n);
     } else {
@@ -167,7 +166,7 @@ sub _validate_integer {
   } else {
     my $strn = "$n";
     croak "Parameter '$strn' must be an integer"
-      if $strn =~ tr/-0123456789//c && $strn !~ /^[-+]?\d+$/;
+      if $strn eq '' || ($strn =~ tr/-0123456789//c && $strn !~ /^[-+]?\d+$/);
     if ($n <= $poscmp && $n >= $negcmp) {
       $_[0] = $strn if ref($n);
     } else {
@@ -315,6 +314,19 @@ sub is_bpsw_prime {
     return is_almost_extra_strong_lucas_pseudoprime($n) ? 2 : 0;
   }
   return is_extra_strong_lucas_pseudoprime($n) ? 1 : 0;
+}
+
+sub is_provable_prime {
+  my($n) = @_;
+  return 0 if defined $n && $n < 2;
+  _validate_positive_integer($n);
+  if ($n <= 18446744073709551615) {
+    return 0 unless _miller_rabin_2($n);
+    return 0 unless is_almost_extra_strong_lucas_pseudoprime($n);
+    return 2;
+  }
+  my($is_prime, $cert) = Math::Prime::Util::is_provable_prime_with_cert($n);
+  $is_prime;
 }
 
 # Possible sieve storage:
@@ -491,6 +503,7 @@ sub primes {
 
 sub next_prime {
   my($n) = @_;
+  _validate_positive_integer($n);
   return $_prime_next_small[$n] if $n <= $#_prime_next_small;
   # This turns out not to be faster.
   # return $_primes_small[1+_tiny_prime_count($n)] if $n < $_primes_small[-1];
@@ -498,6 +511,10 @@ sub next_prime {
   return Math::BigInt->new(MPU_32BIT ? "4294967311" : "18446744073709551629")
     if ref($n) ne 'Math::BigInt' && $n >= MPU_MAXPRIME;
   # n is now either 1) not bigint and < maxprime, or (2) bigint and >= uvmax
+
+  if ($n > 4294967295 && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+    return Math::Prime::Util::_reftyped($_[0], Math::Prime::Util::GMP::next_prime($n));
+  }
 
   do {
     $n += $_wheeladvance30[$n%30];
@@ -507,7 +524,12 @@ sub next_prime {
 
 sub prev_prime {
   my($n) = @_;
+  _validate_positive_integer($n);
   return (0,0,0,2,3,3,5,5,7,7,7,7)[$n] if $n <= 11;
+  if ($n > 4294967295 && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+    return Math::Prime::Util::_reftyped($_[0], Math::Prime::Util::GMP::prev_prime($n));
+  }
+
   do {
     $n -= $_wheelretreat30[$n%30];
   } while !($n%7) || !_is_prime7($n);
@@ -1701,23 +1723,54 @@ sub _gcd_ui {
 }
 
 sub is_power {
-  my ($n, $a) = @_;
-  return 0 if $n <= 3;
+  my ($n, $a, $refp) = @_;
+  croak("is_power third argument not a scalar reference") if defined($refp) && !ref($refp);
+  return 0 if abs($n) <= 3;
   if (defined $a && $a != 0) {
-    return _is_perfect_square($n) if $a == 2;
-    $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
-    return $n->copy->broot($a)->bint->bpow($a) == $n;
-  }
-  $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
-  my $e = 2;
-  while (1) {
-    my $root = $n->copy()->broot($e);
-    last if $root->is_one();
-    if ($root->copy->bpow($e) == $n) {
-      my $next = is_power($root);
-      return ($next == 0) ? $e : $e * $next;
+    return 1 if $a == 1;                  # Everything is a 1st power
+    return 0 if $n < 0 && $a % 2 == 0;    # Negative n never an even power
+    if ($a == 2) {
+      if (_is_perfect_square($n)) {
+        $$refp = int(sqrt($n)) if defined $refp;
+        return 1;
+      }
+    } else {
+      $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+      my $root = $n->copy->babs->broot($a)->bfloor;
+      $root->bneg if $n->is_neg;
+      if ($root->copy->bpow($a) == $n) {
+        $$refp = $root if defined $refp;
+        return 1;
+      }
     }
-    $e = next_prime($e);
+  } else {
+    $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
+    if ($n < 0) {
+      my $absn = $n->copy->babs;
+      my $root = is_power($absn, 0, $refp);
+      return 0 unless $root;
+      if ($root % 2 == 0) {
+        my $power = valuation($root, 2);
+        $root >>= $power;
+        return 0 if $root == 1;
+        $power = BTWO->copy->bpow($power);
+        $$refp = $$refp ** $power if defined $refp;
+      }
+      $$refp = -$$refp if defined $refp;
+      return $root;
+    }
+    my $e = 2;
+    while (1) {
+      my $root = $n->copy()->broot($e)->bfloor;
+      last if $root->is_one();
+      if ($root->copy->bpow($e) == $n) {
+        my $next = is_power($root, 0, $refp);
+        $$refp = $root if !$next && defined $refp;
+        $e *= $next if $next != 0;
+        return $e;
+      }
+      $e = next_prime($e);
+    }
   }
   0;
 }
@@ -2371,6 +2424,11 @@ sub lucas_sequence {
   croak "lucas_sequence: P out of range" if abs($P) >= $n;
   croak "lucas_sequence: Q out of range" if abs($Q) >= $n;
 
+  if (defined &Math::Prime::Util::GMP::lucas_sequence && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+    return map { ($_ > ''.~0) ? Math::BigInt->new(''.$_) : $_ }
+           Math::Prime::Util::GMP::lucas_sequence($n, $P, $Q, $k);
+  }
+
   $n = Math::BigInt->new("$n") unless ref($n) eq 'Math::BigInt';
 
   my $ZERO = $n->copy->bzero;
@@ -2388,7 +2446,7 @@ sub lucas_sequence {
   my $V = $P->copy;
   my $Qk = $Q->copy;
 
-  return (BZERO->copy, BTWO->copy) if $k == 0;
+  return (BZERO->copy, BTWO->copy, $Qk) if $k == 0;
   $k = Math::BigInt->new("$k") unless ref($k) eq 'Math::BigInt';
   my $kstr = substr($k->as_bin, 2);
   my $bpos = 0;
@@ -2467,7 +2525,7 @@ sub is_lucas_pseudoprime {
   die "Lucas parameter error: $D, $P, $Q\n" if ($D != $P*$P - 4*$Q);
 
   my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $n+1);
-  return $U->is_zero ? 1 : 0;
+  return ($U == 0) ? 1 : 0;
 }
 
 sub is_strong_lucas_pseudoprime {
@@ -2488,7 +2546,9 @@ sub is_strong_lucas_pseudoprime {
   }
   my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $k);
 
-  return 1 if $U->is_zero;
+  return 1 if $U == 0;
+  $V = Math::BigInt->new("$V") unless ref($V) eq 'Math::BigInt';
+  $Qk = Math::BigInt->new("$Qk") unless ref($Qk) eq 'Math::BigInt';
   foreach my $r (0 .. $s-1) {
     return 1 if $V->is_zero;
     if ($r < ($s-1)) {
@@ -2521,7 +2581,8 @@ sub is_extra_strong_lucas_pseudoprime {
 
   my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $k);
 
-  return 1 if $U->is_zero && ($V == BTWO || $V == ($n - BTWO));
+  return 1 if $U == 0 && ($V == BTWO || $V == ($n - BTWO));
+  $V = Math::BigInt->new("$V") unless ref($V) eq 'Math::BigInt';
   foreach my $r (0 .. $s-2) {
     return 1 if $V->is_zero;
     $V->bmul($V)->bsub(BTWO)->bmod($n);
@@ -2690,6 +2751,37 @@ sub is_frobenius_pseudoprime {
   my($U, $V, $Qk) = lucas_sequence($n, $P, $Q, $n-$k);
   return 1 if $U == 0 && $V == $Vcomp;
   0;
+}
+
+# Since people have graciously donated millions of CPU years to doing these
+# tests, it would be rude of us not to use the results.  This means we don't
+# actually use the pretest and Lucas-Lehmer test coded below for any reasonable
+# size number.
+my %_mersenne_primes;
+undef @_mersenne_primes{2,3,5,7,13,17,19,31,61,89,107,127,521,607,1279,2203,2281,3217,4253,4423,9689,9941,11213,19937,21701,23209,44497,86243,110503,132049,216091,756839,859433,1257787,1398269,2976221,3021377,6972593,13466917,20996011,24036583,25964951,30402457,32582657,37156667,42643801,43112609,57885161};
+
+sub is_mersenne_prime {
+  my $p = shift;
+
+  # Use the known Mersenne primes
+  return 1 if exists $_mersenne_primes{$p};
+  return 0 if $p < 32582657; # GIMPS has checked all below
+  # Past this we do a generic Mersenne prime test
+
+  return 1 if $p == 2;
+  return 0 unless is_prob_prime($p);
+  return 0 if $p > 3 && $p % 4 == 3 && $p < ((~0)>>1) && is_prob_prime($p*2+1);
+  my $mp = BONE->copy->blsft($p)->bdec;
+
+  # Definitely faster than using Math::BigInt
+  return (0 == (Math::Prime::Util::GMP::lucas_sequence($mp, 4, 1, $mp+1))[0])
+  if defined &Math::Prime::Util::GMP::lucas_sequence && Math::Prime::Util::prime_get_config()->{'gmp'};
+
+  my $V = Math::BigInt->new(4);
+  for my $k (3 .. $p) {
+    $V->bmul($V)->bsub(BTWO)->bmod($mp);
+  }
+  return $V->is_zero;
 }
 
 
@@ -3475,9 +3567,22 @@ sub fermat_factor {
 
 sub ecm_factor {
   my($n, $B1, $B2, $ncurves) = @_;
+  _validate_positive_integer($n);
 
   my @factors = _basic_factor($n);
   return @factors if $n < 4;
+
+  if (defined &Math::Prime::Util::GMP::ecm_factor && Math::Prime::Util::prime_get_config()->{'gmp'}) {
+    $B1 = 0 if !defined $B1;
+    $ncurves = 0 if !defined $ncurves;
+    my @ef = Math::Prime::Util::GMP::ecm_factor($n, $B1, $ncurves);
+    if (@ef > 1) {
+      my $ecmfac = Math::Prime::Util::_reftyped($n, $ef[-1]);
+      return _found_factor($ecmfac, $n, "ECM (GMP) B1=$B1 curves $ncurves", @factors);
+    }
+    push @factors, $n;
+    return @factors;
+  }
 
   $ncurves = 10 unless defined $ncurves;
 
@@ -4380,7 +4485,7 @@ Math::Prime::Util::PP - Pure Perl version of Math::Prime::Util
 
 =head1 VERSION
 
-Version 0.46
+Version 0.47
 
 
 =head1 SYNOPSIS

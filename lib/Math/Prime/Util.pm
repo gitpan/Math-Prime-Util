@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.46';
+  $Math::Prime::Util::VERSION = '0.47';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -24,6 +24,7 @@ our @EXPORT_OK =
       is_frobenius_pseudoprime
       is_perrin_pseudoprime
       is_frobenius_underwood_pseudoprime is_aks_prime is_bpsw_prime
+      is_mersenne_prime
       is_power
       miller_rabin_random
       lucas_sequence
@@ -108,8 +109,6 @@ BEGIN {
     # Load PP front end code
     require Math::Prime::Util::PPFE;
 
-    *next_prime    = \&Math::Prime::Util::_generic_next_prime;
-    *prev_prime    = \&Math::Prime::Util::_generic_prev_prime;
     *prime_count   = \&Math::Prime::Util::_generic_prime_count;
     *factor        = \&Math::Prime::Util::_generic_factor;
     *factor_exp    = \&Math::Prime::Util::_generic_factor_exp;
@@ -205,7 +204,7 @@ sub _bigint_to_int {
 sub _to_bigint {
   do { require Math::BigInt;  Math::BigInt->import(try=>"GMP,Pari"); }
     unless defined $Math::BigInt::VERSION;
-  return Math::BigInt->new("$_[0]");
+  return (ref($_[0]) eq 'Math::BigInt') ? $_[0] : Math::BigInt->new("$_[0]");
 }
 sub _reftyped {
   return unless defined $_[1];
@@ -244,7 +243,7 @@ sub _validate_positive_integer {
   } else {
     my $strn = "$n";
     croak "Parameter '$strn' must be a positive integer"
-      if $strn =~ tr/0123456789//c && $strn !~ /^\+?\d+$/;
+      if $strn eq '' || ($strn =~ tr/0123456789//c && $strn !~ /^\+?\d+$/);
     if ($n <= (OLD_PERL_VERSION ? 562949953421312 : ''.~0)) {
       $_[0] = $strn if ref($n);
     } else {
@@ -602,30 +601,6 @@ sub prime_iterator_object {
 # based on the input (XS, GMP, PP).
 #############################################################################
 
-sub _generic_next_prime {
-  my($n) = @_;
-  _validate_num($n) || _validate_positive_integer($n);
-
-  if ($_HAVE_GMP) {
-    return _reftyped($_[0], Math::Prime::Util::GMP::next_prime($n));
-  }
-
-  require Math::Prime::Util::PP;
-  return Math::Prime::Util::PP::next_prime($n);
-}
-
-sub _generic_prev_prime {
-  my($n) = @_;
-  _validate_num($n) || _validate_positive_integer($n);
-
-  if ($_HAVE_GMP) {
-    return _reftyped($_[0], Math::Prime::Util::GMP::prev_prime($n));
-  }
-
-  require Math::Prime::Util::PP;
-  return Math::Prime::Util::PP::prev_prime($n);
-}
-
 sub _generic_prime_count {
   my($low,$high) = @_;
   if (defined $high) {
@@ -676,46 +651,7 @@ sub _generic_factor_exp {
   return (map { [$_, $exponents{$_}] } @factors);
 }
 
-
-sub lucas_sequence {
-  my($n, $P, $Q, $k) = @_;
-  _validate_num($n) || _validate_positive_integer($n);
-  croak("Invalid input to lucas_sequence:  modulus n must be > 1") if $n <= 1;
-  _validate_num($k) || _validate_positive_integer($k);
-  { my $testP = (!defined $P || $P >= 0) ? $P : -$P;
-    _validate_num($testP) || _validate_positive_integer($testP); }
-  { my $testQ = (!defined $Q || $Q >= 0) ? $Q : -$Q;
-    _validate_num($testQ) || _validate_positive_integer($testQ); }
-
-  return _XS_lucas_sequence($n, $P, $Q, $k)
-    if ref($_[0]) ne 'Math::BigInt' && $n <= $_XS_MAXVAL
-    && ref($_[3]) ne 'Math::BigInt' && $k <= $_XS_MAXVAL;
-
-  if ($_HAVE_GMP && defined &Math::Prime::Util::GMP::lucas_sequence) {
-    return map { ($_ > ''.~0) ? Math::BigInt->new(''.$_) : $_ }
-           Math::Prime::Util::GMP::lucas_sequence($n, $P, $Q, $k);
-  }
-  require Math::Prime::Util::PP;
-  return map { ($_ <= ''.~0) ? _bigint_to_int($_) : $_ }
-         Math::Prime::Util::PP::lucas_sequence($n, $P, $Q, $k);
-}
-
-
 #############################################################################
-
-# Return just the non-cert portion.
-sub is_provable_prime {
-  my($n) = @_;
-  return 0 if defined $n && $n < 2;
-  _validate_num($n) || _validate_positive_integer($n);
-
-  return is_prime($n) if $n <= $_XS_MAXVAL;
-  return Math::Prime::Util::GMP::is_provable_prime($n)
-         if $_HAVE_GMP && defined &Math::Prime::Util::GMP::is_provable_prime;
-
-  my ($is_prime, $cert) = is_provable_prime_with_cert($n);
-  return $is_prime;
-}
 
 # Return just the cert portion.
 sub prime_certificate {
@@ -779,45 +715,8 @@ sub is_provable_prime_with_cert {
 
 
 sub verify_prime {
-  my @cdata = @_;
-
   require Math::Prime::Util::PrimalityProving;
-  my $cert = '';
-  if (scalar @cdata == 1 && ref($cdata[0]) eq '') {
-    $cert = $cdata[0];
-  } else {
-    # We've been given an old array cert
-    $cert = Math::Prime::Util::PrimalityProving::convert_array_cert_to_string(@cdata);
-    if ($cert eq '') {
-      print "primality fail: error converting old certificate" if $_Config{'verbose'};
-      return 0;
-    }
-  }
-  return 0 if $cert eq '';
-  return Math::Prime::Util::PrimalityProving::verify_cert($cert);
-}
-
-
-#############################################################################
-
-sub ecm_factor {
-  my($n, $B1, $B2, $ncurves) = @_;
-  _validate_positive_integer($n);
-  _validate_positive_integer($B1) if defined $B1;
-  _validate_positive_integer($B2) if defined $B2;
-  _validate_positive_integer($ncurves) if defined $ncurves;
-  return if $n == 1;
-  if ($_HAVE_GMP) {
-    $B1 = 0 if !defined $B1;
-    $ncurves = 0 if !defined $ncurves;
-    my @factors = Math::Prime::Util::GMP::ecm_factor($n, $B1, $ncurves);
-    if (ref($_[0]) eq 'Math::BigInt') {
-      @factors = map { ($_ > ~0) ? Math::BigInt->new(''.$_) : $_ } @factors;
-    }
-    return @factors;
-  }
-  require Math::Prime::Util::PP;
-  Math::Prime::Util::PP::ecm_factor($n, $B1, $B2, $ncurves);
+  return Math::Prime::Util::PrimalityProving::verify_cert(@_);
 }
 
 #############################################################################
@@ -933,7 +832,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.46
+Version 0.47
 
 
 =head1 SYNOPSIS
@@ -1081,8 +980,8 @@ tests, primality proofs, integer factoring, counts / bounds / approximations
 for primes, nth primes, and twin primes, random prime generation,
 and much more.
 
-This module is the fastest on CPAN for almost all operations.  Only
-L<Math::Pari> is faster for a few operations.  This includes
+This module is the fastest on CPAN for almost all operations it supports.
+ Only L<Math::Pari> is faster for a few operations.  This includes
 L<Math::Prime::XS>, L<Math::Prime::FastSieve>, L<Math::Factor::XS>,
 L<Math::Prime::TiedArray>, L<Math::Big::Factors>, L<Math::Factoring>,
 and L<Math::Primality> (when the GMP module is available).
@@ -1734,8 +1633,8 @@ to run 1.5 to 2 times faster than the general Frobenius test.
 
 Takes a positive number as input, and returns 1 if the input passes the
 efficient Frobenius test of Paul Underwood.  This selects a parameter C<a>
-as the least positive integer such that C<(a^2-4|n)=-1>, then verifies that
-C<(2+2)^(n+1) = 2a + 5 mod (x^2-ax+1,n)>.  This combines a Fermat and Lucas
+as the least non-negative integer such that C<(a^2-4|n)=-1>, then verifies that
+C<(x+2)^(n+1) = 2a + 5 mod (x^2-ax+1,n)>.  This combines a Fermat and Lucas
 test with a cost of only slightly more than 2 strong pseudoprime tests.  This
 makes it similar to, but faster than, a Frobenius test.
 
@@ -2094,6 +1993,26 @@ multiplication, at which GMP excels.  Because of this, the GMP
 implementation is likely to be faster once the input is larger than C<2^32>.
 
 
+=head2 is_mersenne_prime
+
+  say "2^607-1 (M607) is a Mersenne prime" if is_mersenne_prime(607);
+
+Takes a positive number C<p> as input and returns 1 if C<2^p-1> is prime.
+Since an enormous effort has gone into testing these, a list of known
+Mersenne primes is used to accelerate this.  Beyond the highest sequential
+Mersenne prime (currently 32,582,657) this performs pretesting followed by
+the Lucas-Lehmer test.
+
+The Lucas-Lehmer test is a deterministic unconditional test that runs
+very fast compared to other primality methods for numbers of comparable
+size, and vastly faster than any known general-form primality proof methods.
+While this test is fast, the GMP implementation is not nearly as fast as
+specialized programs such as C<prime95>.  Additionally, since we use the
+table for "small" numbers, testing via this function call will only occur
+for numbers with over 9.8 million digits.  At this size, tools such as
+C<prime95> are greatly preferred.
+
+
 =head2 is_power
 
   say "$n is a perfect square" if is_power($n, 2);
@@ -2107,9 +2026,17 @@ determine if C<n> is a perfect power.
 
 If given two arguments C<n> and C<k>, returns 1 if C<n> is a C<k-th> power,
 and 0 otherwise.  For example, if C<k=2> then this detects perfect squares.
+Setting C<k=0> gives behavior like the first case (the largest root is found
+and its value is returned).
 
-This corresponds to Pari/GP's C<ispower> function, with the limitations of
-only integer arguments and no third argument may be given to return the root.
+If a third argument is present, it must be a scalar reference.  If C<n> is
+a k-th power, then this will be set to the k-th root of C<n>.  For example:
+
+  my $n = 222657534574035968;
+  if (my $pow = is_power($n, 0, \my $root)) { say "$n = $root^$pow" }
+  # prints:  222657534574035968 = 2948^5
+
+This corresponds to Pari/GP's C<ispower> function with integer arguments.
 
 
 =head2 lucas_sequence

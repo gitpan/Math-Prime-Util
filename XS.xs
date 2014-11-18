@@ -217,6 +217,19 @@ static int _vcallsubn(pTHX_ I32 flags, I32 stashflags, const char* name, int nar
        else                     { PUSHs(sv_2mortal(newSViv(r_))); } \
   } while (0)
 
+#define OBJECTIFY_RESULT(input, output) \
+  if (!sv_isobject(output)) { \
+    SV* resptr = output; \
+    const char *iname = sv_isobject(input) \
+                      ? HvNAME_get(SvSTASH(SvRV(input))) : 0; \
+    if (iname == 0 || strEQ(iname, "Math::BigInt")) { \
+      _vcallsub("_to_bigint"); /* Turn into bigint */ \
+    } else { /* Return it as: ref(input)->new(result) */ \
+      dSP;  ENTER;  PUSHMARK(SP); \
+      XPUSHs(sv_2mortal(newSVpv(iname, 0)));  XPUSHs(resptr); \
+      PUTBACK;  call_method("new", G_SCALAR);  LEAVE; \
+    } \
+  }
 
 MODULE = Math::Prime::Util	PACKAGE = Math::Prime::Util
 
@@ -439,6 +452,7 @@ trial_factor(IN UV n, ...)
     pplus1_factor = 5
     pbrent_factor = 6
     pminus1_factor = 7
+    ecm_factor = 8
   PREINIT:
     UV arg1, arg2;
     static const UV default_arg1[] =
@@ -446,6 +460,10 @@ trial_factor(IN UV n, ...)
      /* Trial, Fermat,   Holf,    SQUFOF,  PRHO,    P+1, Brent,    P-1 */
   PPCODE:
     if (n == 0)  XSRETURN_UV(0);
+    if (ix == 8) {  /* We don't have an ecm_factor, call PP. */
+      _vcallsubn(aTHX_ GIMME_V, VCALL_PP, "ecm_factor", 1);
+      return;
+    }
     /* Must read arguments before pushing anything */
     arg1 = (items >= 2) ? my_svuv(ST(1)) : default_arg1[ix];
     arg2 = (items >= 3) ? my_svuv(ST(2)) : 0;
@@ -684,77 +702,119 @@ chinese(...)
     return; /* skip implicit PUTBACK */
 
 void
-_XS_lucas_sequence(IN UV n, IN IV P, IN IV Q, IN UV k)
+lucas_sequence(...)
   PREINIT:
     UV U, V, Qk;
   PPCODE:
-    lucas_seq(&U, &V, &Qk,  n, P, Q, k);
-    PUSHs(sv_2mortal(newSVuv( U )));    /* 4 args in, 3 out, no EXTEND needed */
-    PUSHs(sv_2mortal(newSVuv( V )));
-    PUSHs(sv_2mortal(newSVuv( Qk )));
+    if (items != 4) croak("lucas_sequence: n, P, Q, k");
+    if (_validate_int(aTHX_ ST(0), 0) && _validate_int(aTHX_ ST(1), 1) &&
+        _validate_int(aTHX_ ST(2), 1) && _validate_int(aTHX_ ST(3), 0)) {
+      lucas_seq(&U, &V, &Qk,
+                my_svuv(ST(0)), my_sviv(ST(1)), my_sviv(ST(2)), my_svuv(ST(3)));
+      PUSHs(sv_2mortal(newSVuv( U )));  /* 4 args in, 3 out, no EXTEND needed */
+      PUSHs(sv_2mortal(newSVuv( V )));
+      PUSHs(sv_2mortal(newSVuv( Qk )));
+    } else {
+      _vcallsubn(aTHX_ GIMME_V, VCALL_PP, "lucas_sequence", items);
+      return;
+    }
 
 void
 is_prime(IN SV* svn, ...)
   ALIAS:
     is_prob_prime = 1
-    is_bpsw_prime = 2
-    is_aks_prime = 3
-    is_lucas_pseudoprime = 4
-    is_strong_lucas_pseudoprime = 5
-    is_extra_strong_lucas_pseudoprime = 6
-    is_frobenius_pseudoprime = 7
-    is_frobenius_underwood_pseudoprime = 8
-    is_perrin_pseudoprime = 9
-    is_power = 10
+    is_provable_prime = 2
+    is_bpsw_prime = 3
+    is_aks_prime = 4
+    is_lucas_pseudoprime = 5
+    is_strong_lucas_pseudoprime = 6
+    is_extra_strong_lucas_pseudoprime = 7
+    is_frobenius_pseudoprime = 8
+    is_frobenius_underwood_pseudoprime = 9
+    is_perrin_pseudoprime = 10
     is_almost_extra_strong_lucas_pseudoprime = 11
+    is_mersenne_prime = 12
+    is_power = 13
   PREINIT:
     int status;
   PPCODE:
     status = _validate_int(aTHX_ svn, 1);
     if (status != 0) {
       int ret = 0;
-      if (status == 1) {
+      if (status == 1 && ix != 13) {
         UV n = my_svuv(svn);
         UV a = (items == 1) ? 0 : my_svuv(ST(1));
         switch (ix) {
           case 0:
-          case 1:  ret = _XS_is_prime(n);  break;
-          case 2:  ret = _XS_BPSW(n);      break;
-          case 3:  ret = _XS_is_aks_prime(n); break;
-          case 4:  ret = _XS_is_lucas_pseudoprime(n, 0); break;
-          case 5:  ret = _XS_is_lucas_pseudoprime(n, 1); break;
-          case 6:  ret = _XS_is_lucas_pseudoprime(n, 2); break;
-          case 7:  {
+          case 1:
+          case 2:  ret = _XS_is_prime(n);  break;
+          case 3:  ret = _XS_BPSW(n);      break;
+          case 4:  ret = _XS_is_aks_prime(n); break;
+          case 5:  ret = _XS_is_lucas_pseudoprime(n, 0); break;
+          case 6:  ret = _XS_is_lucas_pseudoprime(n, 1); break;
+          case 7:  ret = _XS_is_lucas_pseudoprime(n, 2); break;
+          case 8:  {
                      /* IV P = 1, Q = -1; */ /* Fibonacci polynomial */
                      IV P = 0, Q = 0;        /* Q=2,P=least odd s.t. (D|n)=-1 */
                      if (items == 3) { P = my_sviv(ST(1)); Q = my_sviv(ST(2)); }
                      else if (items != 1) croak("is_frobenius_pseudoprime takes P,Q");
                      ret = is_frobenius_pseudoprime(n, P, Q);
                    } break;
-          case 8:  ret = _XS_is_frobenius_underwood_pseudoprime(n); break;
-          case 9:  ret = is_perrin_pseudoprime(n); break;
-          case 10: ret = is_power(n, a); break;
-          case 11:
-          default: ret = _XS_is_almost_extra_strong_lucas_pseudoprime
+          case 9:  ret = _XS_is_frobenius_underwood_pseudoprime(n); break;
+          case 10: ret = is_perrin_pseudoprime(n); break;
+          case 11: ret = _XS_is_almost_extra_strong_lucas_pseudoprime
                          (n, (items == 1) ? 1 : a); break;
+          case 12:
+          default: ret = is_mersenne_prime(n);
+                   if (ret == -1) status = 0;
+                   break;
+        }
+      } else if (ix == 13) {
+        UV n = (status == 1) ? my_svuv(svn) : (UV) -my_sviv(svn);
+        UV a = (items == 1) ? 0 : my_svuv(ST(1));
+        if (status == -1 && n > (UV)IV_MAX) { status = 0; }
+        if (status == 1 || (status == -1 && (a == 0 || a & 1))) {
+          ret = is_power(n, a);
+          if (status == -1 && a == 0) {
+            ret >>= valuation(ret,2);
+            if (ret == 1) ret = 0;
+          }
+          if (ret && items == 3) {
+            UV root = rootof(n, a ? a : (UV)ret);
+            if (!SvROK(ST(2))) croak("is_power third argument not a scalar reference");
+            if (status == 1) sv_setuv(SvRV(ST(2)),  root);
+            else             sv_setiv(SvRV(ST(2)), -root);
+          }
         }
       }
-      RETURN_NPARITY(ret);
+      if (status != 0) RETURN_NPARITY(ret);
     }
     switch (ix) {
       case 0: _vcallsub_with_gmp("is_prime");       break;
       case 1: _vcallsub_with_gmp("is_prob_prime");  break;
-      case 2: _vcallsub_with_gmp("is_bpsw_prime");  break;
-      case 3: _vcallsub_with_gmp("is_aks_prime"); break;
-      case 4: _vcallsub_with_gmp("is_lucas_pseudoprime"); break;
-      case 5: _vcallsub_with_gmp("is_strong_lucas_pseudoprime"); break;
-      case 6: _vcallsub_with_gmp("is_extra_strong_lucas_pseudoprime"); break;
-      case 7: _vcallsub_with_gmp("is_frobenius_pseudoprime"); break;
-      case 8: _vcallsub_with_gmp("is_frobenius_underwood_pseudoprime"); break;
-      case 9: _vcallsub_with_gmp("is_perrin_pseudoprime"); break;
-      case 10:_vcallsub_with_gmp("is_power"); break;
-      case 11:
-      default:_vcallsub_with_gmp("is_almost_extra_strong_lucas_pseudoprime"); break;
+      case 2: _vcallsub_with_gmp("is_provable_prime");  break;
+      case 3: _vcallsub_with_gmp("is_bpsw_prime");  break;
+      case 4: _vcallsub_with_gmp("is_aks_prime"); break;
+      case 5: _vcallsub_with_gmp("is_lucas_pseudoprime"); break;
+      case 6: _vcallsub_with_gmp("is_strong_lucas_pseudoprime"); break;
+      case 7: _vcallsub_with_gmp("is_extra_strong_lucas_pseudoprime"); break;
+      case 8: _vcallsub_with_gmp("is_frobenius_pseudoprime"); break;
+      case 9: _vcallsub_with_gmp("is_frobenius_underwood_pseudoprime"); break;
+      case 10:_vcallsub_with_gmp("is_perrin_pseudoprime"); break;
+      case 11:_vcallsub_with_gmp("is_almost_extra_strong_lucas_pseudoprime"); break;
+      case 12:_vcallsub_with_gmp("is_mersenne_prime"); break;
+      case 13:
+      default:if (items != 3 && status != -1) {
+                STRLEN len;
+                char* ptr = SvPV_nomg(svn, len);
+                if (len > 0 && ptr[0] != '-') {
+                  /* items != 3 and not negative */
+                  _vcallsub_with_gmp("is_power");
+                  return;
+                }
+              }
+              _vcallsub_with_pp("is_power");
+              break;
     }
     return; /* skip implicit PUTBACK */
 
@@ -799,13 +859,14 @@ next_prime(IN SV* svn)
         XSRETURN_UV(ret);
       }
     }
+    if ((ix == 0 || ix == 1) && _XS_get_callgmp() && PERL_REVISION >= 5 && PERL_VERSION > 8) {
+      _vcallsub_with_gmp( ix ? "prev_prime" : "next_prime");
+      OBJECTIFY_RESULT(svn, ST(0));
+      return;
+    }
     switch (ix) {
-      /*
-      case 0:  _vcallsub_with_gmp("next_prime");        break;
-      case 1:  _vcallsub_with_gmp("prev_prime");        break;
-      */
-      case 0:  _vcallsub("_generic_next_prime");        break;
-      case 1:  _vcallsub("_generic_prev_prime");        break;
+      case 0:  _vcallsub_with_pp("next_prime");         break;
+      case 1:  _vcallsub_with_pp("prev_prime");         break;
       case 2:  _vcallsub_with_pp("nth_prime");          break;
       case 3:  _vcallsub_with_pp("nth_prime_upper");    break;
       case 4:  _vcallsub_with_pp("nth_prime_lower");    break;
@@ -1256,7 +1317,7 @@ carmichael_lambda(IN SV* svn)
                  XSRETURN_UV(r);  break;
         case 8:
         default: if (status == -1) n = -(IV)n;
-                 XSRETURN_UV(popcount(n));  break;
+                 XSRETURN_UV(mpu_popcount(n));  break;
       }
     }
     switch (ix) {
@@ -1270,7 +1331,7 @@ carmichael_lambda(IN SV* svn)
       case 7:  _vcallsub_with_gmp("znprimroot"); break;
       case 8:
       default: { char* ptr;  STRLEN len;  ptr = SvPV_nomg(svn, len);
-                 XSRETURN_UV(popcount_string(ptr, len)); }
+                 XSRETURN_UV(mpu_popcount_string(ptr, len)); }
                break;
     }
     return; /* skip implicit PUTBACK */

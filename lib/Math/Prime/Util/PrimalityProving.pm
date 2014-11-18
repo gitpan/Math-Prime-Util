@@ -11,7 +11,7 @@ use Math::Prime::Util qw/is_prob_prime is_strong_pseudoprime
 
 BEGIN {
   $Math::Prime::Util::PrimalityProving::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::PrimalityProving::VERSION = '0.46';
+  $Math::Prime::Util::PrimalityProving::VERSION = '0.47';
 }
 
 BEGIN {
@@ -763,8 +763,9 @@ sub _verify_lucas {
 }
 
 sub verify_cert {
-  my $cert = shift;
+  my $cert = (@_ == 1) ? $_[0] : convert_array_cert_to_string(@_);
   $cert = convert_array_cert_to_string($cert) if ref($cert) eq 'ARRAY';
+  return 0 if $cert eq '';
 
   my %parts;  # Map of "N is prime if Q is prime"
   my %proof_funcs = (
@@ -863,7 +864,7 @@ Math::Prime::Util::PrimalityProving - Primality proofs and certificates
 
 =head1 VERSION
 
-Version 0.46
+Version 0.47
 
 
 =head1 SYNOPSIS

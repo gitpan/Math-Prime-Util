@@ -4,8 +4,8 @@ use warnings;
 use Getopt::Long;
 use Math::BigInt try => 'GMP';
 use Math::Prime::Util qw/primes  prime_count  next_prime  prev_prime
-                         is_prime  is_provable_prime  nth_prime
-                         prime_count  primorial  pn_primorial/;
+                         is_prime  is_provable_prime  is_mersenne_prime
+                         nth_prime  prime_count  primorial  pn_primorial/;
 $| = 1;
 
 # For many more types, see:
@@ -115,6 +115,7 @@ if (exists $opts{'version'}) {
 die_usage() if exists $opts{'help'};
 
 # Get the start and end values.  Verify they're positive integers.
+@ARGV = (0,@ARGV) if @ARGV == 1;
 die_usage() unless @ARGV == 2;
 my ($start, $end) = @ARGV;
 # Allow some expression evaluation on the input, but don't just eval it.
@@ -248,10 +249,9 @@ sub mersenne_primes {
   while (1) {
     $p = next_prime($p);  # Mp is not prime if p is not prime
     next if $p > 3 && ($p % 4) == 3 && is_prime(2*$p+1);
-    my $Mp = Math::BigInt->bone->blsft($p)->bsub(1);
+    my $Mp = Math::BigInt->bone->blsft($p)->bdec;
     last if $Mp > $end;
-    # Lucas-Lehmer test would be faster
-    push @mprimes, $Mp if $Mp >= $start && is_prime($Mp);
+    push @mprimes, $Mp if $Mp >= $start && is_mersenne_prime($p);
   }
   @mprimes;
 }
@@ -596,12 +596,13 @@ sub eval_expr {
 
 sub die_usage {
   die <<EOU;
-Usage: $0 [options]  START  END
+Usage: $0 [options]  [START]  END
 
 Displays all primes between the positive integers START and END, inclusive.
 The START and END values must be integers or simple expressions.  This allows
 inputs like "10**500+100" or "2**64-1000" or "2 * nth_prime(560)".
 Additionally, if END starts with '+' then it is assumed to add to START.
+If only one number is given, primes up to that number are shown (START = 0).
 
 General options:
 
