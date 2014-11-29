@@ -232,6 +232,26 @@ sub lucas_sequence {
   _validate_positive_integer($k);
   return Math::Prime::Util::PP::lucas_sequence(@_);
 }
+sub lucasu {
+  my($P, $Q, $k) = @_;
+  my ($vp, $vq) = ($P, $Q);
+  $vp = -$vp if defined $vp && $vp < 0;
+  $vq = -$vq if defined $vq && $vq < 0;
+  _validate_positive_integer($vp);
+  _validate_positive_integer($vq);
+  _validate_positive_integer($k);
+  return Math::Prime::Util::PP::lucasu(@_);
+}
+sub lucasv {
+  my($P, $Q, $k) = @_;
+  my ($vp, $vq) = ($P, $Q);
+  $vp = -$vp if defined $vp && $vp < 0;
+  $vq = -$vq if defined $vq && $vq < 0;
+  _validate_positive_integer($vp);
+  _validate_positive_integer($vq);
+  _validate_positive_integer($k);
+  return Math::Prime::Util::PP::lucasv(@_);
+}
 
 sub kronecker {
   my($a, $b) = @_;
@@ -435,10 +455,10 @@ sub chebyshev_psi {
 
 sub is_power {
   my($n, $a, $refp) = @_;
-  my $vn = (defined $n && $n < 0) ? -$n : $n;
+  my $vn = "$n";  $vn =~ s/^-//;
   _validate_positive_integer($vn);
   _validate_positive_integer($a) if defined $a;
-  $vn = -$vn if $n < 0;
+  $vn = '-'.$vn if $n < 0;
   return Math::Prime::Util::PP::is_power($vn, $a, $refp);
 }
 sub valuation {

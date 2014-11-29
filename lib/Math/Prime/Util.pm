@@ -5,7 +5,7 @@ use Carp qw/croak confess carp/;
 
 BEGIN {
   $Math::Prime::Util::AUTHORITY = 'cpan:DANAJ';
-  $Math::Prime::Util::VERSION = '0.47';
+  $Math::Prime::Util::VERSION = '0.48';
 }
 
 # parent is cleaner, and in the Perl 5.10.1 / 5.12.0 core, but not earlier.
@@ -27,7 +27,7 @@ our @EXPORT_OK =
       is_mersenne_prime
       is_power
       miller_rabin_random
-      lucas_sequence
+      lucas_sequence lucasu lucasv
       primes twin_primes
       forprimes forcomposites foroddcomposites fordivisors
       forpart forcomb forperm
@@ -820,7 +820,7 @@ __END__
 
 =encoding utf8
 
-=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum vecprod vecmin vecmax vecreduce gcdext chinese LambertW bernfrac bernreal stirling hammingweight
+=for stopwords forprimes forcomposites foroddcomposites fordivisors forpart forcomb forperm Möbius Deléglise Bézout totient moebius mertens liouville znorder irand primesieve uniqued k-tuples von SoE pari yafu fonction qui compte le nombre nombres voor PhD superset sqrt(N) gcd(A^M k-th (10001st primegen libtommath kronecker znprimroot znlog gcd lcm invmod untruncated vecsum vecprod vecmin vecmax vecreduce gcdext chinese LambertW bernfrac bernreal stirling hammingweight lucasu lucasv OpenPFGW gmpy2
 
 =for test_synopsis use v5.14;  my($k,$x);
 
@@ -832,7 +832,7 @@ Math::Prime::Util - Utilities related to prime numbers, including fast sieves an
 
 =head1 VERSION
 
-Version 0.47
+Version 0.48
 
 
 =head1 SYNOPSIS
@@ -1360,12 +1360,7 @@ primes.  It may be desirable to use a bit more memory than is necessary, to
 avoid calling C<prime_count>.
 
 These routines use verified tight limits below a range at least C<2^35>, and
-use the Dusart (2010) bounds of
-
-    x/logx * (1 + 1/logx + 2.000/log^2x) <= Pi(x)
-
-    x/logx * (1 + 1/logx + 2.334/log^2x) >= Pi(x)
-
+use either the Dusart (2010) bounds or the Axler (2014) bounds
 above that range.  These bounds do not assume the Riemann Hypothesis.  If the
 configuration option C<assume_rh> has been set (it is off by default), then
 the Schoenfeld (1976) bounds are used for large values.
@@ -1638,7 +1633,8 @@ C<(x+2)^(n+1) = 2a + 5 mod (x^2-ax+1,n)>.  This combines a Fermat and Lucas
 test with a cost of only slightly more than 2 strong pseudoprime tests.  This
 makes it similar to, but faster than, a Frobenius test.
 
-There are no known pseudoprimes to this test.  This test also has no overlap
+There are no known pseudoprimes to this test and extensive computation has
+shown no counterexamples under C<2^50>.  This test also has no overlap
 with the BPSW test, making it a very effective method for adding additional
 certainty.
 
@@ -2038,6 +2034,29 @@ a k-th power, then this will be set to the k-th root of C<n>.  For example:
 
 This corresponds to Pari/GP's C<ispower> function with integer arguments.
 
+
+=head2 lucasu
+
+  say "Fibonacci($_) = ", lucasu(1,-1,$_) for 0..100;
+
+Given integers C<P>, C<Q>, and the non-negative integer C<k>,
+computes C<U_k> for the Lucas sequence defined by C<P>,C<Q>.  These include
+the Fibonacci numbers (C<1,-1>), the Pell numbers (C<2,-1>), the Jacobsthal
+numbers (C<1,-2>), the Mersenne numbers (C<3,2>), and more.
+
+This corresponds to OpenPFGW's C<lucasU> function and gmpy2's C<lucasu>
+function.
+
+=head2 lucasv
+
+  say "Lucas($_) = ", lucasv(1,-1,$_) for 0..100;
+
+Given integers C<P>, C<Q>, and the non-negative integer C<k>,
+computes C<V_k> for the Lucas sequence defined by C<P>,C<Q>.  These include
+the Lucas numbers (C<1,-1>).
+
+This corresponds to OpenPFGW's C<lucasV> function and gmpy2's C<lucasv>
+function.
 
 =head2 lucas_sequence
 
@@ -3209,6 +3228,10 @@ performance.  For sizes over 50k one of the first two are highly recommended.
 
 =head1 EXAMPLES
 
+Print Fibonacci numbers:
+
+    perl -Mntheory=:all -E 'say lucasu(1,-1,$_) for 0..20'
+
 Print strong pseudoprimes to base 17 up to 10M:
 
     # Similar to A001262's isStrongPsp function, but much faster
@@ -4079,6 +4102,10 @@ thank Kim Walisch for the many discussions about prime counting.
 =head1 REFERENCES
 
 =over 4
+
+=item *
+
+Christian Axler, "New bounds for the prime counting function π(x)", September 2014.  For large values, improved limits versus Dusart 2010.  L<http://arxiv.org/abs/1409.1780>
 
 =item *
 

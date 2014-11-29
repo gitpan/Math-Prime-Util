@@ -402,6 +402,92 @@ void lucas_seq(UV* Uret, UV* Vret, UV* Qkret, UV n, IV P, IV Q, UV k)
   *Qkret = Qk;
 }
 
+#define OVERHALF(v)  ( (UV)((v>=0)?v:-v) > (UVCONST(1) << (BITS_PER_WORD/2-1)) )
+int lucasu(IV* U, IV P, IV Q, UV k)
+{
+  IV Uh, Vl, Vh, Ql, Qh;
+  int j, s, n;
+
+  if (U == 0) return 0;
+  if (k == 0) { *U = 0; return 1; }
+
+  Uh = 1;  Vl = 2;  Vh = P;  Ql = 1;  Qh = 1;
+  s = 0; n = 0;
+  { UV v = k; while (!(v & 1)) { v >>= 1; s++; } }
+  { UV v = k; while (v >>= 1) n++; }
+
+  for (j = n; j > s; j--) {
+    if (OVERHALF(Uh) || OVERHALF(Vh) || OVERHALF(Vl) || OVERHALF(Ql) || OVERHALF(Qh)) return 0;
+    Ql *= Qh;
+    if ( (k >> j) & UVCONST(1) ) {
+      Qh = Ql * Q;
+      Uh = Uh * Vh;
+      Vl = Vh * Vl - P * Ql;
+      Vh = Vh * Vh - 2 * Qh;
+    } else {
+      Qh = Ql;
+      Uh = Uh * Vl - Ql;
+      Vh = Vh * Vl - P * Ql;
+      Vl = Vl * Vl - 2 * Ql;
+    }
+  }
+  if (OVERHALF(Ql) || OVERHALF(Qh)) return 0;
+  Ql = Ql * Qh;
+  Qh = Ql * Q;
+  if (OVERHALF(Uh) || OVERHALF(Vh) || OVERHALF(Vl) || OVERHALF(Ql) || OVERHALF(Qh)) return 0;
+  Uh = Uh * Vl - Ql;
+  Vl = Vh * Vl - P * Ql;
+  Ql = Ql * Qh;
+  for (j = 0; j < s; j++) {
+    if (OVERHALF(Uh) || OVERHALF(Vl) || OVERHALF(Ql)) return 0;
+    Uh *= Vl;
+    Vl = Vl * Vl - 2 * Ql;
+    Ql *= Ql;
+  }
+  *U = Uh;
+  return 1;
+}
+int lucasv(IV* V, IV P, IV Q, UV k)
+{
+  IV Vl, Vh, Ql, Qh;
+  int j, s, n;
+
+  if (V == 0) return 0;
+  if (k == 0) { *V = 2; return 1; }
+
+  Vl = 2;  Vh = P;  Ql = 1;  Qh = 1;
+  s = 0; n = 0;
+  { UV v = k; while (!(v & 1)) { v >>= 1; s++; } }
+  { UV v = k; while (v >>= 1) n++; }
+
+  for (j = n; j > s; j--) {
+    if (OVERHALF(Vh) || OVERHALF(Vl) || OVERHALF(Ql) || OVERHALF(Qh)) return 0;
+    Ql *= Qh;
+    if ( (k >> j) & UVCONST(1) ) {
+      Qh = Ql * Q;
+      Vl = Vh * Vl - P * Ql;
+      Vh = Vh * Vh - 2 * Qh;
+    } else {
+      Qh = Ql;
+      Vh = Vh * Vl - P * Ql;
+      Vl = Vl * Vl - 2 * Ql;
+    }
+  }
+  if (OVERHALF(Ql) || OVERHALF(Qh)) return 0;
+  Ql = Ql * Qh;
+  Qh = Ql * Q;
+  if (OVERHALF(Vh) || OVERHALF(Vl) || OVERHALF(Ql) || OVERHALF(Qh)) return 0;
+  Vl = Vh * Vl - P * Ql;
+  Ql = Ql * Qh;
+  for (j = 0; j < s; j++) {
+    if (OVERHALF(Vl) || OVERHALF(Ql)) return 0;
+    Vl = Vl * Vl - 2 * Ql;
+    Ql *= Ql;
+  }
+  *V = Vl;
+  return 1;
+}
+
 /* Lucas tests:
  *  0: Standard
  *  1: Strong
@@ -852,13 +938,14 @@ int _XS_is_frobenius_underwood_pseudoprime(UV n)
  * instead we'll use a table. */
 #define NUM_KNOWN_MERSENNE_PRIMES 48
 static const uint32_t _mersenne_primes[NUM_KNOWN_MERSENNE_PRIMES] = {2,3,5,7,13,17,19,31,61,89,107,127,521,607,1279,2203,2281,3217,4253,4423,9689,9941,11213,19937,21701,23209,44497,86243,110503,132049,216091,756839,859433,1257787,1398269,2976221,3021377,6972593,13466917,20996011,24036583,25964951,30402457,32582657,37156667,42643801,43112609,57885161};
+#define LAST_CHECKED_MERSENNE 32593019
 int is_mersenne_prime(UV p)
 {
   int i;
   for (i = 0; i < NUM_KNOWN_MERSENNE_PRIMES; i++)
     if (p == _mersenne_primes[i])
       return 1;
-  return (p < 32582657) ? 0 : -1;
+  return (p < LAST_CHECKED_MERSENNE) ? 0 : -1;
 }
 int lucas_lehmer(UV p)
 {
@@ -887,10 +974,12 @@ static const UV mr_bases_small_3[3] = {2, 7, 61};
 static const UV mr_bases_large_1[1] = { UVCONST(  9345883071009581737 ) };
 static const UV mr_bases_large_2[2] = { UVCONST(         336781006125 ),
                                         UVCONST(     9639812373923155 ) };
+#if 0
 static const UV mr_bases_large_3[3] = { UVCONST(  4230279247111683200 ),
                                         UVCONST( 14694767155120705706 ),
                                         UVCONST( 16641139526367750375 ) };
 static const UV mr_bases_large_7[7] = { 2, 325, 9375, 28178, 450775, 9780504, 1795265022 };
+#endif
 #endif
 
 int is_prob_prime(UV n)
