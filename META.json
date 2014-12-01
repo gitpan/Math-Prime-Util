@@ -4,7 +4,7 @@
       "Dana A Jacobsen <dana@acm.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.98, CPAN::Meta::Converter version 2.142060",
+   "generated_by" : "ExtUtils::MakeMaker version 7.02, CPAN::Meta::Converter version 2.143240",
    "license" : [
       "perl_5"
    ],
@@ -65,27 +65,27 @@
    "provides" : {
       "Math::Prime::Util" : {
          "file" : "lib/Math/Prime/Util.pm",
-         "version" : "0.48"
+         "version" : "0.49"
       },
       "Math::Prime::Util::MemFree" : {
          "file" : "lib/Math/Prime/Util/MemFree.pm",
-         "version" : "0.48"
+         "version" : "0.49"
       },
       "Math::Prime::Util::PP" : {
          "file" : "lib/Math/Prime/Util/PP.pm",
-         "version" : "0.48"
+         "version" : "0.49"
       },
       "Math::Prime::Util::PrimeArray" : {
          "file" : "lib/Math/Prime/Util/PrimeArray.pm",
-         "version" : "0.48"
+         "version" : "0.49"
       },
       "Math::Prime::Util::PrimeIterator" : {
          "file" : "lib/Math/Prime/Util/PrimeIterator.pm",
-         "version" : "0.48"
+         "version" : "0.49"
       },
       "ntheory" : {
          "file" : "lib/ntheory.pm",
-         "version" : "0.48"
+         "version" : "0.49"
       }
    },
    "release_status" : "stable",
@@ -98,5 +98,5 @@
          "url" : "https://github.com/danaj/Math-Prime-Util"
       }
    },
-   "version" : "0.48"
+   "version" : "0.49"
 }
